@@ -2414,21 +2414,8 @@ function formationChoiceLabel(formationId: string): string {
 .revealed-teams { @apply grid grid-cols-2 gap-3; }
 .revealed-teams span { @apply grid gap-1 border border-[var(--app-border)] p-3 text-xs text-muted; }
 .revealed-teams strong { @apply text-gold-light; }
-.waiting-members { @apply grid grid-cols-2 gap-3; }
-.waiting-members span { @apply grid gap-1 border border-[var(--app-border)] bg-[var(--app-surface-muted)] p-3 text-sm text-muted; }
-.waiting-members span.joined { @apply border-[var(--app-accent)] text-[var(--app-text)]; }
-.waiting-members small { @apply text-[10px] text-muted; }
-.waiting-members button { @apply mt-1 border-0 bg-transparent text-[9px] text-[#c98e82]; }
-.waiting-observers { @apply mt-4 grid gap-2; }
-.waiting-observers h3 { @apply m-0 text-sm; }
-.waiting-observers span { @apply flex items-center gap-2 border border-[var(--app-border)] bg-[var(--app-surface-muted)] p-2 text-xs; }
-.waiting-observers small { @apply text-[10px] text-muted; }
-.waiting-observers button { @apply ml-auto border-0 bg-transparent text-[9px] text-[#c98e82]; }
 .observer-leave { @apply absolute top-3 right-3; }
 .invite-link { @apply justify-self-start border-0 bg-transparent text-xs text-gold-light; }
-.result-actions { @apply mt-2 grid grid-cols-2 gap-3; }
-.result-actions .ghost-button { @apply border-[var(--app-border-strong)] text-[var(--app-text)]; }
-.result-actions .primary-button { @apply justify-between; }
 
 .game-sidebar { @apply grid min-h-0 grid-rows-[minmax(0,1fr)] overflow-hidden; }
 .panel-title { @apply flex items-start justify-between; }
@@ -2449,7 +2436,6 @@ function formationChoiceLabel(formationId: string): string {
 
 @media (max-width: 600px) {
   .battlefield-back { top: 10px; left: 10px; }
-  .waiting-members { grid-template-columns: 1fr 1fr; }
 }
 }
 

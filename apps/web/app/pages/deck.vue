@@ -5,12 +5,13 @@
   <main v-else-if="deckInitialError" class="route-state">
     <div class="route-state-content"><h1>{{ deckInitialError }}</h1><button class="primary-button" type="button" @click="loadDeckPage">重試</button></div>
   </main>
-  <main v-else class="deck-page">
+  <main v-else class="deck-page workspace-page page-scene" data-scene="study">
+      <PageIntro title="個人牌組" eyebrow="備牌入局" description="在五行之間取捨，準備屬於你的戰術組合。" back-to="/rooms" back-label="房間大廳" />
       <section class="setup-card deck-editor">
         <div class="card-heading">
-          <span class="step-number">牌</span>
+          <span class="step-number" aria-hidden="true">牌</span>
           <div>
-            <h1>個人牌組</h1>
+            <h2>調整牌組</h2>
             <p>每種牌依屬性與等級調整張數；總數 {{ deckRules?.exactCardCount ?? '—' }}、等級總和最多 {{ deckRules?.maximumLevelTotal ?? '—' }}。</p>
           </div>
         </div>
@@ -22,7 +23,7 @@
           <div />
           <strong v-for="level in DECK_LEVELS" :key="`level-${level}`">{{ level }} 級</strong>
           <template v-for="element in DECK_ELEMENTS" :key="element">
-            <strong>{{ deckElementLabel(element) }}</strong>
+            <strong class="deck-element" :data-element="element">{{ deckElementLabel(element) }}</strong>
             <div v-for="level in DECK_LEVELS" :key="`${element}-${level}`" class="deck-count-control">
               <button
                 type="button"
@@ -313,17 +314,17 @@ onMounted(() => {
 <style>
 @reference "../assets/css/main.css";
 
-.deck-page { @apply mx-auto min-h-screen max-w-5xl px-6 pt-28 pb-12; }
+.deck-page { max-width: 1080px; }
 .deck-editor { @apply grid gap-5; }
-.deck-grid { @apply grid grid-cols-6 gap-2 overflow-x-auto; }
+.deck-grid { display: grid; grid-template-columns: 36px repeat(5,minmax(0,1fr)); gap: 10px; }
 .deck-grid > strong { @apply flex min-h-11 items-center justify-center text-sm; }
-.deck-count-control { @apply flex min-w-28 items-center justify-between rounded-lg p-1; border: 1px solid var(--app-border); background: var(--app-surface-raised); }
+.deck-count-control { @apply flex min-w-0 items-center justify-between rounded-lg p-1; border: 1px solid var(--ui-glass-stroke); background: color-mix(in srgb,var(--app-surface-raised) 80%,transparent); }
 .deck-count-control button { @apply grid size-9 place-items-center rounded-md font-bold disabled:opacity-35; background: var(--app-control); color: var(--app-text); }
 .deck-count-control span { @apply min-w-6 text-center font-bold; color: var(--app-text); }
-.deck-validation { @apply flex flex-wrap gap-5 rounded-lg border border-emerald-700/30 bg-emerald-50 p-4 text-emerald-900; }
-.deck-validation.invalid { @apply border-red-700/30 bg-red-50 text-red-900; }
-.deck-validation-errors { @apply grid gap-1 text-sm text-red-700; }
-.deck-transfer-status { @apply text-sm text-emerald-700; }
+.deck-validation { @apply flex flex-wrap gap-4 p-4; border: 1px solid var(--app-success); border-radius: 14px; color: var(--app-success); background: var(--app-success-surface); }
+.deck-validation.invalid { border-color: var(--app-danger); color: var(--app-danger); background: var(--app-danger-surface); }
+.deck-validation-errors { @apply grid gap-1 text-sm; color: var(--app-danger); }
+.deck-transfer-status { @apply text-sm; color: var(--app-success); }
 .modal-shell .deck-import-dialog { @apply my-auto w-full max-w-[640px] shadow-[0_24px_70px_rgba(0,0,0,.5)]; }
 .modal-shell > .modal-shell-panel.deck-import-shell { width: min(640px, 100%); }
 .deck-management-actions { @apply grid grid-cols-3 gap-3 max-[600px]:grid-cols-1; }
@@ -331,4 +332,9 @@ onMounted(() => {
 .modal-shell .deck-import-examples code { @apply block whitespace-pre-wrap p-2 font-mono; border: 1px solid var(--app-border); border-radius: 8px; background: var(--app-surface-muted); color: var(--app-text); }
 .modal-shell .deck-import-text { @apply min-h-36 w-full p-3 font-mono outline-0; border: 1px solid var(--app-border); border-radius: 10px; background: var(--app-input); color: var(--app-text); }
 .modal-shell .deck-import-text:focus { border-color: var(--app-accent); box-shadow: 0 0 0 3px var(--app-focus-ring); }
+.deck-element { border-radius: 999px; color: var(--app-accent-strong); background: var(--app-accent-soft); align-self: center; }
+.deck-editor .card-heading { margin-bottom: 4px; }
+.deck-editor .step-number { border-radius: 50%; border-color: var(--ui-glass-stroke); }
+.deck-editor .setup-actions { display: flex; justify-content: space-between; flex-wrap: wrap; gap: 12px; padding-top: 16px; border-top: 1px solid var(--app-border); }
+@media(max-width:600px) { .deck-grid { grid-template-columns: 28px repeat(5,minmax(0,1fr)); gap: 5px; } .deck-count-control { flex-direction: column; gap: 4px; padding: 4px; } .deck-count-control button { width: 100%; height: 30px; } .deck-count-control span { min-width: 0; } .deck-grid > strong { font-size: 11px; } .deck-validation { gap: 10px; font-size: 12px; } }
 </style>

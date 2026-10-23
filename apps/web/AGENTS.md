@@ -42,8 +42,8 @@
 
 - Keep E2E tests on Playwright's default timeouts whenever possible. If a test
   times out, inspect the error, retained trace, console, or network evidence to
-  locate the block before increasing a timeout. Use `playwright-cli` when live
-  interaction would resolve remaining uncertainty.
+  locate the block before increasing a timeout. Use the built-in browser when
+  live interaction would resolve remaining uncertainty.
 - Tests and development scenarios must be deterministic. Do not scan seed ranges,
   retry random outcomes, or rely on probability to reach the required state. When
   a scenario needs specific Cards, use a fixed Rules Engine-owned deck order and

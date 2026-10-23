@@ -1,19 +1,19 @@
 <template>
-  <main class="lobby-page replay-detail-page">
-      <section class="lobby-content" aria-label="重播播放器">
-        <div class="lobby-heading"><h1>重播</h1><button class="ghost-button" type="button" @click="openReplays">返回重播清單</button></div>
-        <p v-if="replayLoading && !replayFrame" class="muted" role="status" aria-live="polite">正在載入重播…</p>
-        <p v-else-if="replayLoading" class="muted" role="status" aria-live="polite">正在切換重播畫面…</p>
+  <main class="workspace-page replay-detail-page">
+      <section class="replay-content" aria-label="重播播放器">
+        <PageIntro title="重播" eyebrow="回看戰局" back-to="/replays" back-label="重播清單" />
+        <p v-if="replayLoading && !replayFrame" class="page-notice" role="status" aria-live="polite">正在載入重播…</p>
+        <p v-else-if="replayLoading" class="page-notice" role="status" aria-live="polite">正在切換重播畫面…</p>
         <template v-if="replayFrame">
-          <p>第 {{ replayFrame.currentStep }} / {{ replayFrame.totalSteps }} 步</p>
-          <p v-if="replayError" class="form-error" role="alert">{{ replayError }}</p>
-          <div class="result-actions">
+
+          <p v-if="replayError" class="page-notice page-notice--error" role="alert">{{ replayError }}</p>
+          <nav class="replay-toolbar ui-glass" aria-label="重播控制"><strong class="replay-progress" aria-live="polite">第 {{ replayFrame.currentStep }} / {{ replayFrame.totalSteps }} 步</strong>
             <button class="ghost-button" :disabled="replayFrame.currentStep === 0" @click="loadReplayFrame(0)">第一步</button>
             <button class="ghost-button" :disabled="replayFrame.currentStep === 0" @click="loadReplayFrame(replayFrame.currentStep - 1)">上一步</button>
             <button class="ghost-button" :disabled="replayFrame.currentStep === replayFrame.totalSteps" @click="loadReplayFrame(replayFrame.currentStep + 1)">下一步</button>
             <button class="ghost-button" :disabled="replayFrame.currentStep === replayFrame.totalSteps" @click="loadReplayFrame(replayFrame.totalSteps)">最後一步</button>
             <button class="ghost-button" @click="copyReplayLink(replayRouteId)">分享連結</button>
-          </div>
+          </nav>
           <div class="battle-layout replay-layout battle-scene" :style="replayLayoutStyle">
             <BattlefieldBoard
               class="replay-battlefield"
@@ -66,7 +66,7 @@
             @close="closeEventSheet"
           />
         </template>
-        <div v-else-if="!replayLoading" class="replay-route-error" role="alert">
+        <div v-else-if="!replayLoading" class="replay-route-error page-surface" role="alert">
           <p class="muted">{{ replayError }}</p>
           <button v-if="replayRouteId" class="ghost-button" type="button" @click="loadReplayFrame(0)">重試</button>
         </div>
@@ -213,9 +213,16 @@ watch(() => battleRecordContentRevision(battleRecordGroups.value), () => {
 <style scoped>
 @reference "../../assets/css/main.css";
 
-.lobby-page { @apply mx-auto max-w-[1180px] px-[30px] pt-15 pb-[90px] max-[600px]:px-4 max-[600px]:py-9; }
 .replay-detail-page { max-width: 1680px; }
-.lobby-content { @apply grid gap-5; }.lobby-heading { @apply flex items-center justify-between gap-4; }.lobby-heading h1 { @apply font-serif text-3xl text-gold-light; }.result-actions { @apply mt-2 grid grid-cols-2 gap-3; }.result-actions .ghost-button { @apply border-[var(--app-border-strong)] text-[var(--app-text)]; }
+.replay-content { display: grid; gap: 20px; }
+.replay-content .page-intro { margin-bottom: 0; }
+.replay-detail-page:has(.battle-scene) :deep(.page-intro) { color: #f4f0e2; text-shadow: 0 2px 16px #10251b; }
+.replay-detail-page:has(.battle-scene) :deep(.page-intro :is(.page-back,.page-kicker)) { color: #eed699; }
+.replay-toolbar { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; padding: 14px 18px; border-radius: 20px; }
+.replay-progress { margin-right: auto; font-size: 13px; }
+.replay-toolbar .ghost-button { min-height: 40px; }
+.replay-route-error { display: grid; justify-items: start; gap: 18px; }
+@media(max-width:600px) { .replay-toolbar { display: grid; grid-template-columns: repeat(3,minmax(0,1fr)); padding: 12px; gap: 8px; } .replay-progress { grid-column: 1 / -1; padding-bottom: 4px; } .replay-toolbar .ghost-button { padding-inline: 8px; font-size: 11px; } }
 .replay-layout { @apply grid min-h-[min(700px,calc(100dvh-240px))]; grid-template-columns: minmax(0, 1fr) clamp(270px, 26vw, 360px); gap: 10px; }
 .replay-battlefield { @apply min-h-[620px] rounded-[18px] shadow-[var(--app-shadow-md)]; }
 .replay-sidebar { @apply grid min-h-0 grid-rows-[minmax(0,1fr)] overflow-hidden; }

@@ -216,4 +216,6 @@ onBeforeUnmount(() => {
 .clock-team dd { margin: 0; font-variant-numeric: tabular-nums; overflow-wrap: anywhere; max-width: 100%; }
 @media (max-width: 600px) { .competition-clock { padding: .5rem; } .clock-refresh { padding: .375rem .5rem; font-size: .75rem; } }
 @media (max-width: 340px) { .clock-teams { grid-template-columns: minmax(0, 1fr); } }
+.competition-clock { border: 1px solid var(--ui-glass-stroke); border-radius: 22px; background: var(--ui-glass-fill); box-shadow: var(--ui-glass-shadow); -webkit-backdrop-filter: blur(18px); backdrop-filter: blur(18px); }
+.competition-clock :is(input, select, textarea, button):focus-visible { outline: 2px solid var(--app-accent); outline-offset: 3px; }
 </style>

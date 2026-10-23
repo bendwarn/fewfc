@@ -302,4 +302,6 @@ onBeforeUnmount(() => {
   .saved-deck-actions { @apply grid w-full; }
   .saved-deck-actions > * { @apply w-full; }
 }
+.deck-submission { border: 1px solid var(--ui-glass-stroke); border-radius: 22px; background: var(--ui-glass-fill); box-shadow: var(--ui-glass-shadow); -webkit-backdrop-filter: blur(18px); backdrop-filter: blur(18px); }
+.deck-submission :is(input, select, textarea, button):focus-visible { outline: 2px solid var(--app-accent); outline-offset: 3px; }
 </style>

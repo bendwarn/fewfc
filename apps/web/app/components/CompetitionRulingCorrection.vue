@@ -287,10 +287,10 @@ p, li { font-size: .875rem; line-height: 1.65; overflow-wrap: anywhere; }
 .hint { color: var(--app-text-muted); }
 .lookup-form, .correction-form { display: grid; gap: .875rem; min-width: 0; }
 label { display: grid; min-width: 0; gap: .5rem; font-size: .875rem; }
-input, select, textarea { box-sizing: border-box; width: 100%; min-width: 0; border: 1px solid var(--app-border); border-radius: 9px; padding: .75rem; color: var(--app-text); background: var(--app-input); }
+input, select, textarea { box-sizing: border-box; width: 100%; min-width: 0; border: 1px solid var(--app-border); border-radius: 12px; padding: .75rem; color: var(--app-text); background: var(--app-input); }
 textarea { resize: vertical; }
-button { min-height: 44px; min-width: 0; border: 1px solid var(--app-border); border-radius: 9px; padding: .75rem 1rem; color: var(--app-text); background: var(--app-control); white-space: normal; overflow-wrap: anywhere; cursor: pointer; }
-.primary-button { border-color: var(--app-accent); color: var(--app-on-accent); background: var(--app-accent); }
+button { min-height: 44px; min-width: 0; border: 1px solid var(--app-border); border-radius: 12px; padding: .75rem 1rem; color: var(--app-text); background: var(--app-control); white-space: normal; overflow-wrap: anywhere; cursor: pointer; }
+.primary-button { border-color: var(--app-accent); color: var(--ui-on-gold); background: var(--ui-gold-fill); }
 .ghost-button { background: var(--app-surface); }
 button:disabled { opacity: .6; cursor: not-allowed; }
 button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-visible { outline: 2px solid var(--app-accent-strong); outline-offset: 3px; box-shadow: 0 0 0 4px var(--app-focus-ring); }
@@ -299,4 +299,6 @@ button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-
 .pending-note { border-color: var(--app-accent-strong); }
 .error { color: var(--app-danger); }
 @media (max-width: 600px) { .correction-panel { padding: 1rem; } }
+.correction-panel { border: 1px solid var(--ui-glass-stroke); border-radius: 22px; background: var(--ui-glass-fill); box-shadow: var(--ui-glass-shadow); -webkit-backdrop-filter: blur(18px); backdrop-filter: blur(18px); }
+.correction-panel :is(input, select, textarea, button):focus-visible { outline: 2px solid var(--app-accent); outline-offset: 3px; }
 </style>

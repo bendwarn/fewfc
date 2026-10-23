@@ -1,16 +1,9 @@
 <template>
-  <main class="account-page">
-    <section class="setup-card account-card" aria-labelledby="account-heading">
-      <div class="card-heading">
-        <span class="step-number" aria-hidden="true">帳</span>
-        <div>
-          <h1 id="account-heading">帳號設定</h1>
-          <p>管理登入方式。社群帳號只用於登入，不會變更遊戲內名稱。</p>
-        </div>
-      </div>
-
-      <p v-if="message" class="account-message" role="status">{{ message }}</p>
-      <p v-if="errorMessage" class="form-error" role="alert">{{ errorMessage }}</p>
+  <main class="account-page workspace-page page-scene" data-scene="inn">
+    <PageIntro title="帳號設定" eyebrow="玩家身份" description="管理登入方式。社群帳號只用於登入，不會變更遊戲內名稱。" back-to="/rooms" back-label="房間大廳" />
+    <section class="setup-card account-card" aria-label="管理登入方式">
+      <p v-if="message" class="page-notice page-notice--success" role="status">{{ message }}</p>
+      <p v-if="errorMessage" class="page-notice page-notice--error" role="alert">{{ errorMessage }}</p>
 
       <section aria-labelledby="linked-heading">
         <h2 id="linked-heading">已連結的登入方式</h2>
@@ -30,7 +23,7 @@
 
       <section aria-labelledby="link-heading">
         <h2 id="link-heading">新增登入方式</h2>
-        <p v-if="state.isAnonymous && !state.canUpgrade" class="form-error" role="alert">{{ state.upgradeMessage }}</p>
+        <p v-if="state.isAnonymous && !state.canUpgrade" class="page-notice page-notice--error" role="alert">{{ state.upgradeMessage }}</p>
         <div class="account-actions">
           <button
             v-for="provider in enabledProviders"
@@ -146,12 +139,15 @@ onMounted(() => {
 <style scoped>
 @reference "../assets/css/main.css";
 
-.account-page { @apply mx-auto w-full max-w-2xl p-5 md:p-10; }
+.account-page { max-width: 840px; }
 .account-card { @apply grid gap-7; }
-.account-card h2 { @apply mb-3 font-serif text-lg; }
-.account-list { @apply grid gap-2 p-0; list-style: none; }
-.account-list li { @apply flex items-center justify-between gap-3 border border-line px-4 py-3 text-sm; border-radius: 9px; }
 .account-list .secondary-button { @apply min-h-9 px-3 text-xs; }
-.account-actions { @apply flex flex-wrap gap-2; }
-.account-message { @apply border px-3 py-2 text-sm; border-color: var(--app-accent); border-radius: 8px; color: var(--app-text); }
+.account-card section { display: grid; gap: 16px; }
+.account-card section + section { border-top: 1px solid var(--app-border); padding-top: 24px; }
+.account-card h2 { font: 700 20px / 1.5 var(--font-serif); }
+.account-list { display: grid; gap: 12px; margin: 0; padding: 0; list-style: none; }
+.account-list li { display: flex; align-items: center; justify-content: space-between; gap: 16px; padding: 16px; border: 1px solid var(--ui-glass-stroke); border-radius: 16px; background: color-mix(in srgb,var(--app-surface) 80%,transparent); }
+.account-list .secondary-button { min-height: 40px; font-size: 12px; }
+.account-actions { display: flex; flex-wrap: wrap; gap: 12px; }
+.account-card .muted { font-size: 13px; line-height: 1.8; color: var(--app-text-muted); }
 </style>

@@ -76,11 +76,11 @@ onBeforeUnmount(() => window.removeEventListener('click', closeOnOutsideClick))
   height: 36px;
   padding: 0;
   place-items: center;
-  border: 1px solid var(--app-border-strong);
+  border: 1px solid var(--ui-glass-stroke);
   border-radius: 999px;
-  background: var(--app-control);
+  background: var(--ui-glass-fill);
   color: var(--app-text);
-  box-shadow: var(--app-shadow-sm);
+  box-shadow: inset 0 1px rgba(255,255,243,.45);
 }
 .theme-selector-trigger:hover,
 .theme-selector-trigger:focus-visible { border-color: var(--app-accent); outline: none; }
@@ -92,15 +92,19 @@ onBeforeUnmount(() => window.removeEventListener('click', closeOnOutsideClick))
   display: grid;
   min-width: 160px;
   overflow: hidden;
-  border: 1px solid var(--app-border);
-  border-radius: 14px;
-  background: var(--app-surface-raised);
+  border: 1px solid var(--ui-glass-stroke);
+  border-radius: 18px;
+  padding: 6px;
+  background: var(--ui-popover-fill);
+  -webkit-backdrop-filter: blur(24px);
+  backdrop-filter: blur(24px);
   color: var(--app-text);
-  box-shadow: var(--app-shadow-lg);
+  box-shadow: var(--ui-glass-shadow);
 }
 .theme-selector-menu button {
   display: grid;
-  min-height: 42px;
+  min-height: 44px;
+  border-radius: 12px;
   grid-template-columns: 24px 1fr 18px;
   align-items: center;
   gap: 8px;

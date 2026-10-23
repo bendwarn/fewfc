@@ -69,3 +69,18 @@ and remove an old case only after its replacement passes. Keep Nuxt-specific
 composable, router, transport, and application integration contracts in their
 appropriate unit or integration suites. Retain representative E2E flows for real
 service wiring rather than enumerating every UI or rules variant through them.
+
+## Full page dependency fixtures
+
+`WorkspacePages.stories.ts` renders the production login, deck, account, replay,
+competition, privacy and error pages. `.storybook/page-imports.ts` supplies the
+Nuxt auto-imports used by those SFCs, while `mocks/page-runtime.ts` provides an
+isolated route, session and request handler. Every story resets its dependencies;
+these requests never reach authentication or game services. The rules catalog
+fixture comes from the Rust WASM `fewfc_rules_catalog` export.
+
+The page stories cover both themes, loading failures, empty replay collections,
+login failure, deck import feedback, replay deletion confirmation and focus
+restoration. `workspace-layout.spec.ts` checks the composed pages at desktop and
+mobile widths. These tests establish UI behavior only; the real service and
+router contracts remain in integration and E2E suites.

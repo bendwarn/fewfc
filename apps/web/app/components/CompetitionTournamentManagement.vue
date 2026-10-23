@@ -381,8 +381,8 @@ fieldset, .summary, .pending-notice { border: 1px solid var(--app-border, #aaa);
 legend { padding-inline: .25rem; }
 .fields { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 15rem), 1fr)); gap: 1rem; }
 label { display: block; margin-block: .5rem; }
-input:not([type="checkbox"]), select { display: block; width: 100%; margin-top: .35rem; min-height: 2.75rem; padding: .5rem; color: var(--app-text); background: var(--app-input); border: 1px solid var(--app-border); border-radius: .25rem; }
-button { max-width: 100%; min-height: 2.75rem; white-space: normal; padding: .5rem .75rem; margin-block: .5rem; color: var(--app-text); background: var(--app-control); border: 1px solid var(--app-border); border-radius: .25rem; }
+input:not([type="checkbox"]), select { display: block; width: 100%; margin-top: .35rem; min-height: 2.75rem; padding: .5rem; color: var(--app-text); background: var(--app-input); border: 1px solid var(--app-border); border-radius: 12px; }
+button { max-width: 100%; min-height: 2.75rem; white-space: normal; padding: .5rem .75rem; margin-block: .5rem; color: var(--app-text); background: var(--app-control); border: 1px solid var(--app-border); border-radius: 12px; }
 button:disabled, fieldset:disabled { opacity: .65; }
 .check { display: flex; align-items: flex-start; gap: .5rem; }
 .check input { flex-shrink: 0; margin-top: .25rem; }
@@ -392,4 +392,6 @@ dl { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: .
 dd { margin: 0; }
 :is(button, input, select):focus-visible { outline: 2px solid var(--app-accent); outline-offset: 3px; }
 @media (max-width: 480px) { fieldset, .summary, .pending-notice { padding: .75rem; } .tie-row { flex-wrap: wrap; } }
+.tournament-management { border: 1px solid var(--ui-glass-stroke); border-radius: 22px; background: var(--ui-glass-fill); box-shadow: var(--ui-glass-shadow); -webkit-backdrop-filter: blur(18px); backdrop-filter: blur(18px); }
+.tournament-management :is(input, select, textarea, button):focus-visible { outline: 2px solid var(--app-accent); outline-offset: 3px; }
 </style>

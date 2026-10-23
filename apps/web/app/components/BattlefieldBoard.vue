@@ -203,7 +203,7 @@
 
     <div class="center-stack">
       <div class="board-center">
-        <div class="formation-field">
+        <div class="formation-field" :class="{ 'is-terminal': state.status === 'Finished' }">
           <template v-if="state.status === 'Finished'">
             <div class="terminal-resolution">
               <slot name="terminal-resolution" />
@@ -1134,6 +1134,7 @@ function phaseLabel(value: string) { return { TurnStart: '回合開始', ActiveE
   .shared-discard-dock :deep(.discard-pile-label) { display: none; }
   .shared-discard-dock :deep(.discard-pile-trigger) { width: 30px; }
   .formation-field { border-radius: 16px; min-height: 0; padding: 4px 6px; }
+  .formation-field.is-terminal { padding-block: 0; }
   .previous-formation { min-height: 46px; }
   .formation-cards { min-height: 30px; }
   .formation-cards :deep(.formation-card) { width: clamp(30px, 9vw, 42px); }

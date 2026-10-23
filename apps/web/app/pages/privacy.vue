@@ -1,18 +1,10 @@
 <template>
   <div class="privacy-page">
-    <header class="privacy-header">
-      <NuxtLink class="privacy-brand" to="/" aria-label="返回五行戰鬥牌首頁">
-        <img src="/header-banner.svg" alt="五行戰鬥牌" width="760" height="120">
-      </NuxtLink>
-      <div class="privacy-header-actions">
-        <NuxtLink to="/">返回首頁</NuxtLink>
-        <ThemeSelector />
-      </div>
-    </header>
+    <PublicHeader />
 
     <main class="privacy-main">
       <article class="privacy-policy">
-        <p class="privacy-kicker">PRIVACY POLICY</p>
+        <p class="privacy-kicker">個人資料與服務</p>
         <h1>隱私權政策</h1>
         <p class="privacy-updated">生效日期：2026 年 8 月 28 日</p>
         <p class="privacy-lead">五行戰鬥牌重視你的隱私。本政策說明線上遊戲服務如何蒐集、使用、保存及保護個人資料，以及你可以如何提出資料請求。</p>
@@ -90,14 +82,11 @@ definePageMeta({ layout: 'landing' })
 </script>
 
 <style scoped>
-.privacy-page { min-height: 100vh; background: var(--app-canvas); }
-.privacy-header { display: flex; width: min(calc(100% - 40px), 980px); min-height: 92px; margin: 0 auto; align-items: center; justify-content: space-between; gap: 24px; border-bottom: 1px solid var(--app-border); }
-.privacy-brand { display: block; min-width: 0; }.privacy-brand img { display: block; width: min(300px, 46vw); height: auto; border-radius: 7px; box-shadow: var(--app-shadow-sm); }
-.privacy-header-actions { display: flex; align-items: center; gap: 18px; }.privacy-header-actions > a { color: var(--app-text-muted); font-size: 13px; text-decoration: none; }.privacy-header-actions > a:hover, .privacy-header-actions > a:focus-visible { color: var(--app-accent-strong); }
+.privacy-page { min-height: 100vh; background: radial-gradient(ellipse at top, var(--app-accent-soft), transparent 60%), var(--app-canvas); display: flow-root; }
 .privacy-main { width: min(calc(100% - 40px), 820px); margin: 0 auto; padding: clamp(56px, 8vw, 96px) 0; }
-.privacy-policy { border: 1px solid var(--app-border); border-radius: 20px; background: var(--app-surface); padding: clamp(28px, 6vw, 64px); box-shadow: var(--app-shadow-md); }
+.privacy-policy { border: 1px solid var(--ui-glass-stroke); border-radius: 24px; background: var(--app-surface); padding: clamp(28px, 6vw, 64px); box-shadow: var(--app-shadow-md); }
 .privacy-kicker { color: var(--app-accent-strong); font-size: 11px; font-weight: 800; letter-spacing: .16em !important; }.privacy-policy h1 { margin-top: 14px; font-family: var(--font-serif); font-size: clamp(36px, 6vw, 58px); }.privacy-updated { margin-top: 12px; color: var(--app-text-soft); font-size: 12px; }.privacy-lead { margin-top: 28px; color: var(--app-text-muted); font-size: 16px; line-height: 1.9; }
 .privacy-policy section { margin-top: 42px; padding-top: 34px; border-top: 1px solid var(--app-border); }.privacy-policy h2 { font-family: var(--font-serif); font-size: 22px; }.privacy-policy p, .privacy-policy li { color: var(--app-text-muted); font-size: 14px; line-height: 1.9; }.privacy-policy section p, .privacy-policy ul { margin-top: 14px; }.privacy-policy ul { display: grid; gap: 8px; padding-left: 22px; }.privacy-policy strong { color: var(--app-text); }.privacy-policy a { color: var(--app-accent-strong); text-underline-offset: 3px; }
 .privacy-footer { display: flex; width: min(calc(100% - 40px), 980px); min-height: 100px; margin: 0 auto; align-items: center; justify-content: space-between; border-top: 1px solid var(--app-border); color: var(--app-text-muted); font-size: 11px; }.privacy-footer a { color: inherit; text-decoration: none; }.privacy-footer a:hover, .privacy-footer a:focus-visible { color: var(--app-accent-strong); }
-@media (max-width: 620px) { .privacy-header { min-height: 76px; }.privacy-header-actions > a { display: none; }.privacy-main { width: min(calc(100% - 28px), 820px); padding: 36px 0 56px; }.privacy-policy { border-radius: 14px; padding: 26px 20px; }.privacy-policy section { margin-top: 34px; padding-top: 28px; }.privacy-footer { width: min(calc(100% - 28px), 980px); min-height: 90px; } }
+@media (max-width: 620px) { .privacy-main { width: min(calc(100% - 28px), 820px); padding: 36px 0 56px; }.privacy-policy { border-radius: 14px; padding: 26px 20px; }.privacy-policy section { margin-top: 34px; padding-top: 28px; }.privacy-footer { width: min(calc(100% - 28px), 980px); min-height: 90px; } }
 </style>

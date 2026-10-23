@@ -1,12 +1,7 @@
 <template>
-  <main class="competition-detail-page">
-    <header class="detail-heading">
-      <div>
-        <NuxtLink class="back-link" to="/competitions">← 競賽對局</NuxtLink>
-        <p class="eyebrow">賽事報名</p>
-        <h1>競賽對局・論劍</h1>
-        <p class="muted">賽事 ID：<span class="identifier">{{ competitionId || '—' }}</span></p>
-      </div>
+  <main class="competition-detail-page workspace-page page-scene page-scene--quiet" data-scene="hall">
+    <PageIntro title="競賽對局・論劍" eyebrow="賽事報名" back-to="/competitions" back-label="競賽對局">
+      <template #description><p class="identifier">賽事 ID：{{ competitionId || '—' }}</p></template>
       <button
         v-if="session.userId.value && registration"
         class="ghost-button refresh-button"
@@ -16,7 +11,7 @@
       >
         {{ loading ? '更新中…' : '重新整理狀態' }}
       </button>
-    </header>
+    </PageIntro>
 
     <section v-if="!sessionLoaded || loading" class="panel" role="status" aria-live="polite">
       {{ !sessionLoaded ? '正在確認登入狀態…' : '正在載入賽事報名狀態…' }}
@@ -641,14 +636,14 @@ onMounted(() => {
 .back-link { @apply w-fit text-sm text-gold-light no-underline hover:underline; }
 .muted { @apply m-0 text-sm leading-6; color: var(--app-text-muted); }
 .identifier { @apply break-all font-mono text-[.92em]; }
-.panel { @apply grid gap-5 border border-line bg-panel p-6 max-[600px]:gap-4 max-[600px]:p-4; border-radius: 16px; box-shadow: var(--app-shadow-md); }
+.panel { @apply grid gap-5 border border-line bg-panel p-6 max-[600px]:gap-4 max-[600px]:p-4; border-color: var(--ui-glass-stroke); border-radius: 24px; background: var(--ui-glass-fill); box-shadow: var(--ui-glass-shadow); backdrop-filter: blur(18px); -webkit-backdrop-filter: blur(18px); }
 .announcement-title-row, .teams-heading { @apply flex items-start justify-between gap-4; }
 .announcement-plan-card { @apply grid gap-4; }
 .announcement-plan-card h2, .announced-stage h3 { @apply m-0 font-serif text-xl; }
 .policy-line { @apply m-0 text-sm leading-6; }
 .ranking-score-policy ul { @apply mt-2 grid gap-1 pl-5; list-style: disc; }
 .announced-stage-list { @apply grid gap-4 p-0; list-style: none; }
-.announced-stage { @apply grid gap-3 border border-line bg-panel p-5; border-radius: 12px; }
+.announced-stage { @apply grid gap-3 border border-line bg-panel p-5; border-color: var(--ui-glass-stroke); border-radius: 16px; }
 .announced-stage h3 { @apply text-base; }
 .stage-facts { @apply m-0 grid grid-cols-2 gap-3 max-[620px]:grid-cols-1; }
 .stage-facts > div { @apply grid gap-1; }
@@ -664,14 +659,14 @@ onMounted(() => {
 .announcement-facts dt { @apply text-xs; color: var(--app-text-muted); }
 .announcement-facts dd { @apply m-0 break-words text-sm; }
 .module-fact { @apply col-span-2 max-[620px]:col-span-1; }
-.deck-notice, .register-panel { @apply grid gap-2 rounded-xl border border-line p-4; background: var(--app-surface-muted); }
+.deck-notice, .register-panel { @apply grid gap-2 rounded-xl border border-line p-4; background: color-mix(in srgb,var(--app-surface-muted) 80%,transparent); }
 .deck-notice strong, .register-panel h3 { @apply m-0 text-sm text-gold-light; }
 .deck-notice p, .register-panel p { @apply m-0 text-xs leading-5; color: var(--app-text-muted); }
 .organizer-actions { @apply flex flex-wrap items-center justify-between gap-3 border-t border-line pt-4; }
 .revision-label { @apply text-xs; color: var(--app-text-muted); }
 .empty-state { @apply rounded-xl border border-dashed border-line p-6 text-center text-sm; color: var(--app-text-muted); }
 .team-list { @apply grid gap-4; }
-.team-card { @apply grid gap-4 rounded-xl border border-line p-4; background: var(--app-surface-muted); }
+.team-card { @apply grid gap-4 rounded-xl border border-line p-4; background: color-mix(in srgb,var(--app-surface-muted) 80%,transparent); }
 .team-title { @apply flex items-start justify-between gap-4; }
 .team-title h3 { @apply m-0 break-all text-sm font-semibold; }
 .team-title p { @apply mt-1 text-xs; }
@@ -683,7 +678,7 @@ onMounted(() => {
 .team-actions { @apply flex flex-wrap gap-2 border-t border-line pt-3; }
 .register-form { @apply grid justify-items-start gap-3; }
 .register-form label { @apply grid w-full max-w-xl gap-2 text-sm; }
-.text-input { @apply min-h-12 w-full px-3.5; border: 1px solid var(--app-border); border-radius: 9px; background: var(--app-input); color: var(--app-text); }
+.text-input { @apply min-h-12 w-full px-3.5; border: 1px solid var(--ui-glass-stroke); border-radius: 12px; background: color-mix(in srgb,var(--app-input) 90%,transparent); color: var(--app-text); }
 .text-area { @apply min-h-24 resize-y py-3; }
 .status-panel { @apply justify-items-start; }
 .status-panel p { @apply m-0 text-sm; }
@@ -703,4 +698,7 @@ onMounted(() => {
   .organizer-actions > button { @apply w-full; }
   .module-fact { grid-column: auto; }
 }
+.workspace-page > :deep(.page-intro) { margin-bottom: 0; }
+.workspace-page { max-width: 1180px; }
+@media(max-width:600px) { .panel { border-radius: 20px; } }
 </style>

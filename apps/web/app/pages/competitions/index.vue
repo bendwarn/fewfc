@@ -1,10 +1,6 @@
 <template>
-  <main class="competition-page">
-    <header class="page-heading">
-      <p class="eyebrow">線上賽事</p>
-      <h1>競賽對局・論劍</h1>
-      <p class="muted">建立賽事公告，或輸入賽事 ID 查看隊伍與報名狀態。</p>
-    </header>
+  <main class="competition-page workspace-page page-scene page-scene--quiet" data-scene="hall">
+    <PageIntro title="競賽對局・論劍" eyebrow="群英入席" description="建立賽事公告，或輸入賽事 ID 查看隊伍與報名狀態。" back-to="/rooms" back-label="房間大廳" />
 
     <section class="panel lookup-panel" aria-labelledby="competition-lookup-title">
       <div>
@@ -546,21 +542,21 @@ onMounted(() => {
 .page-heading h1 { @apply m-0 font-serif text-3xl max-[600px]:text-2xl; }
 .page-heading > p:last-child { @apply m-0; }
 .eyebrow { @apply m-0 text-xs tracking-[.16em] text-gold-light; }
-.panel { @apply grid gap-6 border border-line bg-panel p-7 max-[600px]:gap-5 max-[600px]:p-4; border-radius: 16px; box-shadow: var(--app-shadow-md); }
+.panel { @apply grid gap-6 border border-line bg-panel p-7 max-[600px]:gap-5 max-[600px]:p-4; border-color: var(--ui-glass-stroke); border-radius: 24px; background: var(--ui-glass-fill); box-shadow: var(--ui-glass-shadow); backdrop-filter: blur(18px); -webkit-backdrop-filter: blur(18px); }
 .panel h2 { @apply m-0 font-serif text-xl; }
 .panel p { @apply m-0; }
 .lookup-panel { @apply grid-cols-[minmax(0,1fr)_minmax(280px,1fr)] items-end max-[760px]:grid-cols-1; }
 .lookup-form, .announcement-form, .stacked-field { @apply grid gap-2; }
 .lookup-form > label, .announcement-form > label, .stacked-field { @apply text-sm; }
 .inline-form { @apply grid grid-cols-[minmax(0,1fr)_auto] items-center gap-3 max-[480px]:grid-cols-1; }
-.text-input { @apply m-0 min-h-12 w-full px-3.5; border: 1px solid var(--app-border); border-radius: 9px; background: var(--app-input); color: var(--app-text); }
+.text-input { @apply m-0 min-h-12 w-full px-3.5; border: 1px solid var(--ui-glass-stroke); border-radius: 12px; background: color-mix(in srgb,var(--app-input) 90%,transparent); color: var(--app-text); }
 .text-input:focus { outline: 2px solid var(--app-focus-ring); outline-offset: 1px; border-color: var(--app-accent); }
 .inline-form .text-input { @apply min-w-0; }
 .section-heading { @apply flex items-start justify-between gap-4; }
 .announcement-form { @apply gap-7; }
 .announcement-form fieldset { @apply grid gap-3 border-0 p-0; }
 .stage-plan-fieldset, .source-slot-fieldset { @apply grid gap-4; }
-.stage-plan-card { @apply grid gap-4 border border-line bg-panel p-5; border-radius: 12px; }
+.stage-plan-card { @apply grid gap-4 border border-line bg-panel p-5; border-color: var(--ui-glass-stroke); border-radius: 16px; }
 .stage-plan-card h3 { @apply m-0 text-base font-semibold; }
 .source-slot { @apply grid grid-cols-[repeat(auto-fit,minmax(150px,1fr))] items-end gap-3 border-t border-line pt-3; }
 .source-slot label, .swiss-points label { @apply grid gap-2 text-sm; }
@@ -573,12 +569,12 @@ onMounted(() => {
 .field-grid { @apply grid grid-cols-2 gap-5 max-[640px]:grid-cols-1; }
 .field-grid > label { @apply grid content-start gap-2 text-sm; }
 .choice-row { @apply flex flex-wrap gap-3; }
-.choice-card { @apply flex min-h-12 items-center gap-2 border border-line px-4 py-3 text-sm; border-radius: 10px; background: var(--app-surface-muted); }
+.choice-card { @apply flex min-h-12 items-center gap-2 border border-line px-4 py-3 text-sm; border-radius: 10px; background: color-mix(in srgb,var(--app-surface-muted) 80%,transparent); }
 .choice-card:has(input:checked) { border-color: var(--app-accent); background: var(--app-accent-soft); }
-.fixed-ruleset { @apply grid content-start gap-2 rounded-xl border border-line p-4; background: var(--app-surface-muted); }
+.fixed-ruleset { @apply grid content-start gap-2 rounded-xl border border-line p-4; background: color-mix(in srgb,var(--app-surface-muted) 80%,transparent); }
 .fixed-ruleset strong { @apply text-sm text-gold-light; }
 .fixed-ruleset small, .muted, .policy-note, .stacked-field small { color: var(--app-text-muted); }
-.module-fieldset { @apply rounded-xl border border-line p-4; background: var(--app-surface-muted); }
+.module-fieldset { @apply rounded-xl border border-line p-4; background: color-mix(in srgb,var(--app-surface-muted) 80%,transparent); }
 .module-fieldset > p { @apply mb-4 text-xs leading-5; }
 .module-group { @apply mb-5 grid gap-3; }
 .module-group h3 { @apply m-0 text-sm; }
@@ -587,7 +583,7 @@ onMounted(() => {
 .policy-note { @apply border-t border-line pt-4 text-xs leading-5; }
 .invitees-field { @apply mt-2; }
 .text-area { @apply min-h-24 resize-y py-3; }
-.message { @apply grid gap-3 rounded-xl border border-line p-4 text-sm; background: var(--app-surface-muted); }
+.message { @apply grid gap-3 rounded-xl border border-line p-4 text-sm; background: color-mix(in srgb,var(--app-surface-muted) 80%,transparent); }
 .error-message { border-color: var(--app-danger); background: var(--app-danger-surface); }
 .warning-message { border-color: var(--app-accent); }
 .form-actions { @apply flex justify-end max-[480px]:grid; }
@@ -598,4 +594,7 @@ onMounted(() => {
   .inline-form .secondary-button, .form-actions .primary-button { @apply w-full; }
   .page-heading h1 { @apply text-[26px]; }
 }
+.workspace-page > :deep(.page-intro) { margin-bottom: 0; }
+.workspace-page { max-width: 1180px; }
+@media(max-width:600px) { .panel { border-radius: 20px; } }
 </style>

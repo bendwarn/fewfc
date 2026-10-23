@@ -749,7 +749,7 @@ onBeforeUnmount(() => {
   flex: 0 0 auto;
   min-height: 2.75rem;
   border: 1px solid var(--app-border-strong);
-  border-radius: 9px;
+  border-radius: 12px;
   padding: .55rem .85rem;
   background: var(--app-control);
   color: var(--app-text);
@@ -758,7 +758,7 @@ onBeforeUnmount(() => {
 .refresh-button:disabled { cursor: not-allowed; opacity: .55; }
 .refresh-button:focus-visible { outline: 3px solid var(--app-focus-ring); outline-offset: 2px; }
 
-.state-message { border-radius: 9px; padding: .8rem 1rem; background: var(--app-surface-muted); }
+.state-message { border-radius: 12px; padding: .8rem 1rem; background: var(--app-surface-muted); }
 .state-message.error { border: 1px solid var(--app-danger); background: var(--app-danger-surface); }
 .state-message.not-ready { border: 1px solid var(--app-border); }
 .revision-note { color: var(--app-text-muted); }
@@ -777,7 +777,7 @@ onBeforeUnmount(() => {
 .swiss-progress-item { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: .75rem; border: 1px solid var(--app-border); border-radius: 8px; padding: .55rem .7rem; background: var(--app-surface-muted); font-size: .82rem; }
 .review-note { margin: 0; border-left: 3px solid var(--app-accent); padding: .65rem .8rem; background: var(--app-accent-soft); font-size: .875rem; line-height: 1.55; }
 .correction-note { font-size: .8rem; }
-.round-card, .match-card, .standing-card { display: grid; min-width: 0; gap: .65rem; border: 1px solid var(--app-border); border-radius: 9px; padding: .75rem; background: var(--app-surface-muted); }
+.round-card, .match-card, .standing-card { display: grid; min-width: 0; gap: .65rem; border: 1px solid var(--app-border); border-radius: 12px; padding: .75rem; background: var(--app-surface-muted); }
 .round-card h5 { font-size: .9rem; }
 .match-heading { align-items: center; }
 .match-heading h6 { display: grid; min-width: 0; gap: .2rem; font-size: .82rem; }
@@ -820,4 +820,6 @@ onBeforeUnmount(() => {
   .swiss-progress-item { grid-template-columns: minmax(0, 1fr); }
   .match-heading { align-items: flex-start; flex-direction: column; }
 }
+.tournament-view { border: 1px solid var(--ui-glass-stroke); border-radius: 22px; background: var(--ui-glass-fill); box-shadow: var(--ui-glass-shadow); -webkit-backdrop-filter: blur(18px); backdrop-filter: blur(18px); }
+.tournament-view :is(input, select, textarea, button):focus-visible { outline: 2px solid var(--app-accent); outline-offset: 3px; }
 </style>

@@ -457,7 +457,7 @@ onBeforeUnmount(() => {
   min-height: 3rem;
   width: 100%;
   border: 1px solid var(--app-border);
-  border-radius: 9px;
+  border-radius: 12px;
   padding: 0 .875rem;
   background: var(--app-input);
   color: var(--app-text);
@@ -480,4 +480,6 @@ onBeforeUnmount(() => {
   .lookup-form > button, .room-link { width: 100%; }
   .current-game { align-items: stretch; }
 }
+.participant-game-entry { border: 1px solid var(--ui-glass-stroke); border-radius: 22px; background: var(--ui-glass-fill); box-shadow: var(--ui-glass-shadow); -webkit-backdrop-filter: blur(18px); backdrop-filter: blur(18px); }
+.participant-game-entry :is(input, select, textarea, button):focus-visible { outline: 2px solid var(--app-accent); outline-offset: 3px; }
 </style>

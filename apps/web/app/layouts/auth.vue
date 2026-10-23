@@ -1,52 +1,60 @@
 <template>
-  <div class="auth-shell">
-    <div class="auth-theme-selector"><ThemeSelector /></div>
-    <section class="login-hero">
-      <div class="hero-copy">
-        <p class="kicker"><span /> 五行交鋒，陣法成局</p>
-        <h1>以牌為陣，<br><em>決勝五行。</em></h1>
-        <p class="hero-description">運用金、木、水、火、土的生剋關係，組合陣法、洞察對手，在每一次出牌中掌握戰局。</p>
-        <div class="element-orbit" aria-hidden="true">
-          <span class="element metal">金</span><span class="element wood">木</span><span class="element water">水</span><span class="element fire">火</span><span class="element earth">土</span><div class="orbit-core">五行</div>
+  <div class="auth-shell page-scene" data-scene="inn">
+    <PublicHeader />
+    <main class="auth-content">
+      <section class="login-hero" aria-label="五行戰鬥牌">
+        <div class="hero-copy">
+          <p class="kicker">五行之間 · 以牌會友</p>
+          <h1>入席，<br><em>下一局等你。</em></h1>
+          <p class="hero-description">邀好友相聚，或結識新的對手。<br>從這裡開始你的五行對局。</p>
+          <div class="auth-elements" aria-hidden="true"><span>金</span><span>木</span><span>水</span><span>火</span><span>土</span></div>
         </div>
-      </div>
-      <footer class="hero-footer"><span>© 2026 CFECards</span><NuxtLink to="/privacy">隱私權政策</NuxtLink></footer>
-    </section>
-    <section class="login-panel"><slot /></section>
+      </section>
+      <section class="login-panel"><slot /></section>
+    </main>
+    <footer class="hero-footer"><span>© 2026 CFECards</span><NuxtLink to="/privacy">隱私權政策</NuxtLink></footer>
   </div>
 </template>
 
 <script setup lang="ts">
-import ThemeSelector from '~/components/ThemeSelector.vue'
+import PublicHeader from '~/components/PublicHeader.vue'
 </script>
 
 <style>
-@reference "../assets/css/main.css";
-
-.auth-shell { @apply relative grid grid-cols-[minmax(0,1.2fr)_minmax(420px,.8fr)] bg-ink; height: 100vh; height: 100dvh; grid-template-rows: minmax(0, 1fr); overflow: hidden; }
-.auth-theme-selector { @apply fixed top-5 right-5 z-30; }
-.login-hero { @apply relative grid content-center overflow-hidden bg-[#122019] px-[clamp(36px,9vw,150px)] py-16; min-height: 0; }
-.login-hero::before { content: ''; @apply absolute inset-0 opacity-70; background: radial-gradient(circle at 35% 35%, rgba(103,155,98,.22), transparent 38%), radial-gradient(circle at 70% 68%, rgba(191,148,64,.18), transparent 35%); }
-.hero-copy { @apply relative z-1 max-w-xl; }
-.kicker { @apply mb-5 flex items-center gap-3 text-xs font-bold tracking-[.2em] text-gold-light; }
-.kicker span { @apply h-px w-9 bg-gold; }
-.hero-copy h1 { @apply font-serif text-5xl leading-tight text-[#f1ead9] max-[1100px]:text-4xl; }
-.hero-copy em { @apply not-italic text-gold-light; }
-.hero-description { @apply mt-6 max-w-md text-sm leading-7 text-[#aeb9af]; }
-.element-orbit { @apply relative mt-12 h-52 w-52 rounded-full border border-[#526351]; }
-.element { @apply absolute grid size-9 place-items-center rounded-full border border-[#b99550] bg-[#18201b] text-xs text-gold-light; }
-.metal { top: -18px; left: calc(50% - 18px); }.wood { top: 28px; right: -18px; }.water { right: 8px; bottom: 8px; }.fire { bottom: 8px; left: 8px; }.earth { top: 28px; left: -18px; }
-.orbit-core { @apply absolute inset-[58px] grid place-items-center rounded-full border border-[#b99550] bg-[#1d2a21] font-serif text-gold-light; }
-.hero-footer { @apply absolute right-12 bottom-8 left-12 flex justify-between text-[10px] text-[#7f8982]; }
-.hero-footer a { color: inherit; text-decoration: none; }.hero-footer a:hover, .hero-footer a:focus-visible { color: #ddc17f; }
-.login-panel { @apply flex min-h-0 items-center justify-center px-6 py-12; overflow-y: auto; overscroll-behavior-y: contain; background: var(--app-canvas); }
-.auth-card { @apply w-full max-w-md; margin-block: auto; color: var(--app-text); }
-.mobile-brand { @apply mb-9 font-serif text-lg; }
-.auth-card h2 { @apply font-serif text-3xl; }.auth-card .muted { @apply mt-3 text-sm leading-6; color: var(--app-text-muted); }
-.auth-card form { @apply mt-8 grid gap-2; }.auth-card label { @apply mt-3 text-xs font-bold; color: var(--app-text); }
-.input-wrap { @apply flex items-center gap-2 px-3; border: 1px solid var(--app-border); border-radius: 10px; background: var(--app-input); }.input-wrap:focus-within { border-color: var(--app-accent); box-shadow: 0 0 0 3px var(--app-focus-ring); }.input-wrap span { @apply text-xs; color: var(--app-text-soft); }.input-wrap input { @apply min-w-0 flex-1 border-0 bg-transparent py-3 outline-0; color: var(--app-text); }
-.auth-shell .primary-button { @apply inline-flex min-h-10 items-center justify-center gap-2 px-4 py-2 text-sm font-bold; }.auth-shell .ghost-button, .auth-shell .secondary-button { @apply inline-flex min-h-10 items-center justify-center gap-2 bg-transparent px-4 py-2 text-sm; color: var(--app-text); }
-.login-button { @apply mt-5 w-full justify-between; }.auth-mode-button { @apply mt-5 border-0 bg-transparent text-sm underline underline-offset-4; color: var(--app-accent-strong); }.divider { @apply my-7 flex items-center gap-3 text-xs; color: var(--app-text-muted); }.divider::before, .divider::after { content: ''; @apply h-px flex-1; background: var(--app-border); }.auth-card .ghost-button { @apply w-full; }.terms { @apply mt-5 text-center text-[10px]; color: var(--app-text-soft); }.form-error { @apply mt-2 text-sm; color: var(--app-danger); }
-
-@media (max-width: 900px) { .auth-shell { grid-template-columns: 1fr; }.login-hero { display: none; }.login-panel { height: 100%; }.mobile-brand { display: none; } }
+.auth-shell { min-height: 100dvh; display: flex; flex-direction: column; }
+.auth-shell::before { background: linear-gradient(90deg, rgba(10,22,17,.74), rgba(10,22,17,.2)), var(--page-scene-image) center / cover; }
+.auth-shell .public-header { background: rgba(23,40,32,.72); color: #f4f0e2; }
+.auth-shell .public-header nav > a { color: #f4f0e2; }
+.auth-content { display: grid; grid-template-columns: minmax(0,1.1fr) minmax(360px,.9fr); gap: 64px; width: min(1180px,100%); margin: auto; padding: 48px 32px; }
+.login-hero { display: grid; align-content: center; min-width: 0; }
+.hero-copy { max-width: 560px; text-shadow: 0 2px 24px rgba(0,0,0,.45); }
+.kicker { margin-bottom: 24px; font-size: 12px; color: #eed699; }
+.hero-copy h1 { font: 900 clamp(40px,5vw,68px) / 1.4 var(--font-serif); color: #f4f0e2; }
+.hero-copy em { color: #eed699; font-style: normal; }
+.hero-description { margin-top: 24px; font-size: 15px; line-height: 2; color: #dce5dd; }
+.auth-elements { display: flex; gap: 16px; margin-top: 36px; }
+.auth-elements span { display: grid; place-items: center; width: 40px; height: 40px; border: 1px solid rgba(238,214,153,.38); border-radius: 50%; color: #eed699; font: 16px var(--font-serif); background: rgba(23,40,32,.44); }
+.login-panel { min-width: 0; display: flex; align-items: center; justify-content: center; }
+.auth-card { width: 100%; max-width: 440px; padding: 32px; border: 1px solid var(--ui-glass-stroke); border-radius: 28px; background: var(--ui-glass-fill); box-shadow: var(--ui-glass-shadow); backdrop-filter: blur(22px); -webkit-backdrop-filter: blur(22px); color: var(--app-text); }
+.mobile-brand { display: none; }
+.auth-card h2 { font: 700 30px / 1.4 var(--font-serif); }
+.auth-card .muted { margin-top: 12px; font-size: 13px; line-height: 1.8; color: var(--app-text-muted); }
+.auth-card form { margin-top: 24px; display: grid; gap: 8px; }
+.auth-card label { margin-top: 8px; font-size: 12px; font-weight: 600; }
+.input-wrap { display: flex; align-items: center; gap: 10px; padding: 0 14px; border: 1px solid var(--ui-glass-stroke); border-radius: 12px; background: color-mix(in srgb,var(--app-input) 90%,transparent); }
+.input-wrap:focus-within { outline: 2px solid var(--app-accent); outline-offset: 3px; }
+.input-wrap span { font-size: 12px; color: var(--app-text-muted); }
+.input-wrap input { min-width: 0; flex: 1; border: 0; background: transparent; padding: 13px 0; outline: 0; color: var(--app-text); }
+.login-button { margin-top: 16px; width: 100%; justify-content: space-between; }
+.auth-mode-button { margin-top: 18px; padding: 5px 0; border: 0; background: transparent; font-size: 13px; text-decoration: underline; text-underline-offset: 5px; color: var(--app-accent-strong); }
+.divider { margin: 22px 0 16px; display: flex; align-items: center; gap: 12px; font-size: 11px; color: var(--app-text-muted); }
+.divider::before, .divider::after { content: ''; height: 1px; flex: 1; background: var(--app-border-strong); opacity: .5; }
+.auth-card .ghost-button { width: 100%; min-height: 44px; }
+.social-button + .social-button { margin-top: 8px; }
+.terms { margin-top: 18px; text-align: center; font-size: 10px; line-height: 1.8; color: var(--app-text-muted); }
+.form-error { margin-top: 8px; font-size: 13px; line-height: 1.7; color: var(--app-danger); }
+.hero-footer { display: flex; justify-content: space-between; gap: 20px; width: min(1180px,100%); margin-inline: auto; padding: 20px 32px; color: #dce5dd; font-size: 11px; }
+.hero-footer a { color: inherit; text-decoration: none; }
+.hero-footer a:hover { text-decoration: underline; }
+@media(max-width:900px) { .auth-content { grid-template-columns: minmax(0,1fr); gap: 0; padding: 32px 16px; } .login-hero { display: none; } .auth-card { padding: 28px 24px; border-radius: 24px; } .hero-footer { padding: 20px 24px; } }
 </style>

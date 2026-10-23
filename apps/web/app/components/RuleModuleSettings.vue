@@ -74,3 +74,18 @@ function toggle(moduleId: string) {
   emit('update:enabledRuleModules', next)
 }
 </script>
+
+<style scoped>
+.waiting-rules { display: grid; gap: 14px; margin-top: 24px; padding: 0; border: 0; min-width: 0; }
+.waiting-rules legend { padding: 0 0 10px; font: 700 18px / 1.5 var(--font-serif); }
+.waiting-rules > p { margin: 0; font-size: 12px; color: var(--app-text-muted); }
+.waiting-rules details { font-size: 12px; }
+.waiting-rules summary { cursor: pointer; color: var(--app-accent-strong); }
+.waiting-rules details label { display: inline-flex; align-items: center; gap: 6px; padding: 12px 16px 0 0; }
+.waiting-rule-group { display: flex; flex-wrap: wrap; gap: 8px; }
+.waiting-rule-group h3 { width: 100%; margin: 0 0 2px; font-size: 12px; font-weight: 500; color: var(--app-text-muted); }
+.rule-toggle { display: inline-flex; align-items: center; gap: 8px; min-height: 36px; padding: 6px 10px; border: 1px solid var(--ui-glass-stroke); border-radius: 10px; background: color-mix(in srgb, var(--app-surface-muted) 76%, transparent); font-size: 12px; cursor: pointer; }
+.rule-toggle:has(input:disabled) { cursor: default; }
+.waiting-rules input { accent-color: var(--app-accent); }
+.waiting-rules :is(input, summary):focus-visible { outline: 2px solid var(--app-accent); outline-offset: 3px; }
+</style>

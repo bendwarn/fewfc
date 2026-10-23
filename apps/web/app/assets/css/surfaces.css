@@ -1,0 +1,28 @@
+/* 依目前亮暗主題計算材質，浮層移至 body 後仍能使用相同配色。 */
+:root {
+  --ui-glass-stroke: color-mix(in srgb, var(--app-border-strong) 48%, #e1f2e9);
+  --ui-glass-base: color-mix(in srgb, color-mix(in srgb, var(--app-surface) 82%, #567f74) 84%, transparent);
+  --ui-glass-fill: radial-gradient(ellipse at 0 0, rgba(240, 255, 247, .22), transparent 65%), linear-gradient(145deg, rgba(228, 245, 234, .08), transparent 60%), linear-gradient(var(--ui-glass-base), var(--ui-glass-base));
+  --ui-popover-fill: linear-gradient(145deg, rgba(229, 250, 236, .13), transparent 65%), color-mix(in srgb, var(--app-surface-raised) 95%, transparent);
+  --ui-glass-shadow: inset 0 1px 1px rgba(255, 255, 243, .65), inset 0 -1px rgba(221, 246, 230, .18), 0 12px 32px rgba(4, 18, 12, .18);
+  --ui-gold-fill: linear-gradient(135deg, #f1e3b6, #c5a463);
+  --ui-gold-hover: linear-gradient(135deg, #fff1c5, #dac080);
+  --ui-on-gold: #28372c;
+}
+
+.ui-glass {
+  border: 1px solid var(--ui-glass-stroke);
+  background: var(--ui-glass-fill);
+  box-shadow: var(--ui-glass-shadow);
+  -webkit-backdrop-filter: blur(18px) saturate(1.16);
+  backdrop-filter: blur(18px) saturate(1.16);
+}
+
+@supports not ((backdrop-filter: blur(1px)) or (-webkit-backdrop-filter: blur(1px))) {
+  :root { --ui-glass-fill: var(--app-surface); --ui-popover-fill: var(--app-surface-raised); }
+}
+
+@media (prefers-reduced-transparency: reduce) {
+  :root { --ui-glass-fill: var(--app-surface); --ui-popover-fill: var(--app-surface-raised); }
+  .ui-glass { -webkit-backdrop-filter: none; backdrop-filter: none; }
+}

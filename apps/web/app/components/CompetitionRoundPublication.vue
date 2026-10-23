@@ -462,10 +462,12 @@ h2, h3, p { margin: 0; }
 h2, h3 { font-family: var(--font-serif); }
 p, small, li { font-size: .875rem; line-height: 1.65; overflow-wrap: anywhere; }
 label { display: block; margin-block: .5rem; }
-input { display: block; width: 100%; min-height: 2.75rem; margin-top: .35rem; padding: .5rem; color: var(--app-text); background: var(--app-input); border: 1px solid var(--app-border); border-radius: .25rem; }
-button { max-width: 100%; min-height: 2.75rem; padding: .5rem .75rem; color: var(--app-text); background: var(--app-control); border: 1px solid var(--app-border); border-radius: .25rem; white-space: normal; }
+input { display: block; width: 100%; min-height: 2.75rem; margin-top: .35rem; padding: .5rem; color: var(--app-text); background: var(--app-input); border: 1px solid var(--app-border); border-radius: 12px; }
+button { max-width: 100%; min-height: 2.75rem; padding: .5rem .75rem; color: var(--app-text); background: var(--app-control); border: 1px solid var(--app-border); border-radius: 12px; white-space: normal; }
 button:disabled { opacity: .65; }
 .publication-state, .pending-note { display: grid; gap: .625rem; border: 1px solid var(--app-border); border-radius: .5rem; padding: .875rem; }
 .pending-note { border-color: var(--app-accent-strong); }
 ul { margin: 0; padding-inline-start: 1.25rem; }
+.round-publication { border: 1px solid var(--ui-glass-stroke); border-radius: 22px; background: var(--ui-glass-fill); box-shadow: var(--ui-glass-shadow); -webkit-backdrop-filter: blur(18px); backdrop-filter: blur(18px); }
+.round-publication :is(input, select, textarea, button):focus-visible { outline: 2px solid var(--app-accent); outline-offset: 3px; }
 </style>

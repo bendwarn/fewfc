@@ -1,5 +1,5 @@
 <template>
-  <main class="lobby-page lobby-theme">
+  <main class="lobby-page lobby-theme page-scene" data-scene="inn">
     <div class="lobby-content">
       <div class="lobby-heading">
         <div class="lobby-intro">

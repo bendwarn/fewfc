@@ -5,9 +5,6 @@ test('public homepage presents the game, metadata, and login entry', async ({ pa
 
   await expect(page).toHaveTitle('五行戰鬥牌')
   await expect(page.getByRole('heading', { level: 1, name: '以牌為陣， 決勝五行。' })).toBeVisible()
-  await expect.poll(() => page.evaluate(() => (
-    getComputedStyle(document.querySelector('#hero-title')!).color === getComputedStyle(document.body).color
-  ))).toBe(true)
   await expect(page.getByRole('heading', { name: '三步開局，每手都是選擇' })).toBeVisible()
   await expect(page.getByRole('heading', { name: '一組牌，展開層層戰術' })).toBeVisible()
   await expect(page.getByRole('list', { name: '五行卡牌展示' }).getByRole('listitem')).toHaveCount(5)

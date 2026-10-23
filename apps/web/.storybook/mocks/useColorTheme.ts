@@ -10,6 +10,7 @@ export function useColorTheme() {
     resolvedTheme,
     setPreference(value: ColorThemePreference) {
       preference.value = value
+      document.documentElement.dataset.theme = value === 'dark' ? 'dark' : 'light'
     },
   }
 }

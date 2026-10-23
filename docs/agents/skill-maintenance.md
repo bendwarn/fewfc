@@ -6,17 +6,13 @@
 
 - `~/.codex/AGENTS.md`：個人偏好，直接維護；套件管理使用 pnpm，腳本與測試 runtime 依專案設定。
 - `~/.codex/skills/cx/SKILL.md`：本次未在 `~/.agents/.skill-lock.json` 找到來源紀錄。本地差異保存於 `docs/skill-overrides/cx.patch`，相對路徑以 `~/.codex/skills` 為根。
-- `.agents/skills/playwright-cli/`：專案唯一的 Playwright 技能來源，由本專案 Git 維護。使用 `apps/web` 工作目錄與 `bun playwright cli`，保留 references 的相同命令適配。
 - `.codex/skills/audit-fewfc-room-record/`：本專案維護。純紀錄解說以事件與規則為證據；實作或 replay 正確性調查使用相關測試，並揭露無法驗證的範圍。
-
-已移除 `apps/web/.agents/skills/playwright-cli/` 的重複副本，以及只管理該副本的 `apps/web/skills-lock.json`。原安裝紀錄指向 `microsoft/playwright-cli` 的 `skills/playwright-cli/SKILL.md`。
 
 ## 更新方式
 
 1. 更新前保存目前版本與差異。將上游新版放到暫存目錄比較，再整合需要的變更；直接對安裝目錄更新可能覆蓋本地修改。
 2. cx 更新後，在 `~/.codex/skills` 執行 `git apply --check /絕對路徑/fewfc/docs/skill-overrides/cx.patch`。可套用時才執行 `git apply`；若已包含本地修改或上游結構已變，先檢查差異，按語意整合，避免強制覆蓋。重新產生 patch 時以未修改的新版作為基底。
-3. Playwright 上游更新整合到根目錄的唯一副本，確認 Bun 命令、工作目錄及 references 一致；不要在 Web 子目錄重新安裝另一份同名技能。
-4. 檢查 frontmatter、相對連結及差異；以技能的實際使用情境檢查是否仍有多餘停止條件。只有工具程式或執行契約變更時才追加相應執行驗證。
+3. 檢查 frontmatter、相對連結及差異；以技能的實際使用情境檢查是否仍有多餘停止條件。只有工具程式或執行契約變更時才追加相應執行驗證。
 
 本流程由更新者執行，沒有自動重套 patch 的 hook。若長期頻繁追蹤上游，改由個人 fork 維護本地差異，再讓安裝工具指向該 fork，可避免每次直接修改安裝產物。
 

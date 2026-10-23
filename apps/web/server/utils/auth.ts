@@ -93,6 +93,20 @@ export function authForEvent(event: H3Event) {
         maxAge: 60,
       },
     },
+    logger: {
+      log(level, message, ...args) {
+        if (message === 'Cookie cache payload failed schema validation') {
+          console.warn(JSON.stringify({
+            level,
+            message,
+            details: args[0],
+          }))
+          return
+        }
+
+        console[level](`[Better Auth][${level}] ${message}`, ...args)
+      },
+    },
     plugins: [
       anonymous({
         generateName: () => `旅人-${crypto.randomUUID().slice(0, 6)}`,

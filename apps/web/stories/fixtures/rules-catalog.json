@@ -1,0 +1,413 @@
+{
+  "version": 1,
+  "ruleModules": [
+    {
+      "id": "totem-formation",
+      "category": "theme",
+      "defaultEnabled": true,
+      "dependencies": [
+        "star",
+        "five-directions-legend",
+        "hero-schools"
+      ]
+    },
+    {
+      "id": "discard-retrieval",
+      "category": "optional",
+      "defaultEnabled": true,
+      "dependencies": []
+    },
+    {
+      "id": "personal-deck",
+      "category": "optional",
+      "defaultEnabled": true,
+      "dependencies": []
+    },
+    {
+      "id": "five-directions-legend",
+      "category": "advanced",
+      "defaultEnabled": true,
+      "dependencies": []
+    },
+    {
+      "id": "star",
+      "category": "advanced",
+      "defaultEnabled": true,
+      "dependencies": []
+    },
+    {
+      "id": "hero-schools",
+      "category": "advanced",
+      "defaultEnabled": true,
+      "dependencies": []
+    },
+    {
+      "id": "spirit",
+      "category": "theme",
+      "defaultEnabled": true,
+      "dependencies": [
+        "star",
+        "five-directions-legend",
+        "hero-schools"
+      ]
+    },
+    {
+      "id": "jianghu",
+      "category": "theme",
+      "defaultEnabled": true,
+      "dependencies": [
+        "star",
+        "five-directions-legend",
+        "hero-schools"
+      ]
+    },
+    {
+      "id": "confluence-generation",
+      "category": "theme",
+      "defaultEnabled": true,
+      "dependencies": [
+        "star",
+        "five-directions-legend",
+        "hero-schools"
+      ]
+    },
+    {
+      "id": "dark-glimmer",
+      "category": "theme",
+      "defaultEnabled": true,
+      "dependencies": [
+        "spirit"
+      ]
+    },
+    {
+      "id": "echo",
+      "category": "theme",
+      "defaultEnabled": true,
+      "dependencies": [
+        "star",
+        "five-directions-legend",
+        "hero-schools"
+      ]
+    },
+    {
+      "id": "tribulation",
+      "category": "theme",
+      "defaultEnabled": true,
+      "dependencies": [
+        "star",
+        "five-directions-legend",
+        "hero-schools"
+      ]
+    },
+    {
+      "id": "pouch",
+      "category": "theme",
+      "defaultEnabled": true,
+      "dependencies": [
+        "personal-deck",
+        "spirit"
+      ]
+    }
+  ],
+  "deckComposition": {
+    "cardDefinitions": [
+      {
+        "id": "metal-1",
+        "name": "金",
+        "element": "Metal",
+        "level": 1,
+        "sharedDeckCopies": 4,
+        "personalDeckCopyLimit": 4,
+        "preconstructedCopies": 3
+      },
+      {
+        "id": "metal-2",
+        "name": "金",
+        "element": "Metal",
+        "level": 2,
+        "sharedDeckCopies": 4,
+        "personalDeckCopyLimit": 4,
+        "preconstructedCopies": 2
+      },
+      {
+        "id": "metal-3",
+        "name": "金",
+        "element": "Metal",
+        "level": 3,
+        "sharedDeckCopies": 4,
+        "personalDeckCopyLimit": 4,
+        "preconstructedCopies": 3
+      },
+      {
+        "id": "metal-4",
+        "name": "金",
+        "element": "Metal",
+        "level": 4,
+        "sharedDeckCopies": 3,
+        "personalDeckCopyLimit": 3,
+        "preconstructedCopies": 2
+      },
+      {
+        "id": "metal-5",
+        "name": "金",
+        "element": "Metal",
+        "level": 5,
+        "sharedDeckCopies": 3,
+        "personalDeckCopyLimit": 3,
+        "preconstructedCopies": 2
+      },
+      {
+        "id": "wood-1",
+        "name": "木",
+        "element": "Wood",
+        "level": 1,
+        "sharedDeckCopies": 4,
+        "personalDeckCopyLimit": 4,
+        "preconstructedCopies": 3
+      },
+      {
+        "id": "wood-2",
+        "name": "木",
+        "element": "Wood",
+        "level": 2,
+        "sharedDeckCopies": 4,
+        "personalDeckCopyLimit": 4,
+        "preconstructedCopies": 2
+      },
+      {
+        "id": "wood-3",
+        "name": "木",
+        "element": "Wood",
+        "level": 3,
+        "sharedDeckCopies": 4,
+        "personalDeckCopyLimit": 4,
+        "preconstructedCopies": 3
+      },
+      {
+        "id": "wood-4",
+        "name": "木",
+        "element": "Wood",
+        "level": 4,
+        "sharedDeckCopies": 3,
+        "personalDeckCopyLimit": 3,
+        "preconstructedCopies": 2
+      },
+      {
+        "id": "wood-5",
+        "name": "木",
+        "element": "Wood",
+        "level": 5,
+        "sharedDeckCopies": 3,
+        "personalDeckCopyLimit": 3,
+        "preconstructedCopies": 2
+      },
+      {
+        "id": "water-1",
+        "name": "水",
+        "element": "Water",
+        "level": 1,
+        "sharedDeckCopies": 4,
+        "personalDeckCopyLimit": 4,
+        "preconstructedCopies": 3
+      },
+      {
+        "id": "water-2",
+        "name": "水",
+        "element": "Water",
+        "level": 2,
+        "sharedDeckCopies": 4,
+        "personalDeckCopyLimit": 4,
+        "preconstructedCopies": 2
+      },
+      {
+        "id": "water-3",
+        "name": "水",
+        "element": "Water",
+        "level": 3,
+        "sharedDeckCopies": 4,
+        "personalDeckCopyLimit": 4,
+        "preconstructedCopies": 3
+      },
+      {
+        "id": "water-4",
+        "name": "水",
+        "element": "Water",
+        "level": 4,
+        "sharedDeckCopies": 3,
+        "personalDeckCopyLimit": 3,
+        "preconstructedCopies": 2
+      },
+      {
+        "id": "water-5",
+        "name": "水",
+        "element": "Water",
+        "level": 5,
+        "sharedDeckCopies": 3,
+        "personalDeckCopyLimit": 3,
+        "preconstructedCopies": 2
+      },
+      {
+        "id": "fire-1",
+        "name": "火",
+        "element": "Fire",
+        "level": 1,
+        "sharedDeckCopies": 4,
+        "personalDeckCopyLimit": 4,
+        "preconstructedCopies": 3
+      },
+      {
+        "id": "fire-2",
+        "name": "火",
+        "element": "Fire",
+        "level": 2,
+        "sharedDeckCopies": 4,
+        "personalDeckCopyLimit": 4,
+        "preconstructedCopies": 2
+      },
+      {
+        "id": "fire-3",
+        "name": "火",
+        "element": "Fire",
+        "level": 3,
+        "sharedDeckCopies": 4,
+        "personalDeckCopyLimit": 4,
+        "preconstructedCopies": 3
+      },
+      {
+        "id": "fire-4",
+        "name": "火",
+        "element": "Fire",
+        "level": 4,
+        "sharedDeckCopies": 3,
+        "personalDeckCopyLimit": 3,
+        "preconstructedCopies": 2
+      },
+      {
+        "id": "fire-5",
+        "name": "火",
+        "element": "Fire",
+        "level": 5,
+        "sharedDeckCopies": 3,
+        "personalDeckCopyLimit": 3,
+        "preconstructedCopies": 2
+      },
+      {
+        "id": "earth-1",
+        "name": "土",
+        "element": "Earth",
+        "level": 1,
+        "sharedDeckCopies": 4,
+        "personalDeckCopyLimit": 4,
+        "preconstructedCopies": 3
+      },
+      {
+        "id": "earth-2",
+        "name": "土",
+        "element": "Earth",
+        "level": 2,
+        "sharedDeckCopies": 4,
+        "personalDeckCopyLimit": 4,
+        "preconstructedCopies": 2
+      },
+      {
+        "id": "earth-3",
+        "name": "土",
+        "element": "Earth",
+        "level": 3,
+        "sharedDeckCopies": 4,
+        "personalDeckCopyLimit": 4,
+        "preconstructedCopies": 3
+      },
+      {
+        "id": "earth-4",
+        "name": "土",
+        "element": "Earth",
+        "level": 4,
+        "sharedDeckCopies": 3,
+        "personalDeckCopyLimit": 3,
+        "preconstructedCopies": 2
+      },
+      {
+        "id": "earth-5",
+        "name": "土",
+        "element": "Earth",
+        "level": 5,
+        "sharedDeckCopies": 3,
+        "personalDeckCopyLimit": 3,
+        "preconstructedCopies": 2
+      }
+    ],
+    "sharedDeck": {
+      "exactCardCount": 90
+    },
+    "personalDeck": {
+      "exactCardCount": 60,
+      "maximumLevelTotal": 170,
+      "preconstructed": {
+        "name": "五行均衡預組",
+        "cards": [
+          "metal-1",
+          "metal-1",
+          "metal-1",
+          "metal-2",
+          "metal-2",
+          "metal-3",
+          "metal-3",
+          "metal-3",
+          "metal-4",
+          "metal-4",
+          "metal-5",
+          "metal-5",
+          "wood-1",
+          "wood-1",
+          "wood-1",
+          "wood-2",
+          "wood-2",
+          "wood-3",
+          "wood-3",
+          "wood-3",
+          "wood-4",
+          "wood-4",
+          "wood-5",
+          "wood-5",
+          "water-1",
+          "water-1",
+          "water-1",
+          "water-2",
+          "water-2",
+          "water-3",
+          "water-3",
+          "water-3",
+          "water-4",
+          "water-4",
+          "water-5",
+          "water-5",
+          "fire-1",
+          "fire-1",
+          "fire-1",
+          "fire-2",
+          "fire-2",
+          "fire-3",
+          "fire-3",
+          "fire-3",
+          "fire-4",
+          "fire-4",
+          "fire-5",
+          "fire-5",
+          "earth-1",
+          "earth-1",
+          "earth-1",
+          "earth-2",
+          "earth-2",
+          "earth-3",
+          "earth-3",
+          "earth-3",
+          "earth-4",
+          "earth-4",
+          "earth-5",
+          "earth-5"
+        ]
+      }
+    }
+  }
+}

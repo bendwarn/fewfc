@@ -131,6 +131,8 @@ function handleWindowKeydown(event: KeyboardEvent) {
 }
 
 watch(() => props.open, async (open) => {
+  if (!import.meta.client) return
+
   if (open) {
     returnFocusTarget = document.activeElement instanceof HTMLElement ? document.activeElement : null
     await nextTick()
@@ -147,6 +149,8 @@ watch(() => props.open, async (open) => {
 }, { immediate: true })
 
 onBeforeUnmount(() => {
+  if (!import.meta.client) return
+
   window.removeEventListener('keydown', handleWindowKeydown)
   setBackgroundInert(false)
   if (props.open) void nextTick(() => returnFocusTarget?.focus())
