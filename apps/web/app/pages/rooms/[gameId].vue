@@ -1604,7 +1604,6 @@ function expediteSetupReveal() {
 }
 
 function leaveGame() {
-  game.clearRoom()
   void router.push('/rooms')
 }
 
