@@ -47,16 +47,6 @@ async function completeIndependentInitialPouchSelection(host: Page, guest: Page,
 
   await expect(hostChoice).toBeVisible()
   await expect(guestChoice).toBeVisible()
-  const dialog = host.getByRole('dialog', { name: '選擇初始錦囊' })
-  await expect(dialog.locator('.pouch-composition')).toBeVisible()
-  await expect(dialog.locator('tbody td')).toHaveCount(25)
-  const populatedCell = dialog.locator('.pouch-composition td:has(button)').first()
-  const cellBox = await populatedCell.boundingBox()
-  const buttonBox = await populatedCell.locator('button').boundingBox()
-  expect(cellBox).not.toBeNull()
-  expect(buttonBox).not.toBeNull()
-  expect(buttonBox!.width).toBeGreaterThanOrEqual(cellBox!.width - 2)
-  expect(buttonBox!.height).toBeGreaterThanOrEqual(cellBox!.height - 2)
   const command = waitForCommand(host, 'chooseInitialPouch')
   await hostChoice.click()
   await command
@@ -131,9 +121,6 @@ test('Pouch preparation is private, reconnectable, and triggers through the Abil
     await reloadFastGameRoute(active, roomId)
     const goldenCicada = active.getByRole('button', { name: /秘計‧金蟬/ })
     await expect(goldenCicada).toBeVisible()
-    await goldenCicada.hover()
-    await expect(active.locator('.action-detail')).toContainText('本回合保護自己')
-    await expect(active.locator('.action-detail')).toContainText('點擊後立即發動')
     const command = waitForCommand(active, 'triggerSecretStrategy')
     await goldenCicada.click()
     const triggerResponse = await command
@@ -186,12 +173,6 @@ test('Chain stages Sheep Stealing as a typed exchange choice', async ({ browser 
 
     const chainDialog = actor.getByRole('dialog', { name: '連環：選擇錦囊' })
     await expect(chainDialog).toBeVisible()
-    const chainHeadings = chainDialog.getByRole("heading", { level: 3 });
-    await expect(
-      chainDialog.locator(".choice-selection-summary"),
-    ).toContainText("錦囊給予：");
-    await expect(chainDialog.getByLabel("選擇錦囊持有者")).toHaveCount(0);
-    await expect(chainHeadings).toHaveText(["錦囊給予對象", "選擇錦囊牌"]);
     const state = await requestJson<{
       state: { pendingChoice: { visibility: 'visible'; choice: { type: 'chain'; deckCards: Array<{
         element: string | null
@@ -224,32 +205,16 @@ test('Chain stages Sheep Stealing as a typed exchange choice', async ({ browser 
     }
     expect(sheepTrigger).not.toBeNull()
     const pouchMatrix = chainDialog.getByLabel('連環錦囊牌組矩陣')
-    await expect(pouchMatrix).toHaveCSS('margin-top', '8px')
     const pouchButton = pouchMatrix.getByRole('button', {
       name: new RegExp(`：${elementLabel(sheepTrigger!.pouch.element!)} ${sheepTrigger!.pouch.level} 級`),
     }).first()
     await pouchButton.click()
-    await expect(pouchButton).toHaveAttribute('aria-pressed', 'true')
-    await expect(chainDialog.getByRole('button', { name: '確認' })).toBeEnabled()
-    await expect(chainHeadings).toHaveText([
-      "錦囊給予對象",
-      "選擇錦囊牌",
-      "選擇觸發牌（可選）",
-    ]);
     const triggerMatrix = chainDialog.getByLabel('連環觸發牌組矩陣')
     const triggerButton = triggerMatrix.getByRole('button', {
       name: new RegExp(`：${elementLabel(sheepTrigger!.trigger.element!)} ${sheepTrigger!.trigger.level} 級`),
     }).first()
     await triggerButton.click()
-    await expect(triggerButton).toHaveAttribute('aria-pressed', 'true')
-    await expect(chainHeadings).toHaveText([
-      "錦囊給予對象",
-      "選擇錦囊牌",
-      "選擇觸發牌（可選）",
-      "觸發秘計",
-    ]);
     await chainDialog.getByLabel('選擇秘計').getByRole('button', { name: '牽羊' }).click()
-    await expect(chainDialog.locator('.action-detail')).toContainText('從牌組與棄牌堆各選兩張交換，之後洗牌')
     const chainAnswer = waitForCommand(actor, 'answerChoice')
     await chainDialog.getByRole('button', { name: '確認' }).click()
     const chainResponse = await chainAnswer

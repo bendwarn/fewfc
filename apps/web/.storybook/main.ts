@@ -16,6 +16,7 @@ const config: StorybookConfig = {
     config.resolve.alias = {
       ...config.resolve.alias,
       '@page-runtime': fileURLToPath(new URL('./mocks/page-runtime.ts', import.meta.url)),
+      '@room-runtime': fileURLToPath(new URL('./mocks/room-runtime.ts', import.meta.url)),
       '~/lib/auth-client': fileURLToPath(new URL('./mocks/auth-client.ts', import.meta.url)),
       '~/composables/useColorTheme': fileURLToPath(new URL('./mocks/useColorTheme.ts', import.meta.url)),
       '~/lib/rules-catalog': fileURLToPath(new URL('./mocks/useRulesCatalog.ts', import.meta.url)),

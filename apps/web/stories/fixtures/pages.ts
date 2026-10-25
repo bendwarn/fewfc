@@ -3,8 +3,9 @@ import catalog from './rules-catalog.json'
 import { createExampleGameState, exampleCards } from './components'
 import { createCompetitionAnnouncementFixture } from '../../tests/fixtures/competition-announcement'
 import { tournamentPreview } from './tournament-preview'
+import { createConclusionState } from './conclusion'
 
-export type PageScenario = 'normal' | 'empty' | 'error'
+export type PageScenario = 'normal' | 'empty' | 'error' | 'finished'
 export function setupPageFixture(path: string, scenario: PageScenario = 'normal') {
   let replays = ['青木試陣', '好友切磋'].map((roomName, index) => ({ replayId: `replay-${index}`, sourceGameId: `game-${index}`, roomName, players: [{ player: 'alice', displayName: '小明' }, { player: 'bob', displayName: '小華' }], finishedAt: '2026-10-23 14:30', savedAt: '2026-10-23 14:30', result: { status: 'Finished' } }))
   const state = createExampleGameState()
@@ -24,6 +25,10 @@ export function setupPageFixture(path: string, scenario: PageScenario = 'normal'
     if (url.startsWith('/api/replays/')) {
       if (options.method === 'DELETE') { replays = replays.filter(replay => !url.endsWith(replay.replayId)); return {} }
       const step = Math.min(8, Number(options.query?.step ?? 0))
+      if (scenario === 'finished' && step === 8) {
+        const finalState = createConclusionState()
+        return { currentStep: 8, totalSteps: 8, state: finalState, firstPlayer: 'alice', players: [{ player: 'alice', displayName: '小明' }, { player: 'bob', displayName: '小華' }], battleRecord: { preparation: { entries: [] }, turns: [{ turnNumber: 8, title: '第 8 回合 · 小明', entries: [{ id: 'last-formation', title: '施展烈焰陣' }, { id: 'conclusion', title: '我方勝利', summary: '對方的生命值歸零。' }] }] } }
+      }
       return { currentStep: step, totalSteps: 8, state: { ...structuredClone(state), turnNumber: Math.floor(step / 2) + 1 }, firstPlayer: 'alice', players: [{ player: 'alice', displayName: '小明' }, { player: 'bob', displayName: '小華' }], battleRecord: { preparation: { entries: [{ id: 'ready', title: '對局準備完成' }] }, turns: [{ turnNumber: 1, title: '第 1 回合 · 小明', entries: [{ id: 'turn-1', title: '進行回合抽牌', summary: '選擇一張卡牌捨棄。' }] }] } }
     }
     if (url.endsWith('/commands')) return { competitionId: 'competition-a', revision: 2, projection: { ok: true, operation: 'registrationView', public: { announcement, lifecycle: 'open', revision: 2, teams: [{ teamId: 'team-a', captain: 'captain-a', members: ['captain-a'], rosterVersion: 1, confirmedMembers: ['captain-a'], status: 'registered', exclusionReasons: [] }] } } }

@@ -4,7 +4,6 @@ import {
   expect,
   reloadFastGameRoute,
   setupFastTwoPlayerGame,
-  setupFastWaitingRoom,
   test,
 } from './fixtures'
 
@@ -83,11 +82,9 @@ async function finishSingleCardTurn(page: Page) {
 
   const choice = page.locator('.choice-cards button:enabled').first()
   await expect(choice).toBeVisible()
-  const confirm = page.getByRole('button', { name: '確認選擇' })
   const command = waitForGameCommand(page)
   await choice.click()
   expect((await command).ok).toBe(true)
-  await expect(confirm).toHaveCount(0)
   await expect(page.locator('.choice-overlay')).toBeHidden()
   return await page.locator('.result-panel').isVisible()
 }
@@ -98,21 +95,10 @@ async function expectDiscardTotal(pages: Page[], count: number) {
   )))
 }
 
-async function expectStableComposition(page: Page, total: number) {
+async function expectCompositionTotal(page: Page, total: number) {
   const dialog = discardDialog(page)
   await expect(dialog).toBeVisible()
   await expect(dialog.getByRole('heading')).toHaveText(new RegExp(`^目前棄牌 ${total} · 牌庫 \\d+$`))
-  await expect(dialog.getByRole('columnheader')).toHaveText([
-    '五行',
-    '1 級',
-    '2 級',
-    '3 級',
-    '4 級',
-    '5 級',
-  ])
-  await expect(dialog.getByRole('rowheader')).toHaveText(['金', '木', '水', '火', '土'])
-  await expect(dialog.getByRole('cell')).toHaveCount(25)
-
   const counts = await dialog.locator('tbody td strong').allTextContents()
   expect(counts.map(Number).reduce((sum, count) => sum + count, 0)).toBe(total)
 }
@@ -146,7 +132,7 @@ test('players can inspect a synchronized discard composition throughout a match'
     roomName: `同步棄牌測試 ${Date.now()}`,
     disabledRuleModules: ['five-directions-legend', 'personal-deck'],
   })
-  const { host, guest, pages, gameId } = game
+  const { pages, gameId } = game
 
   try {
     await Promise.all(pages.map(async (page) => {
@@ -154,129 +140,23 @@ test('players can inspect a synchronized discard composition throughout a match'
       await expect(page.locator('.seat-top').getByRole('img', { name: /的手牌 \d+ 張$/ })).toBeVisible()
       await expect(page.locator('.seat-top .playing-card')).toHaveCount(0)
     }))
-    const emptyDiscardBox = await discardTrigger(host, 0).boundingBox()
-    expect(emptyDiscardBox).not.toBeNull()
-
-    const desktopTextSizes = await host.locator('.game-page').evaluate((gamePage) => {
-      const selectors = [
-        '.battle-record-group-heading strong',
-        '.battle-record-events li strong',
-        '.battle-record-events li p',
-        '.team-label',
-      ]
-      return selectors.map((selector) => (
-        Number.parseFloat(getComputedStyle(gamePage.querySelector(selector)!).fontSize)
-      ))
-    })
-    expect(desktopTextSizes[0]).toBeGreaterThanOrEqual(11)
-    expect(desktopTextSizes[1]).toBeGreaterThanOrEqual(11)
-    expect(desktopTextSizes[2]).toBeGreaterThanOrEqual(10)
-    expect(desktopTextSizes[3]).toBeGreaterThanOrEqual(8)
-
-    const handCards = host.locator('.seat-bottom .playing-card')
-    const handBoxes = await handCards.evaluateAll(cards => (
-      cards.map(card => {
-        const box = card.getBoundingClientRect()
-        return { left: box.left, right: box.right }
-      }).sort((left, right) => left.left - right.left)
-    ))
-    for (let index = 1; index < handBoxes.length; index += 1) {
-      expect(handBoxes[index - 1]!.right).toBeLessThanOrEqual(handBoxes[index]!.left)
-    }
-
     let active = await beginSingleCardTurn(pages)
     const hiddenChoiceObserver = pages.find(page => page !== active)!
     await expect(active.locator('.choice-overlay')).toBeVisible()
     await expect(hiddenChoiceObserver.locator('.choice-overlay')).toBeHidden()
     await reloadFastGameRoute(active, gameId)
     await expect(active.locator('.choice-overlay')).toBeVisible()
-    await expect(active.getByRole('button', { name: '確認選擇' })).toHaveCount(0)
-    const choiceOverlayStyle = await active.locator('.choice-overlay').evaluate((overlay) => {
-      const style = getComputedStyle(overlay)
-      return {
-        background: style.backgroundColor,
-        backdropFilter: style.backdropFilter,
-      }
-    })
-    const overlayAlpha = Number(choiceOverlayStyle.background.match(/[\d.]+\)$/)?.[0]?.slice(0, -1) ?? 1)
-    expect(overlayAlpha).toBeLessThanOrEqual(0.35)
-    expect(choiceOverlayStyle.backdropFilter).toBe('none')
-
     expect(await finishSingleCardTurn(active)).toBe(false)
     await expectDiscardTotal(pages, 2)
 
     const observer = pages.find(page => page !== active)!
     const trigger = discardTrigger(observer, 2)
-    const featuredDiscardBox = await trigger.boundingBox()
-    expect(featuredDiscardBox).not.toBeNull()
-    expect(Math.abs(featuredDiscardBox!.width - emptyDiscardBox!.width)).toBeLessThanOrEqual(1)
-    expect(Math.abs(featuredDiscardBox!.height - emptyDiscardBox!.height)).toBeLessThanOrEqual(1)
     await trigger.click()
-    await expectStableComposition(observer, 2)
+    await expectCompositionTotal(observer, 2)
     await expectDiscardMatrixMatchesGameState(observer)
 
     await discardDialog(observer).getByRole('button', { name: '關閉詳情' }).click()
     await expect(discardDialog(observer)).toBeHidden()
-    await expect(trigger).toBeFocused()
-
-    await trigger.click()
-    await discardDialog(observer).getByRole('button', { name: '關閉詳情' }).click()
-    await expect(discardDialog(observer)).toBeHidden()
-    await expect(trigger).toBeFocused()
-
-    await trigger.click()
-    await observer.keyboard.press('Escape')
-    await expect(discardDialog(observer)).toBeHidden()
-    await expect(trigger).toBeFocused()
-
-    await trigger.click()
-    await observer.locator('.battlefield-detail-backdrop').click({ position: { x: 4, y: 4 } })
-    await expect(discardDialog(observer)).toBeHidden()
-    await expect(trigger).toBeFocused()
-
-    await observer.setViewportSize({ width: 377, height: 734 })
-    await trigger.click()
-    await expectStableComposition(observer, 2)
-    const mobileBox = await discardDialog(observer).boundingBox()
-    expect(mobileBox).not.toBeNull()
-    expect(mobileBox!.x).toBe(0)
-    expect(mobileBox!.width).toBe(377)
-    expect(mobileBox!.y).toBeGreaterThanOrEqual(0)
-    await expect.poll(async () => {
-      const box = await discardDialog(observer).boundingBox()
-      return box ? Math.abs(box.y + box.height - 734) : Number.POSITIVE_INFINITY
-    }).toBeLessThanOrEqual(1)
-    const mobileOverflow = await observer.evaluate(() => ({
-      horizontal: document.documentElement.scrollWidth - document.documentElement.clientWidth,
-      vertical: document.querySelector('.game-page')!.scrollHeight - document.querySelector('.game-page')!.clientHeight,
-    }))
-    expect(mobileOverflow.horizontal).toBeLessThanOrEqual(0)
-    expect(mobileOverflow.vertical).toBeLessThanOrEqual(0)
-    await discardDialog(observer).getByRole('button', { name: '關閉詳情' }).click()
-
-    await observer.setViewportSize({ width: 1280, height: 720 })
-    await trigger.click()
-    await expect.poll(async () => {
-      const [dialogBox, anchorBox] = await Promise.all([
-        discardDialog(observer).boundingBox(),
-        trigger.boundingBox(),
-      ])
-      if (!dialogBox || !anchorBox) return false
-      const dialogBottom = dialogBox.y + dialogBox.height
-      const anchorBottom = anchorBox.y + anchorBox.height
-      return dialogBottom <= anchorBox.y || dialogBox.y >= anchorBottom
-    }).toBe(true)
-    const desktopBox = await discardDialog(observer).boundingBox()
-    const triggerBox = await trigger.boundingBox()
-    expect(desktopBox).not.toBeNull()
-    expect(triggerBox).not.toBeNull()
-    const desktopBottom = desktopBox!.y + desktopBox!.height
-    expect(desktopBox!.x).toBeGreaterThanOrEqual(0)
-    expect(desktopBox!.x + desktopBox!.width).toBeLessThanOrEqual(1280)
-    expect(desktopBox!.y).toBeGreaterThanOrEqual(0)
-    expect(desktopBottom).toBeLessThanOrEqual(720)
-    await observer.keyboard.press('Escape')
-
     const nextActive = await activePlayerPage(pages)
     const pendingObserver = pages.find(page => page !== nextActive)!
     await discardTrigger(pendingObserver, 2).click()

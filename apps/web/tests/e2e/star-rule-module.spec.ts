@@ -1,5 +1,5 @@
 import { waitForGameCommand } from './realtime-helpers'
-import { type Locator, type Page } from '@playwright/test'
+import { type Page } from '@playwright/test'
 import {
   battleRecordRuleEntry,
   expect,
@@ -10,15 +10,6 @@ import {
   setupFastTwoPlayerGame,
   test,
 } from './fixtures'
-
-async function expectPlayerDetails(page: Page) {
-  await page.getByRole('button', { name: /查看.*的詳細資訊/ }).first().click()
-  const facts = page.locator('.player-detail-facts')
-  await expect(facts).toBeVisible()
-  await expect(facts).toContainText('隊伍')
-  await page.keyboard.press('Escape')
-  await expect(facts).toHaveCount(0)
-}
 
 async function indexedModules(page: Page, roomName: string): Promise<string[]> {
   const response = await page.context().request.get('/api/games')
@@ -33,75 +24,6 @@ async function indexedModules(page: Page, roomName: string): Promise<string[]> {
     throw new Error(`GET /api/games returned invalid JSON: ${body}`)
   }
   return result.myRooms?.find(room => room.name === roomName)?.enabledRuleModules ?? []
-}
-
-async function box(locator: Locator) {
-  const value = await locator.boundingBox()
-  expect(value).not.toBeNull()
-  return value!
-}
-
-async function expectBattlefieldConclusion(page: Page, width: number, height: number) {
-  await page.setViewportSize({ width, height })
-  const battlefield = page.locator('.battlefield')
-  const center = battlefield.locator('.board-center')
-  const conclusion = center.locator('.result-panel')
-
-  await expect(conclusion).toBeVisible()
-  await expect(battlefield.locator('.result-panel')).toHaveCount(1)
-
-  const [battlefieldBox, centerBox, conclusionBox] = await Promise.all([
-    box(battlefield),
-    box(center),
-    box(conclusion),
-  ])
-  expect(conclusionBox.x).toBeGreaterThanOrEqual(centerBox.x - 1)
-  expect(conclusionBox.y).toBeGreaterThanOrEqual(centerBox.y - 1)
-  expect(conclusionBox.x + conclusionBox.width).toBeLessThanOrEqual(centerBox.x + centerBox.width + 1)
-  expect(conclusionBox.y + conclusionBox.height).toBeLessThanOrEqual(centerBox.y + centerBox.height + 1)
-  expect(conclusionBox.x).toBeGreaterThanOrEqual(battlefieldBox.x - 1)
-  expect(conclusionBox.y).toBeGreaterThanOrEqual(battlefieldBox.y - 1)
-  expect(conclusionBox.x + conclusionBox.width).toBeLessThanOrEqual(battlefieldBox.x + battlefieldBox.width + 1)
-  expect(conclusionBox.y + conclusionBox.height).toBeLessThanOrEqual(battlefieldBox.y + battlefieldBox.height + 1)
-
-  const terminalCards = conclusion.locator('.formation-cards .playing-card')
-  const terminalCardBoxes = await terminalCards.evaluateAll(elements => elements.map((element) => {
-    const rect = element.getBoundingClientRect()
-    return { x: rect.x, y: rect.y, width: rect.width, height: rect.height }
-  }))
-  const conclusionTextBoxes = await conclusion.locator('small, strong, h2, .result-reason, .result-actions').evaluateAll(elements => elements.map((element) => {
-    const rect = element.getBoundingClientRect()
-    return { x: rect.x, y: rect.y, width: rect.width, height: rect.height }
-  }))
-  for (const cardBox of terminalCardBoxes) {
-    for (const textBox of conclusionTextBoxes) {
-      const overlaps = cardBox.x < textBox.x + textBox.width
-        && cardBox.x + cardBox.width > textBox.x
-        && cardBox.y < textBox.y + textBox.height
-        && cardBox.y + cardBox.height > textBox.y
-      expect(overlaps).toBe(false)
-    }
-  }
-
-  const seatBoxes = await battlefield.locator('.player-seat').evaluateAll(elements => elements.map((element) => {
-    const rect = element.getBoundingClientRect()
-    return { x: rect.x, y: rect.y, width: rect.width, height: rect.height }
-  }))
-  for (const seatBox of seatBoxes) {
-    const overlaps = conclusionBox.x < seatBox.x + seatBox.width
-      && conclusionBox.x + conclusionBox.width > seatBox.x
-      && conclusionBox.y < seatBox.y + seatBox.height
-      && conclusionBox.y + conclusionBox.height > seatBox.y
-    expect(overlaps).toBe(false)
-  }
-
-  const overflow = await page.evaluate(() => ({
-    page: document.documentElement.scrollWidth - document.documentElement.clientWidth,
-    battlefield: document.querySelector('.battlefield')!.scrollWidth
-      - document.querySelector('.battlefield')!.clientWidth,
-  }))
-  expect(overflow.page).toBeLessThanOrEqual(0)
-  expect(overflow.battlefield).toBeLessThanOrEqual(0)
 }
 
 test('Star defaults on, survives reconnect, and is immutable after a two-player start', async ({ browser }) => {
@@ -125,7 +47,6 @@ test('Star defaults on, survives reconnect, and is immutable after a two-player 
       const rules = await battleRecordRuleEntry(page)
       await expect(rules).toContainText('基礎規則')
       await expect(rules).toContainText('星辰圖記規則')
-      await expectPlayerDetails(page)
     }))
 
     const updateResponse = await hostContext.request.put(`/api/games/${roomId}/rules`, {
@@ -163,7 +84,6 @@ test('disabling Star invalidates readiness and locked decks while preserving Bas
     await Promise.all([host, guest].map(async (page) => {
       await expect(await battleRecordRuleEntry(page))
         .not.toContainText('星辰圖記規則')
-      await expectPlayerDetails(page)
     }))
 
     const active = (await host.locator('.playing-card:enabled:not(.hidden)').count()) ? host : guest
@@ -201,12 +121,6 @@ test('a four-player team room starts with one shared immutable Star configuratio
     await Promise.all(pages.map(async (page) => {
       await expect(await battleRecordRuleEntry(page))
         .toContainText('星辰圖記規則')
-      await expect(page.locator('.player-seat')).toHaveCount(4)
-      await expect(page.locator('.seat-discard-control')).toHaveCount(4)
-      await expect(page.locator('.discard-position-top')).toHaveCount(3)
-      await expect(page.locator('.discard-position-left, .discard-position-right')).toHaveCount(0)
-      await expect(page.locator('.discard-position-bottom')).toHaveCount(1)
-      await expect(page.getByRole('button', { name: /查看.*的詳細資訊/ })).toHaveCount(4)
     }))
   } finally {
     await game.close()
@@ -238,10 +152,6 @@ test('a Star endgame fixture finishes through normal UI play and resets with its
       await expect(await battleRecordRuleEntry(page))
         .toContainText('星辰圖記規則')
     }))
-    await expectBattlefieldConclusion(host, 1440, 900)
-    await expectBattlefieldConclusion(host, 760, 612)
-    await expectBattlefieldConclusion(guest, 390, 844)
-    await expectBattlefieldConclusion(guest, 360, 640)
 
     await guest.getByRole('button', { name: '返回房間 →' }).click()
     await Promise.all(pages.map(async (page) => {

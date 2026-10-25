@@ -68,6 +68,7 @@
               :state="state"
               :team-label="teamLabel"
               :player-label="playerLabel"
+              animate
             >
               <template #actions>
                 <NuxtLink v-if="competitionReturnPath" class="primary-button" :to="competitionReturnPath">

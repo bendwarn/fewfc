@@ -4,6 +4,7 @@ import { expect, userEvent, waitFor, within } from 'storybook/test'
 import BattlefieldStoryScreen from './BattlefieldStoryScreen.vue'
 import { createExampleGameState, createFourPlayerGameState, exampleCards } from '../fixtures/components'
 import type { PublicCard } from '~/types/fewfc'
+import { createConclusionState } from '../fixtures/conclusion'
 
 const displayNames = { alice: '小明', bob: '小華', carol: '小美', dave: '小安' }
 
@@ -130,12 +131,12 @@ motionAcceptanceState.previousTurnFormation = {
   cards: { kind: 'known', cards: exampleCards },
 }
 
-function darkThemeDecorator(story: Component): Component {
-  return defineComponent({
+function themeDecorator(theme: 'light' | 'dark') {
+  return (story: Component): Component => defineComponent({
     components: { story },
     setup() {
       const previousTheme = document.documentElement.dataset.theme
-      document.documentElement.dataset.theme = 'dark'
+      document.documentElement.dataset.theme = theme
       onBeforeUnmount(() => {
         if (previousTheme) document.documentElement.dataset.theme = previousTheme
         else delete document.documentElement.dataset.theme
@@ -145,6 +146,8 @@ function darkThemeDecorator(story: Component): Component {
     template: '<story />',
   })
 }
+const darkThemeDecorator = themeDecorator('dark')
+const lightThemeDecorator = themeDecorator('light')
 
 const meta = {
   title: '對局/完整戰場畫面',
@@ -213,6 +216,7 @@ export const FourPlayerSharedDiscard: Story = {
 
 export const FourPlayerPersonalDiscardPiles: Story = {
   args: { state: fourPlayerPersonalDiscardState() },
+  tags: ['ui-migration'],
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement)
     const page = within(canvasElement.ownerDocument.body)
@@ -222,7 +226,11 @@ export const FourPlayerPersonalDiscardPiles: Story = {
       { player: '小美', count: 3, deck: 18, element: '火', level: 1 },
       { player: '小安', count: 4, deck: 15, element: '土', level: 1 },
     ]
+    await expect(canvasElement.querySelectorAll('.player-seat')).toHaveLength(4)
     await expect(canvasElement.querySelectorAll('.seat-discard-control')).toHaveLength(4)
+    await expect(canvasElement.querySelectorAll('.discard-position-top')).toHaveLength(3)
+    await expect(canvasElement.querySelectorAll('.discard-position-bottom')).toHaveLength(1)
+    await expect(canvasElement.querySelectorAll('.discard-position-left, .discard-position-right')).toHaveLength(0)
     await expect(canvasElement.querySelectorAll('.shared-discard-dock')).toHaveLength(0)
     for (const pile of piles) {
       await userEvent.click(canvas.getByRole('button', { name: new RegExp(`查看${pile.player}的棄牌詳情`) }))
@@ -232,6 +240,17 @@ export const FourPlayerPersonalDiscardPiles: Story = {
       const row = within(detail).getByRole('row', { name: new RegExp(`^${pile.element} `) })
       await expect(within(row).getAllByRole('cell')[pile.level - 1]).toHaveTextContent('1')
       await userEvent.click(within(detail).getByRole('button', { name: '關閉詳情' }))
+    }
+    const details = canvas.getAllByRole('button', { name: /查看.*的詳細資訊/ })
+    await expect(details).toHaveLength(4)
+    for (const trigger of details) {
+      await userEvent.click(trigger)
+      const detail = await page.findByRole('dialog')
+      await expect(detail.querySelector('.player-detail-facts')).toHaveTextContent('隊伍')
+      await waitFor(() => expect(within(detail).getByRole('button', { name: '關閉詳情' })).toHaveFocus())
+      await userEvent.keyboard('{Escape}')
+      await waitFor(() => expect(page.queryByRole('dialog')).not.toBeInTheDocument())
+      await expect(trigger).toHaveFocus()
     }
   },
 }
@@ -438,3 +457,26 @@ export const ThemeAcceptance: Story = {
     }
   },
 }
+
+export const TerminalVictory: Story = {
+  args: { state: createConclusionState(), showSiteHeader: true },
+  decorators: [lightThemeDecorator],
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement)
+    const result = within(canvas.getByRole('region', { name: '對局結算' }))
+    await waitFor(() => expect(result.getByRole('heading', { name: '我方 勝利' })).toBeVisible())
+    await waitFor(() => expect(canvas.getByText('戰局結束', { selector: '.turn-capsule strong' })).toBeVisible())
+    await expect(canvas.getByRole('meter', { name: '對方隊伍 HP' })).toHaveAttribute('aria-valuenow', '0')
+    await expect(canvasElement.querySelectorAll('.is-your-turn, .needs-response, .player-seat.acting')).toHaveLength(0)
+    await expect(canvasElement.querySelector('.action-dock-slot')).toBeNull()
+    await expect(result.getByRole('button', { name: '返回房間' })).toBeVisible()
+  },
+}
+export const TerminalVictoryDark: Story = { args: { state: createConclusionState(), showSiteHeader: true }, decorators: [darkThemeDecorator] }
+export const TerminalDraw: Story = { args: { state: createConclusionState('draw', true) }, decorators: [lightThemeDecorator] }
+export const TerminalDirectVictory: Story = { args: { state: createConclusionState('direct'), competition: true }, decorators: [darkThemeDecorator] }
+export const TerminalAutomatic: Story = { args: { state: createConclusionState('automatic') }, decorators: [lightThemeDecorator] }
+export const TerminalDiscardRetrieval: Story = { args: { state: createConclusionState('retrieval') }, decorators: [darkThemeDecorator] }
+export const TerminalWithoutResolution: Story = { args: { state: createConclusionState('no-resolution') }, decorators: [lightThemeDecorator] }
+export const TerminalObserver: Story = { args: { state: createConclusionState('hidden', true), anchorPlayer: null }, decorators: [darkThemeDecorator] }
+export const TerminalReplay: Story = { args: { state: createConclusionState('victory', true), mode: 'replay', anchorPlayer: 'bob' }, decorators: [darkThemeDecorator] }

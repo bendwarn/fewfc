@@ -12,10 +12,9 @@ import {
 describe('site metadata', () => {
   test('uses the brand alone on the homepage and names application routes', () => {
     expect(pageTitle('/')).toBe(SITE_NAME)
-    expect(pageTitle('/rooms')).toBe(`對戰大廳｜${SITE_NAME}`)
-    expect(pageTitle('/privacy')).toBe(`隱私權政策｜${SITE_NAME}`)
-    expect(pageTitle('/rooms/room-7')).toBe(`對戰房間｜${SITE_NAME}`)
-    expect(pageTitle('/replays/replay-9')).toBe(`對戰重播｜${SITE_NAME}`)
+    expect(pageTitle("/rooms")).toBe(`大廳｜${SITE_NAME}`);
+    expect(pageTitle("/privacy")).toBe(`隱私權政策｜${SITE_NAME}`);
+    expect(pageTitle("/replays/replay-9")).toBe(`重播｜${SITE_NAME}`);
   })
 
   test('only indexes the production homepage', () => {

@@ -1,29 +1,27 @@
 <template>
-  <section class="result-panel">
-    <template v-if="state.terminalResolution?.type === 'formation'">
-      <small>{{ playerLabel(state.terminalResolution.player) }}</small>
-      <strong>{{ state.terminalResolution.formationName ?? '陣法' }}</strong>
-      <div class="formation-cards">
+  <section class="result-panel ui-glass" :class="{ 'result-enter': animate }" :data-outcome="state.gameConclusion?.outcome.type" aria-label="對局結算">
+    <header class="result-heading" aria-live="polite">
+      <h2>{{ resultText }}</h2>
+      <p v-if="endReasonText" class="result-reason">{{ endReasonText }}</p>
+    </header>
+    <div v-if="state.terminalResolution" class="result-summary" aria-label="最後行動">
+      <div class="result-summary-text">
+        <small>最後行動<template v-if="state.terminalResolution.type !== 'automatic'"> · {{ playerLabel(state.terminalResolution.player) }}</template></small>
+        <strong v-if="state.terminalResolution.type === 'formation'">{{ state.terminalResolution.formationName ?? '陣法' }}</strong>
+        <strong v-else-if="state.terminalResolution.type === 'discardRetrieval'">取回 {{ playerLabel(state.terminalResolution.previousPlayer) }} 的棄牌</strong>
+        <strong v-else>{{ state.terminalResolution.label }}</strong>
+        <p v-if="terminalHiddenCount">{{ terminalHiddenCount }} 張蓋牌</p>
+      </div>
+      <div v-if="terminalCards.length" class="formation-cards">
         <GameCard
-          v-for="card in terminalFormationCards"
+          v-for="card in terminalCards"
           :key="card.id"
           class="formation-card"
           :card="card"
           :interpretations="state.cardInterpretations"
         />
       </div>
-      <p v-if="terminalHiddenCount">{{ terminalHiddenCount }} 張蓋牌</p>
-    </template>
-    <template v-else-if="state.terminalResolution?.type === 'discardRetrieval'">
-      <small>{{ playerLabel(state.terminalResolution.player) }}</small>
-      <strong>取回 {{ playerLabel(state.terminalResolution.previousPlayer) }} 的棄牌</strong>
-      <div class="formation-cards"><GameCard class="formation-card" :card="state.terminalResolution.card" :interpretations="state.cardInterpretations" /></div>
-    </template>
-    <template v-else-if="state.terminalResolution?.type === 'automatic'">
-      <strong>{{ state.terminalResolution.label }}</strong>
-    </template>
-    <h2>{{ resultText }}</h2>
-    <p class="result-reason">{{ endReasonText }}</p>
+    </div>
     <div v-if="$slots.actions" class="result-actions">
       <slot name="actions" />
     </div>
@@ -39,6 +37,7 @@ const props = defineProps<{
   state: PublicGameState
   teamLabel: (team: TeamId) => string
   playerLabel?: (player: string) => string
+  animate?: boolean
 }>()
 
 const resultText = computed(() => {
@@ -76,14 +75,15 @@ const endReasonText = computed(() => {
       'king-yama-decree': '施展閻王令',
     }
     return directVictoryLabels[cause.rule]
-      ?? `${props.teamLabel(cause.team)} 達成「${cause.rule}」的直接勝利條件`
+      ?? `${props.teamLabel(cause.team)} 達成直接勝利條件`
   }).join('；')
 })
 
 const playerLabel = (player: string) => props.playerLabel?.(player) ?? player
 
-const terminalFormationCards = computed<PublicCard[]>(() => {
+const terminalCards = computed<PublicCard[]>(() => {
   const resolution = props.state.terminalResolution
+  if (resolution?.type === 'discardRetrieval') return [resolution.card]
   if (resolution?.type !== 'formation') return []
   const cards: PublicCardRefs = resolution.cards
   if (cards.kind === 'known') return cards.cards
@@ -103,22 +103,46 @@ const terminalHiddenCount = computed(() => {
 <style scoped>
 @reference "../assets/css/main.css";
 
-.result-panel { @apply grid min-h-20 content-center justify-items-center gap-2 px-4 py-3 text-center; }
-.result-panel small { @apply text-[9px] text-muted; }
-.result-panel > strong { @apply font-serif text-sm text-gold-light; }
-.result-panel h2 { @apply mt-1 font-serif text-lg text-gold-light; }
-.result-panel p { @apply text-xs text-muted; }
-.result-panel .result-reason { @apply max-w-[34rem] text-[var(--app-text)]; }
-.formation-cards { @apply flex min-h-10 items-center justify-center; }
-.formation-cards :deep(.playing-card) { width: 34px; margin-left: -4px; }
-.result-panel .result-actions { @apply mt-2 grid w-full max-w-56 grid-cols-1 gap-3; }
-:slotted(.primary-button) { @apply justify-between; }
+.result-panel { display: grid; width: min(100%, 560px); min-width: 0; gap: 18px; padding: 22px 28px; border-radius: 24px; color: var(--app-text); text-align: center; }
+.result-heading { display: grid; justify-items: center; gap: 8px; }
+.result-panel h2 { color: var(--app-accent-strong); font: 900 clamp(28px, 2.4vw, 32px) / 1.3 var(--font-serif); }
+.result-panel[data-outcome="draw"] h2 { color: var(--app-text); }
+.result-reason { font-size: 13px; line-height: 1.6; }
+.result-summary { display: flex; min-width: 0; align-items: center; justify-content: center; flex-wrap: wrap; gap: 12px 20px; padding-top: 14px; border-top: 1px solid var(--ui-glass-stroke); }
+.result-summary-text { display: grid; min-width: 0; gap: 5px; text-align: left; }
+.result-summary small, .result-summary p { color: var(--app-text-muted); font-size: 12px; line-height: 1.5; }
+.result-summary strong { font: 700 16px / 1.5 var(--font-serif); }
+.formation-cards { display: flex; min-width: 0; flex-wrap: wrap; justify-content: center; gap: 6px; }
+.formation-cards :deep(.playing-card) { width: 48px; }
+.result-actions { display: flex; justify-content: center; flex-wrap: wrap; gap: 10px; padding-top: 2px; }
+:slotted(.primary-button) { display: inline-flex; min-width: 160px; min-height: 44px; align-items: center; justify-content: center; gap: 18px; padding: 10px 18px; font-size: 13px; }
+.result-enter { animation: result-arrive .28s ease-out both; }
+.result-enter h2 { animation: result-title-arrive .3s ease-out both; }
+@keyframes result-arrive { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: translateY(0); } }
+@keyframes result-title-arrive { from { opacity: .2; transform: translateY(3px); } to { opacity: 1; transform: translateY(0); } }
 
 @media (max-width: 600px) {
-  .result-panel { @apply px-3 py-2; }
-  .result-panel h2 { @apply text-base; }
-  .result-panel p { @apply text-[11px]; }
-  .result-panel .result-actions { @apply max-w-48; }
-  .formation-cards :deep(.playing-card) { width: 30px; }
+  .result-panel { gap: 12px; padding: 16px; border-radius: 20px; }
+  .result-panel h2 { font-size: 24px; }
+  .result-reason { font-size: 12px; }
+  .result-summary { gap: 8px 12px; padding-top: 10px; }
+  .result-summary small, .result-summary p { font-size: 11px; }
+  .result-summary strong { font-size: 14px; }
+  .formation-cards :deep(.playing-card) { width: 38px; }
+  .result-actions { gap: 8px; }
+  :slotted(.primary-button) { flex: 1 1 auto; gap: 10px; padding-inline: 12px; font-size: 12px; }
 }
+/* 依中央區實際高度縮短留白，頁首與戰局紀錄佔用空間時仍完整顯示結算。 */
+@container conclusion (max-height: 260px) {
+  .result-panel { gap: 8px; padding: 10px 16px; border-radius: 20px; }
+  .result-heading { gap: 4px; }
+  .result-panel h2 { font-size: 24px; line-height: 1.2; }
+  .result-reason { font-size: 12px; line-height: 1.5; }
+  .result-summary { gap: 6px 12px; padding-top: 8px; }
+  .result-summary-text { gap: 3px; }
+  .result-summary small, .result-summary p { font-size: 11px; }
+  .result-summary strong { font-size: 14px; }
+  .formation-cards :deep(.playing-card) { width: 32px; }
+}
+@media (prefers-reduced-motion: reduce) { .result-enter, .result-enter h2 { animation: none; } }
 </style>

@@ -14,7 +14,7 @@
             <button v-else class="ghost-button" type="button" @click="requestDelete(replay.replayId)">刪除</button>
           </div>
         </article>
-        <div v-if="!replays.length && !replayLoading && !replayError" class="page-empty page-surface"><span aria-hidden="true">卷</span><h2>尚未儲存任何重播</h2><p>對局結束後儲存紀錄，就能在這裡再次回顧。</p><button class="secondary-button" @click="returnToLobby">前往房間</button></div>
+        <div v-if="!replays.length && !replayLoading && !replayError" class="page-empty page-surface"><h2>尚未儲存任何重播</h2><p>對局結束後儲存紀錄，就能在這裡再次回顧。</p><button class="secondary-button" @click="returnToLobby">前往房間</button></div>
       </section>
       <ConfirmDialog :open="Boolean(deleteTarget)" title="刪除此重播？" description="刪除後將無法從你的收藏中觀看這份紀錄。" confirm-label="刪除重播" :busy="deleteBusy" :error="deleteError" @close="deleteTarget = null" @confirm="deleteReplay" />
   </main>

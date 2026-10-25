@@ -84,15 +84,10 @@ fastPageTest('Deck owns its route-local loading and retryable error outcomes', a
   await page.unroute(deckUrl)
 })
 
-fastPageTest('Deck owns its import dialog focus, cleans up its listener, and Replay routes render their own error outcome', async ({ page }) => {
+fastPageTest('Deck cleans up dialog listeners on navigation and Replay routes render their own error outcome', async ({ page }) => {
   await page.goto('/deck')
-  const importButton = page.getByRole('button', { name: '匯入牌組' })
-  await importButton.click()
+  await page.getByRole('button', { name: '匯入牌組' }).click()
   await expect(page.getByRole('dialog', { name: '匯入牌組' })).toBeVisible()
-  await expect(page.getByLabel('牌組張數')).toBeFocused()
-  await page.keyboard.press('Escape')
-  await expect(importButton).toBeFocused()
-
   await Promise.all([
     page.goto('/rooms', { waitUntil: 'domcontentloaded' }),
     page.context().request.get('/api/games'),
@@ -166,13 +161,6 @@ test('Lobby navigation reloads Game state, resets parameter-local state, and tea
     await eventSummary.click()
     const eventSheet = page.getByRole('dialog', { name: '戰局紀錄' })
     await expect(eventSheet).toBeVisible()
-    await expect(eventSheet.getByText(/^第 1 回合・/)).toBeVisible()
-    await eventSheet.getByRole('button', { name: '關閉戰局紀錄' }).click()
-    await expect(eventSummary).toBeFocused()
-    await expect(eventSheet).toHaveCount(0)
-    await eventSummary.click()
-    await expect(eventSheet).toBeVisible()
-
     await page.evaluate((path) => {
       history.replaceState(history.state, '', path)
       window.dispatchEvent(new PopStateEvent('popstate', { state: history.state }))

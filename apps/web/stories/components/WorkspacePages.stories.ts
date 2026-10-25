@@ -57,6 +57,16 @@ export const ReplaysEmpty = screen('replays', true, 'empty')
 export const ReplaysError = screen('replays', false, 'error')
 export const Replay = screen('replay')
 export const ReplayDark = screen('replay', true)
+export const ReplayFinished: Story = {
+  ...screen('replay', true, 'finished'),
+  tags: ['conclusion'],
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement)
+    await userEvent.click(await canvas.findByRole('button', { name: '最後一步' }))
+    const result = await canvas.findByRole('region', { name: '對局結算' })
+    await expect(within(result).getByRole('heading', { name: '我方 勝利' })).toBeVisible()
+  },
+}
 export const Competition = screen('competition')
 export const CompetitionDark = screen('competition', true)
 export const CompetitionDetails = screen('detail')

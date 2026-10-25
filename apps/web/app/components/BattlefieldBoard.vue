@@ -4,6 +4,7 @@
     class="battlefield"
     :class="{
       'four-player': seats.length === 4,
+      'is-finished': isFinished,
       'personal-deck': usesPersonalDeck,
       'detail-open': hasOpenDetail(),
       'decision-pending': decisionPlayer !== null,
@@ -15,8 +16,8 @@
       <div
         class="turn-capsule battle-glass"
         :class="{
-          'has-active-turn': state.currentPlayer,
-          'is-your-turn': mode === 'live' && Boolean(state.currentPlayer) && anchorPlayer === state.currentPlayer,
+          'has-active-turn': !isFinished && state.currentPlayer,
+          'is-your-turn': !isFinished && mode === 'live' && Boolean(state.currentPlayer) && anchorPlayer === state.currentPlayer,
         }"
       >
         <Transition name="turn-capsule-update" mode="out-in" appear>
@@ -24,7 +25,7 @@
             <div class="turn-capsule-heading">
               <span class="turn-number">第 {{ state.turnNumber }} 回合</span>
               <strong>{{ turnHeadline }}</strong>
-              <span class="turn-phase" :title="phaseHeadline">{{ phaseHeadline }}</span>
+              <span v-if="!isFinished" class="turn-phase" :title="phaseHeadline">{{ phaseHeadline }}</span>
             </div>
           </div>
         </Transition>
@@ -239,7 +240,7 @@
           </template>
           </div>
         </div>
-      <div class="action-dock-slot" :class="{ 'controls-hidden': !showTurnControls }">
+      <div v-if="!isFinished" class="action-dock-slot" :class="{ 'controls-hidden': !showTurnControls }">
         <Transition name="action-dock" appear>
           <div v-if="showTurnControls" class="action-dock"><slot name="turn-controls" /></div>
         </Transition>
@@ -450,7 +451,8 @@ const seats = computed(() => {
     return { player, position: seatPosition, compactColumn: seatPosition === 'bottom' ? 1 : compactColumn }
   })
 })
-const decisionPlayer = computed(() => props.state.pendingChoice?.player ?? null)
+const isFinished = computed(() => props.state.status === 'Finished')
+const decisionPlayer = computed(() => isFinished.value ? null : props.state.pendingChoice?.player ?? null)
 function isSeatExpanded(player: PlayerId, position: SeatPosition) {
   return position === 'bottom' || seats.value.length === 2 || player === props.state.currentPlayer
 }
@@ -484,6 +486,7 @@ const battlefieldStyle = computed(() => {
   }
 })
 const turnHeadline = computed(() => {
+  if (isFinished.value) return '戰局結束'
   if (props.mode === 'replay') return `回放・${playerLabel(props.state.currentPlayer)}行動`
   if (props.state.pendingRandomness) return '伺服器正在洗牌'
   if (decisionPlayer.value) {
@@ -506,6 +509,7 @@ const phaseHeadline = computed(() => {
   return phaseLabel(props.state.phase)
 })
 const turnCapsuleKey = computed(() => [
+  props.state.status,
   props.state.turnNumber,
   props.state.currentPlayer ?? '',
   props.state.phase,
@@ -524,6 +528,7 @@ const pendingChoiceHeadline = computed(() => {
 })
 const pendingResponseLabel = computed(() => (
   props.mode === 'live'
+    && !isFinished.value
     && props.state.pendingChoice?.visibility === 'visible'
     && props.anchorPlayer === props.state.pendingChoice.player
     ? pendingChoiceHeadline.value
@@ -1142,5 +1147,36 @@ function phaseLabel(value: string) { return { TurnStart: '回合開始', ActiveE
   .previous-formation strong { font-size: 12px; }
   .center-stack { grid-template-rows: minmax(76px, .55fr) minmax(0, .95fr); gap: 5px; }
   .player-detail-facts { grid-template-columns: 1fr 1fr; gap: 10px 14px; }
+}
+/* 終局使用整個中央區，保留兩隊資訊與牌桌，讓結算成為閱讀焦點。 */
+.battlefield.is-finished { grid-template-rows: 44px 32px clamp(72px, 10dvh, 88px) minmax(0, 1fr) clamp(128px, 20dvh, 160px); gap: 8px; padding: 12px; }
+.battlefield.is-finished .battle-stage-strip { height: 44px; min-height: 44px; }
+.battlefield.is-finished .turn-capsule { padding-block: 7px; }
+.battlefield.is-finished .center-stack { grid-row: 4; grid-column: 1 / -1; grid-template-columns: minmax(0, 1fr); grid-template-rows: minmax(0, 1fr); }
+.battlefield.is-finished .board-center { grid-column: 1; grid-row: 1; }
+.battlefield.is-finished .seat-top { grid-column: var(--compact-column); }
+.battlefield.is-finished:not(.four-player) .seat-top { grid-column: 1 / -1; }
+.battlefield.is-finished .formation-field { grid-template-rows: minmax(0, 1fr); align-content: center; padding: 8px 64px; background: none; }
+.battlefield.is-finished .terminal-resolution { container: conclusion / size; min-height: 0; justify-items: center; align-content: safe center; overflow-y: auto; padding: 4px; }
+.battlefield.is-finished .turn-capsule-heading { grid-template-columns: auto minmax(0, auto); }
+@media (min-width: 601px) {
+  .battlefield.is-finished .seat-bottom .seat-hand { padding-block: 6px; }
+  .battlefield.is-finished .seat-bottom .seat-hand :deep(.playing-card) { width: clamp(52px, 9dvh, 80px); }
+}
+@media (min-width: 601px) and (max-height: 700px) {
+  .battlefield.is-finished { grid-template-rows: 40px 28px 64px minmax(0, 1fr) 112px; gap: 6px; padding: 8px; }
+  .battlefield.is-finished .battle-stage-strip { height: 40px; min-height: 40px; }
+  .battlefield.is-finished .player-seat { padding-block: 8px; }
+}
+@media (max-width: 600px) {
+  .battlefield.is-finished { grid-template-rows: 40px 28px 64px minmax(0, 1fr) 112px; gap: 6px; padding: 8px; }
+  .battlefield.is-finished .battle-stage-strip { height: 40px; min-height: 40px; }
+  .battlefield.is-finished .formation-field { padding: 8px 0; }
+  .battlefield.is-finished:not(.personal-deck) .formation-field { padding-top: 48px; }
+  .battlefield.is-finished .shared-discard-dock { margin: 0; top: 4px; right: auto; }
+  .battlefield.is-finished .shared-discard-dock :deep(.discard-pile-trigger) { width: 30px; }
+}
+@media (max-width: 600px) and (max-height: 700px) {
+  .battlefield.is-finished { grid-template-rows: 40px 28px 56px minmax(0, 1fr) 104px; gap: 4px; }
 }
 </style>

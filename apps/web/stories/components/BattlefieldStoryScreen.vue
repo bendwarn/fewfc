@@ -13,13 +13,20 @@
         :anchor-player="anchorPlayer"
         :mode="mode"
         :selected-card-ids="selectedHandCardIds"
-        :selectable-player="displayState.currentPlayer === anchorPlayer ? anchorPlayer : null"
+        :selectable-player="!isFinished && displayState.currentPlayer === anchorPlayer ? anchorPlayer : null"
         :connected-players="displayState.players.map(player => player.id)"
-        :show-turn-controls="mode === 'live' && Boolean(anchorPlayer && displayState.currentPlayer === anchorPlayer)"
+        :show-turn-controls="!isFinished && mode === 'live' && Boolean(anchorPlayer && displayState.currentPlayer === anchorPlayer)"
         ref="battlefield"
         @select-card="toggleStoryHandCard"
         @respond-to-choice="openPendingChoice"
       >
+        <template #terminal-resolution>
+          <GameConclusionPanel v-if="isFinished" :state="displayState" :team-label="conclusionTeamLabel" :player-label="player => displayNames[player] ?? player" :animate="mode === 'live'">
+            <template v-if="mode === 'live'" #actions>
+              <button class="primary-button" type="button">{{ competition ? '返回賽事' : anchorPlayer ? '返回房間' : '離開觀戰' }} <span aria-hidden="true">→</span></button>
+            </template>
+          </GameConclusionPanel>
+        </template>
         <template #turn-controls>
           <div class="story-turn-controls battle-turn-controls">
             <section class="story-action-group story-abilities battle-action-group battle-glass">
@@ -69,7 +76,7 @@
         <header class="story-record-heading">
           <span class="story-record-emblem" aria-hidden="true">✧</span>
           <h2>戰局紀錄</h2>
-          <span class="story-record-live"><i />即時更新</span>
+          <span class="story-record-live"><i v-if="!isFinished" />{{ isFinished ? '已結束' : '即時更新' }}</span>
         </header>
         <div v-if="showMotionDemo" class="story-motion-controls" aria-label="動效預覽控制">
           <p>點擊自己的手牌可切換選取狀態。</p>
@@ -80,7 +87,7 @@
         <BattleRecordTimeline class="story-record-timeline" :groups="storyRecordGroups" :current-turn-number="storyCurrentTurnNumber" />
       </aside>
       <button class="battlefield-story-mobile-record" type="button" :aria-expanded="recordOpen" @click="recordOpen = true">
-        <strong>戰局紀錄</strong><span>小明的回合開始 · 目前可選擇能力與本回合行動。</span><b aria-hidden="true">⌃</b>
+        <strong>戰局紀錄</strong><span>{{ isFinished ? '戰局結束 · 查看最後行動與結算結果。' : '小明的回合開始 · 目前可選擇能力與本回合行動。' }}</span><b aria-hidden="true">⌃</b>
       </button>
     </div>
     <Teleport to="body">
@@ -119,6 +126,7 @@ import ThemeSelector from '~/components/ThemeSelector.vue'
 import AnchoredSurface from '~/components/AnchoredSurface.vue'
 import BattleRecordTimeline from '~/components/BattleRecordTimeline.vue'
 import BattlefieldBoard from '~/components/BattlefieldBoard.vue'
+import GameConclusionPanel from '~/components/GameConclusionPanel.vue'
 import ModalShell from '~/components/ModalShell.vue'
 import { presentPendingChoice } from '~/lib/pending-choice-presentation'
 import type { CardInstanceId, PlayerId, PublicGameState } from '~/types/fewfc'
@@ -131,6 +139,7 @@ const props = defineProps<{
   showSplendorMenu?: boolean
   showMotionDemo?: boolean
   showSiteHeader?: boolean
+  competition?: boolean
 }>()
 
 const storyRounds = [
@@ -161,7 +170,13 @@ const currentStoryRound = {
   description: '選擇行動…',
 }
 const displayState = ref(props.state)
-const storyCurrentTurnNumber = computed(() => displayState.value.turnNumber)
+const isFinished = computed(() => displayState.value.status === 'Finished')
+const storyCurrentTurnNumber = computed(() => isFinished.value ? null : displayState.value.turnNumber)
+function conclusionTeamLabel(team: string) {
+  const perspective = props.anchorPlayer ?? displayState.value.turnOrder[0]
+  const ownTeam = displayState.value.players.find(player => player.id === perspective)?.team
+  return props.anchorPlayer ? (team === ownTeam ? '我方' : '對方') : (team === ownTeam ? '先手方' : '後手方')
+}
 const storyRecordGroups = computed(() => [
   ...storyRounds.map((round, index) => ({
     id: `turn-${index + 1}`,
@@ -177,7 +192,11 @@ const storyRecordGroups = computed(() => [
     id: `turn-${displayState.value.turnNumber}`,
     turnNumber: displayState.value.turnNumber,
     title: `第 ${displayState.value.turnNumber} 回合 · ${props.displayNames[displayState.value.currentPlayer ?? ''] ?? '等待開始'}的回合`,
-    entries: [{
+    entries: isFinished.value ? [{
+      id: 'game-conclusion',
+      title: displayState.value.gameConclusion?.outcome.type === 'draw' ? '平局' : '戰局結束',
+      summary: '最後行動已結算，可查看牌桌與對局紀錄。',
+    }] : [{
       id: `turn-${displayState.value.turnNumber}-current`,
       title: displayState.value.currentPlayer === props.anchorPlayer ? currentStoryRound.description : '等待玩家行動。',
     }],

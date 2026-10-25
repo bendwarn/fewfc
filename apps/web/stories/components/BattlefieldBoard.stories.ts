@@ -144,6 +144,7 @@ const terminalState = createExampleGameState()
 const winningTeam = terminalState.players[0]!.team
 const losingTeam = terminalState.players[1]!.team
 terminalState.status = 'Finished'
+terminalState.hp = terminalState.hp.map(entry => ({ ...entry, hp: entry.team === losingTeam ? 0 : entry.hp }))
 terminalState.gameConclusion = {
   outcome: { type: 'winner', team: winningTeam },
   causes: [{ type: 'teamHpDepleted', teams: [losingTeam] }],
@@ -443,7 +444,7 @@ export const TerminalFormation: Story = {
     await expect(canvas.getByRole('heading', { name: '我方 勝利' })).toBeVisible()
     await expect(canvas.getByText('對方 的生命值歸零')).toBeVisible()
     const result = within(resultPanel)
-    await expect(result.getByText('小明', { exact: true })).toBeVisible()
+    await expect(result.getByText('最後行動 · 小明', { exact: true })).toBeVisible()
     await expect(result.getByText('烈焰陣', { exact: true })).toBeVisible()
     await expect(canvasElement.querySelectorAll('.formation-field .formation-card')).toHaveLength(1)
     await expect(canvasElement.textContent).not.toContain('先手')

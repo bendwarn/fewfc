@@ -9,11 +9,11 @@ function pageName(path: string): string | null {
   if (path === '/login') return '登入'
   if (path === '/account') return '帳號設定'
   if (path === '/privacy') return '隱私權政策'
-  if (path === '/rooms') return '對戰大廳'
-  if (path.startsWith('/rooms/')) return '對戰房間'
+  if (path === "/rooms") return "大廳";
+  if (path.startsWith("/rooms/")) return "房間";
   if (path === '/deck') return '個人牌組'
   if (path === '/replays') return '重播紀錄'
-  if (path.startsWith('/replays/')) return '對戰重播'
+  if (path.startsWith("/replays/")) return "重播";
   return null
 }
 
