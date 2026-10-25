@@ -116,6 +116,8 @@ P3 範圍及相依只見[票據索引](tickets/README.md#優先級與首場界�
 
 2026-10-16 票 22 本輪 **HOLD**：[整合報告與原始命令／產物紀錄](../../scratch/tour-attempt/ticket22-first-event-2026-10-16/report.md)。Rust 全量 `cargo test`、格式檢查、Nuxt typecheck、fresh WASM／Nuxt build、CompetitionRoom／GameRoom 元件測例及專用 Brave 多 session 真 Worker 流程通過；Web unit suite 為 954 pass／6 skip／0 fail。主辦開放報名後即關閉 session，兩個玩家 session 從 F 走到結束；Round Robin、Swiss、單敗及雙敗都有實際 1v1 對局並自動完成。隔離 Worker 把初始血量設定回應覆寫為 20，不改正式規則；階段入口仍於 E+5 分鐘發布，入口一開且玩家準備後立即開賽，不等 T。票 22 第 2、6、7 項限定通過；2v2、完整 Swiss 排名／同分、淘汰 Draw、季軍、雙敗重置與缺席／超時／退出／空缺等矩陣未放行，故整票維持 HOLD。P3 仍非前置。
 
+2026-10-25 在 HEAD `7e98404` 重驗，票 22 維持 **HOLD**：Cargo 778、Web unit 965／6 skip、server integration 232、component 159 全通過；typecheck、fresh WASM／Nuxt production build、fmt 與 diff check 通過，WASM／target SHA-256 相同。此 HEAD 後續變更了競賽 API、GameRoom 與即時同步，因此 10-16 的真 Worker／Brave 正常流程不作目前版證據；目前版尚未重跑多 session，也未實證 2v2 與 3–5 項矩陣。此前本機手動匿名競賽 replay 查詢回 404，與 10-16 runner 紀錄不一致，仍待目前版實測釐清。Storybook 靜態建置成功；自動 Storybook 測試受本機 watcher／Chromium 權限限制，未記為通過。完整命令、SHA 與邊界見[票 22 目前 HEAD 重驗](tickets/22-first-event-integration-validation.md#目前-head-重驗2026-10-25)。
+
 ## 歷史能力與證據
 
 報名／個人牌組、固定玩家入口／準備、目前賽程 GET／單階段管理、更正 HTTP／UI、權威時計顯示與暫停恢復已有歷史限定驗收；不重複派工。原生鏈多數只證 RR 1v1；2v2 牌組快照另有獨立證據，均非全賽制／重啟矩陣。

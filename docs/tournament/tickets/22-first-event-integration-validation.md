@@ -15,11 +15,11 @@
 ## 驗收條件
 
 - [ ] 01–21 必要元件／純模組及指定完整現況審核皆通過後才集中總驗收；needs-info 或未決結果不能總放行。
-- [x] 使用新建 WASM、專案型別／打包及真 Worker／Brave 從 F 到整場結束驗證，不以舊產物、fake bridge 或單一循環個人賽替代。本輪由專用多 session runner 實際完成四個階段的 1v1 賽事；完整賽制／例外矩陣見第 3–5 項。
+- [ ] 使用新建 WASM、專案型別／打包及真 Worker／Brave 從 F 到整場結束驗證，不以舊產物、fake bridge 或單一循環個人賽替代。2026-10-16 的多 session 實跑只代表當時版本；目前 HEAD 尚未重跑真 Worker／Brave 全流程。
 - [ ] 報告明列四賽制、個人／團體、必要準備選牌規則與多階段的覆蓋，包含普通下一局、淘汰 Draw、季軍及雙敗重置賽。
 - [ ] 涵蓋單隊／雙隊缺席、先後／同時超時、退出／空缺、零／一隊及空缺與未決名次的區別；未決不得晉級／公開，明確空缺按政策收尾，不強求三個得獎隊伍。
 - [ ] 核對所有排序項、對手集合、限定主辦判斷及瑞士固定抽籤配對；賽中勝場與賽後公開結果一致。
-- [x] 正常無爭議路徑從凍結、抽籤、逐輪開房至結束不需主辦介入；本輪在開放報名後關閉主辦 session，由玩家 session 自動走到結束。全同比較的主辦判斷與異常處置另列例外。
+- [ ] 正常無爭議路徑從凍結、抽籤、逐輪開房至結束不需主辦介入；2026-10-16 的實跑曾在開放報名後關閉主辦 session，由玩家 session 自動走到結束；目前 HEAD 尚未重跑。
 - [x] 主審集中一次一個程序，記錄實際命令、產物與結果；P3 及進階故障矩陣不作首場前置。
 
 ## 本次整合結果（2026-10-16）
@@ -44,3 +44,22 @@
 本輪 Standards／Spec 兩軸差異審查未發現文件規範硬性違反或明確錯誤實作；Spec 審查確認上述矩陣仍缺。Standards 僅提出一項低嚴重度判斷建議：`game-room.ts` 多處重複判斷 `gameNumber === 1`，可抽成明確 helper；此建議不阻擋驗收。Ticket 22 尚未完成整體放行。
 
 共用驗收與工作規則見[票據索引](README.md#共用驗收與工作規則)；產品政策見[競賽設計](../competitive-play-design.md)，現況與放行證據見[審核關卡](../competition-review-gates.md)。
+
+## 目前 HEAD 重驗（2026-10-25）
+
+**整票仍為 HOLD。** 本輪檢查的是 `7e984048cea67f5ba8866ed21d69f3be5e17edef`（`Refactor game rules and improve web interactions`）。該提交變更了競賽房間 API、GameRoom 與即時同步，因此 10-16 的瀏覽器全流程只保留為舊版歷史證據；本輪不把它外推為目前 HEAD 已驗收。
+
+### 通過的目前版本檢查
+
+- `cargo test -- --quiet`：778 通過、0 失敗；`cargo fmt --all -- --check`：通過。
+- 從 `apps/web` 執行 `bun run test:unit`：965 通過、6 略過、0 失敗；`bun run test:integration`：232 通過、0 失敗；`bun run test:component`：159 通過、0 失敗；`bun run typecheck`：通過。
+- 從 `apps/web` 執行 `bun run build`：新建 WASM 與 `target/wasm32-unknown-unknown/release/fewfc.wasm` SHA-256 相同，均為 `7c3525bd51a9378ea1f34b81dcb59f2d246ccce34548dd516df9dd288d65ca9a`；Nuxt production build 通過。
+- Rust 測例涵蓋淘汰 Draw 延續、單敗季軍、雙敗重置、雙負／空位與瑞士多輪；Web Worker／伺服器測例涵蓋 2v2 固定名單／準備、缺席、時計逾時、裁決、空缺與排名等元件分支。這些是目前來源的測例證據，並非真瀏覽器端到端紀錄。
+- Storybook 靜態建置及 Codex 瀏覽器中的準備控制普通房狀態檢視通過。`bun run test:storybook` 因 Watchpack `EMFILE`、無法寫入使用者目錄的 Storybook 設定，以及 Chromium 啟動遭本機權限拒絕而未能執行；不列為產品測例失敗，也不列為通過。
+- `git diff --check`：通過；重驗前工作目錄乾淨。
+
+### 尚待的目前版本驗收
+
+本輪沒有在目前 HEAD 以真 Worker／Brave 多 session 重跑正常流程，也沒有實際完成 2v2、完整 Swiss 排名／同分、淘汰 Draw 時計沿用、單敗季軍、雙敗重置及缺席／超時／退出／空缺矩陣。測例通過不能替代這些整合實證，因此驗收條件 1–6 目前均未放行；條件 7 的驗證程序與命令紀錄已完成。票 22 維持 HOLD。
+
+另更正匿名重播證據：本次工作脈絡中的本機手動測試曾對競賽 replay endpoint 收到 HTTP 404（`Competition replay is unavailable`）。這與 10-16 runner 紀錄中的匿名重播成功敘述尚未對上；目前 HEAD 尚未重現並釐清，因此不把匿名公告／重播讀取列為已驗收。
