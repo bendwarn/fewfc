@@ -83,6 +83,7 @@ const props = defineProps<{
   memberConnected: boolean
   socketConnected: boolean
   loading: boolean
+  submitReady: (ready: boolean, options: { signal: AbortSignal }) => Promise<unknown>
 }>()
 
 const emit = defineEmits<{
@@ -179,14 +180,7 @@ async function submitDesired(desired: boolean) {
   let shouldRefresh = false
 
   try {
-    const response: unknown = await $fetch(
-      `/api/games/${encodeURIComponent(props.gameId.trim())}/competition-ready`,
-      {
-        method: 'POST',
-        body: { ready: desired },
-        signal: controller.signal,
-      },
-    )
+    const response = await props.submitReady(desired, { signal: controller.signal })
     if (!isCurrentRequest(sequence, identity)) return
     if (!isExactCompetitionReadyAck(response, desired)) {
       const error = new Error('Invalid competition-ready response')

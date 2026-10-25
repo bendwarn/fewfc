@@ -16,20 +16,23 @@ import {
   serializePlayerNotifications,
 } from '../lib/player-notifications'
 
+import type { LobbyOperations } from '#shared/realtime'
+
 const notificationVisibleDurationMs = 5000
 
 export function usePlayerNotifications() {
   const notifications = ref<PlayerNotification[]>([])
   const visibleNotifications = ref<PlayerNotification[]>([])
   const roomListRevision = ref(0)
-  const connectionState = ref<'idle' | 'connecting' | 'connected' | 'reconnecting'>('idle')
-  let socket: WebSocket | null = null
-  let reconnectTimer: ReturnType<typeof setTimeout> | undefined
+  const channel = useRealtimeSocket<LobbyOperations>((value) => {
+    const message = value as PlayerNotificationSocketMessage
+    if (message.type === 'roomsChanged') roomListRevision.value += 1
+    else if (message.type === 'notification') receiveNotification(message.data)
+  })
+  const connectionState = channel.connectionState
   let retentionExpiryTimer: ReturnType<typeof setTimeout> | undefined
   const notificationTimers = new Map<string, ReturnType<typeof setTimeout>>()
   const handledNotificationIds = new Set<string>()
-  let reconnectAttempt = 0
-  let shouldConnect = false
   let activeUserId = ''
   let storageUsable = true
 
@@ -200,83 +203,11 @@ export function usePlayerNotifications() {
   }
 
   function connect() {
-    if (!import.meta.client || !activeUserId) {
-      return
-    }
-
-    shouldConnect = true
-
-    if (socket && socket.readyState <= WebSocket.OPEN) {
-      return
-    }
-
-    clearTimeout(reconnectTimer)
-    connectionState.value = reconnectAttempt > 0 ? 'reconnecting' : 'connecting'
-    const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:'
-    const nextSocket = new WebSocket(
-      `${protocol}//${window.location.host}/api/notifications/socket`,
-    )
-    socket = nextSocket
-    const socketUserId = activeUserId
-
-    nextSocket.addEventListener('open', () => {
-      if (socket !== nextSocket || activeUserId !== socketUserId) return
-      reconnectAttempt = 0
-      connectionState.value = 'connected'
-    })
-
-    nextSocket.addEventListener('message', (event) => {
-      if (socket !== nextSocket || activeUserId !== socketUserId) return
-      if (typeof event.data !== 'string' || event.data === 'pong') {
-        return
-      }
-
-      let message: PlayerNotificationSocketMessage
-      try {
-        message = JSON.parse(event.data) as PlayerNotificationSocketMessage
-      } catch {
-        return
-      }
-
-      if (message.type === 'roomsChanged') {
-        roomListRevision.value += 1
-        return
-      }
-
-      if (message.type === 'notification') {
-        receiveNotification(message.data)
-      }
-    })
-
-    nextSocket.addEventListener('close', () => {
-      if (!shouldConnect || socket !== nextSocket) {
-        return
-      }
-
-      reconnectAttempt += 1
-      connectionState.value = 'reconnecting'
-      reconnectTimer = setTimeout(
-        connect,
-        Math.min(1000 * (2 ** (reconnectAttempt - 1)), 10000),
-      )
-    })
-
-    nextSocket.addEventListener('error', () => {
-      nextSocket.close()
-    })
+    if (activeUserId) channel.connect('/api/notifications/socket')
   }
 
   function disconnect() {
-    shouldConnect = false
-    clearTimeout(reconnectTimer)
-    reconnectAttempt = 0
-    connectionState.value = 'idle'
-    const current = socket
-    socket = null
-
-    if (current && current.readyState < WebSocket.CLOSING) {
-      current.close(1000, 'session closed')
-    }
+    channel.close()
   }
 
   function dismiss(id: string) {
@@ -321,6 +252,7 @@ export function usePlayerNotifications() {
 
   return {
     notifications,
+    request: channel.request,
     visibleNotifications,
     roomListRevision,
     connectionState,

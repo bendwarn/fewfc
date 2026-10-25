@@ -9,8 +9,8 @@ import {
 
 export default defineEventHandler(async (event) => {
   const session = await requireSession(event)
-  const competitionId = getRouterParam(event, 'id')?.trim()
-  const matchId = getRouterParam(event, 'matchId')?.trim()
+  const competitionId = getRouterParam(event, 'id', { decode: true })?.trim()
+  const matchId = getRouterParam(event, 'matchId', { decode: true })?.trim()
   if (!competitionId || !matchId) {
     throw createError({
       statusCode: 400,

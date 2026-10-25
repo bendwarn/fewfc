@@ -1,4 +1,5 @@
 import { mountSuspended } from '@nuxt/test-utils/runtime'
+import { flushPromises } from '@vue/test-utils'
 import { defineComponent, h, ref } from 'vue'
 import { afterEach, expect, it, vi } from 'vitest'
 import { emptyPublicState, type GameRoomResponse } from '#shared/game-room'
@@ -9,11 +10,20 @@ class FakeWebSocket extends EventTarget {
   static OPEN = 1
   static CLOSING = 2
   readyState = FakeWebSocket.OPEN
+  sent: { requestId: string; input: { action: { type: string } } }[] = []
 
   constructor(readonly url: string) { super() }
 
   close() {
     this.readyState = 3
+  }
+
+  send(wire: string) { this.sent.push(JSON.parse(wire)) }
+
+  result(requestId: string, data: unknown) {
+    this.dispatchEvent(new MessageEvent('message', {
+      data: JSON.stringify({ type: 'result', requestId, ok: true, data }),
+    }))
   }
 
   receive(response: GameRoomResponse) {
@@ -62,11 +72,11 @@ function installWebSocket(sockets: FakeWebSocket[]) {
   })
 }
 
-async function mountRoom() {
+async function mountRoom(viewerId: ViewerId = 'observer') {
   const capture: { room?: ReturnType<typeof useGameRoom> } = {}
   const component = defineComponent({
     setup() {
-      const viewer = ref<ViewerId>('observer')
+      const viewer = ref<ViewerId>(viewerId)
       capture.room = useGameRoom(viewer)
       return () => h('div')
     },
@@ -85,7 +95,7 @@ afterEach(() => {
   vi.unstubAllGlobals()
 })
 
-it('updates competition mode from accepted HTTP and WebSocket room responses, then clears it with the room', async () => {
+it('updates competition mode from accepted room responses and WebSocket broadcasts, then clears it with the room', async () => {
   const sockets: FakeWebSocket[] = []
   installWebSocket(sockets)
   const { wrapper, room } = await mountRoom()
@@ -124,6 +134,41 @@ it('updates competition mode from accepted HTTP and WebSocket room responses, th
   expect(room.competitionMode.value).toEqual({ kind: 'ordinary' })
   expect(room.onlineGameId.value).toBeNull()
   await wrapper.unmount()
+})
+
+it('keeps the command lock when a concurrent playable query finishes first', async () => {
+  const sockets: FakeWebSocket[] = []
+  installWebSocket(sockets)
+  const { wrapper, room } = await mountRoom('alice')
+  try {
+    const response = waitingResponse()
+    response.metadata.gameInstanceId = 'match-a'
+    response.state.currentPlayer = 'alice'
+    room.applyRoomResponse(response)
+    const socket = sockets[0]!
+    socket.dispatchEvent(new Event('open'))
+    room.selectedCards.value = [1]
+    await flushPromises()
+    const query = socket.sent.find(request => request.input.action.type === 'playableActions')!
+    expect(query).toBeDefined()
+
+    const command = room.advanceAutomatic()
+    await flushPromises()
+    const advance = socket.sent.find(request => request.input.action.type === 'advanceAutomatic')!
+    expect(advance).toBeDefined()
+    expect(room.isSubmittingCommand.value).toBe(true)
+
+    socket.result(query.requestId, { playableActions: [] })
+    await flushPromises()
+    expect(room.isQueryingPlayableActions.value).toBe(false)
+    expect(room.isSubmittingCommand.value).toBe(true)
+    expect(room.isLoading.value).toBe(true)
+
+    socket.result(advance.requestId, response)
+    expect(await command).toBe(true)
+    expect(room.isSubmittingCommand.value).toBe(false)
+    expect(room.isLoading.value).toBe(false)
+  } finally { await wrapper.unmount() }
 })
 
 it('refreshes the trusted competition context from a reconnected room socket', async () => {

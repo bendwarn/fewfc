@@ -15,7 +15,6 @@ import type {
   GameRoomResponse,
   GameRoomSocketMessage,
   OnlineGameAction,
-  PlayableActionsResponse,
 } from '#shared/game-room'
 import type { CardsChoiceAnswer, VisibleCardPendingChoice } from '~/lib/pending-choice-interaction'
 import {
@@ -47,6 +46,8 @@ import {
   parseGameRoomCompetitionMode,
   type CompetitionRoomMode,
 } from '~/lib/competition-ready'
+
+import type { RoomOperations } from '#shared/realtime'
 
 type ViewerRef = Ref<ViewerId>
 
@@ -144,18 +145,25 @@ export function useGameRoom(viewer: ViewerRef) {
     ))
   ))
   const errorMessage = ref<string | null>(null)
-  const isLoading = ref(false)
+  const roomOperations = ref(0)
   const isSubmittingCommand = ref(false)
   const isQueryingPlayableActions = ref(false)
+  const isLoading = computed(() => isSubmittingCommand.value || roomOperations.value > 0
+    || (isQueryingPlayableActions.value && !state.value.pendingChoice))
   const interaction = ref<GameRoomResponse['interaction']>({
     canChooseInitialPouch: false,
   })
-  const connectionState = ref<'idle' | 'connecting' | 'connected' | 'reconnecting'>('idle')
   const roomDissolved = ref(false)
-  let roomSocket: WebSocket | null = null
-  let roomSocketGameId: string | null = null
-  let reconnectTimer: ReturnType<typeof setTimeout> | undefined
-  let reconnectAttempt = 0
+  const roomChannel = useRealtimeSocket<RoomOperations>((value, reconnected) => {
+    const message = value as GameRoomSocketMessage
+    if (message.type === 'roomState' && message.data.gameId === onlineGameId.value) {
+      applyRoomResponse(message.data, true, reconnected)
+    } else if (message.type === 'roomDissolved') {
+      roomDissolved.value = true
+      disconnectRoomSocket()
+    }
+  })
+  const connectionState = roomChannel.connectionState
   let playableQueryRevision = 0
   let playableQueryInFlight = false
   let activeTransactionId: string | null = null
@@ -180,7 +188,7 @@ export function useGameRoom(viewer: ViewerRef) {
 
   watch(selectedCards, () => {
     const revision = ++playableQueryRevision
-    if (viewer.value !== state.value.currentPlayer) {
+    if (viewer.value !== state.value.currentPlayer || state.value.pendingChoice) {
       playableActions.value = []
       return
     }
@@ -227,7 +235,6 @@ export function useGameRoom(viewer: ViewerRef) {
       if (playableQueryInFlight) {
         playableQueryInFlight = false
         isQueryingPlayableActions.value = false
-        isLoading.value = false
       }
     }
     const previousState = state.value
@@ -289,22 +296,23 @@ export function useGameRoom(viewer: ViewerRef) {
     retryableSubmission = submission
 
     isSubmittingCommand.value = true
-    isLoading.value = true
     errorMessage.value = null
 
     try {
-      applyRoomResponse(await $fetch<GameRoomResponse>(`/api/games/${onlineGameId.value}/commands`, {
-        method: 'POST',
-        body: {
-          commandId: submission.commandId,
-          gameInstanceId: submission.gameInstanceId,
-          transactionId: submission.transactionId,
-          action,
-        },
-      }))
+      const response = await roomChannel.request('command', {
+        commandId: submission.commandId,
+        gameInstanceId: submission.gameInstanceId,
+        transactionId: submission.transactionId,
+        action,
+      })
+      if (!('gameId' in response)) throw new Error('Invalid command response')
+      applyRoomResponse(response)
       retryableSubmission = null
       return true
     } catch (error) {
+      if ((error as { data?: { code?: string } })?.data?.code === 'socketTimeout') {
+        await refreshOnlineGame()
+      }
       if (action.type === 'chooseInitialPouch' && isInitialPouchAlreadyChosen(error)) {
         retryableSubmission = null
         await refreshOnlineGame()
@@ -314,7 +322,6 @@ export function useGameRoom(viewer: ViewerRef) {
       return false
     } finally {
       isSubmittingCommand.value = false
-      isLoading.value = false
     }
   })
 
@@ -328,43 +335,29 @@ export function useGameRoom(viewer: ViewerRef) {
       return
     }
 
-    isLoading.value = true
+    roomOperations.value += 1
     errorMessage.value = null
 
     try {
-      applyRoomResponse(await $fetch<GameRoomResponse>(`/api/games/${onlineGameId.value}`))
+      applyRoomResponse(await roomChannel.request('state', undefined))
     } catch (error) {
       errorMessage.value = presentApiError(error, '無法更新線上房間')
     } finally {
-      isLoading.value = false
+      roomOperations.value -= 1
     }
   }
 
   async function startOnlineGame() {
-    if (!onlineGameId.value) {
-      return
-    }
-
-    isLoading.value = true
-    errorMessage.value = null
-
-    try {
-      applyRoomResponse(await $fetch<GameRoomResponse>(`/api/games/${onlineGameId.value}/start`, {
-        method: 'POST',
-      }))
-    } catch (error) {
-      errorMessage.value = presentApiError(error, '無法開始線上遊戲')
-    } finally {
-      isLoading.value = false
-    }
+    await roomMutation('start', undefined)
   }
 
   async function toggleReady() {
-    await roomMutation('ready')
+    const member = metadata.value?.members.find(member => member.player === viewer.value)
+    if (member) await roomMutation('ready', { ready: !member.ready })
   }
 
   async function leaveOnlineRoom() {
-    const successful = await roomMutation('leave')
+    const successful = await roomMutation('leave', undefined)
 
     if (successful) {
       clearRoom()
@@ -378,7 +371,7 @@ export function useGameRoom(viewer: ViewerRef) {
   }
 
   async function dissolveOnlineRoom() {
-    const successful = await roomMutation('dissolve')
+    const successful = await roomMutation('dissolve', undefined)
 
     if (successful) {
       disconnectRoomSocket()
@@ -389,54 +382,28 @@ export function useGameRoom(viewer: ViewerRef) {
   }
 
   async function resetOnlineRoom() {
-    return await roomMutation('reset')
+    return await roomMutation('reset', undefined)
   }
 
   async function updateRuleModules(enabledRuleModules?: string[], ruleVersion?: '5.16' | '5.17') {
-    if (!onlineGameId.value) return false
-
-    isLoading.value = true
-    errorMessage.value = null
-    try {
-      applyRoomResponse(await $fetch<GameRoomResponse>(
-        `/api/games/${onlineGameId.value}/rules`,
-        {
-          method: 'PUT',
-          body: { enabledRuleModules, ruleVersion },
-        },
-      ))
-      return true
-    } catch (error) {
-      errorMessage.value = presentApiError(error, '無法更新規則')
-      return false
-    } finally {
-      isLoading.value = false
-    }
+    return await roomMutation('rules', { enabledRuleModules, ruleVersion })
   }
 
-  async function roomMutation(path: string, body?: Record<string, unknown>): Promise<boolean> {
-    if (!onlineGameId.value) {
-      return false
-    }
-
-    isLoading.value = true
+  async function roomMutation<Name extends Exclude<keyof RoomOperations, 'command' | 'competitionReady' | 'clock'>>(
+    operation: Name, input: RoomOperations[Name]['input'],
+  ): Promise<boolean> {
+    if (!onlineGameId.value) return false
+    roomOperations.value += 1
     errorMessage.value = null
-
     try {
-      const response = await $fetch<GameRoomResponse>(
-        `/api/games/${onlineGameId.value}/${path}`,
-        {
-          method: 'POST',
-          body,
-        },
-      )
-      applyRoomResponse(response)
+      const response = await roomChannel.request(operation, input)
+      applyRoomResponse(response as GameRoomResponse)
       return true
     } catch (error) {
       errorMessage.value = presentApiError(error, '房間操作失敗')
       return false
     } finally {
-      isLoading.value = false
+      roomOperations.value -= 1
     }
   }
 
@@ -494,25 +461,13 @@ export function useGameRoom(viewer: ViewerRef) {
 
     playableQueryInFlight = true
     isQueryingPlayableActions.value = true
-    isLoading.value = true
     errorMessage.value = null
     try {
-      const response = await $fetch<PlayableActionsResponse>(
-        `/api/games/${onlineGameId.value}/commands`,
-        {
-          method: 'POST',
-          body: {
-            commandId: crypto.randomUUID(),
-            gameInstanceId,
-            transactionId: activeTransactionId ?? crypto.randomUUID(),
-            action: {
-              type: 'playableActions',
-              player,
-              cards,
-            },
-          },
-        },
-      )
+      const response = await roomChannel.request('command', {
+        commandId: crypto.randomUUID(), gameInstanceId,
+        transactionId: activeTransactionId ?? crypto.randomUUID(),
+        action: { type: 'playableActions', player, cards },
+      })
       if (revision !== playableQueryRevision) {
         return
       }
@@ -525,7 +480,6 @@ export function useGameRoom(viewer: ViewerRef) {
       if (revision === playableQueryRevision) {
         playableQueryInFlight = false
         isQueryingPlayableActions.value = false
-        isLoading.value = false
       }
     }
   }
@@ -778,79 +732,19 @@ export function useGameRoom(viewer: ViewerRef) {
   }
 
   function connectRoomSocket(gameId = onlineGameId.value) {
-    if (!import.meta.client || !gameId) {
-      return
-    }
-
-    if (
-      roomSocket
-      && roomSocket.readyState <= WebSocket.OPEN
-      && roomSocketGameId === gameId
-    ) {
-      return
-    }
-
-    clearTimeout(reconnectTimer)
-    connectionState.value = reconnectAttempt > 0 ? 'reconnecting' : 'connecting'
-    const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:'
-    const socket = new WebSocket(
-      `${protocol}//${window.location.host}/api/games/${encodeURIComponent(gameId)}/socket`,
-    )
-    roomSocket = socket
-    roomSocketGameId = gameId
-
-    socket.addEventListener('open', () => {
-      reconnectAttempt = 0
-      connectionState.value = 'connected'
-    })
-
-    const connectedAfterReconnect = reconnectAttempt > 0
-
-    socket.addEventListener('message', (event) => {
-      if (typeof event.data !== 'string' || event.data === 'pong') {
-        return
-      }
-
-      const message = JSON.parse(event.data) as GameRoomSocketMessage
-
-      if (message.type === 'roomState') {
-        applyRoomResponse(message.data, true, connectedAfterReconnect)
-        return
-      }
-
-      roomDissolved.value = true
-      disconnectRoomSocket()
-    })
-
-    socket.addEventListener('close', () => {
-      if (roomSocket !== socket || onlineGameId.value !== gameId || roomDissolved.value) {
-        return
-      }
-
-      reconnectAttempt += 1
-      connectionState.value = 'reconnecting'
-      reconnectTimer = setTimeout(
-        () => connectRoomSocket(gameId),
-        Math.min(1000 * (2 ** (reconnectAttempt - 1)), 10000),
-      )
-    })
-
-    socket.addEventListener('error', () => {
-      socket.close()
-    })
+    if (gameId) roomChannel.connect(`/api/games/${encodeURIComponent(gameId)}/socket`)
   }
 
   function disconnectRoomSocket() {
-    clearTimeout(reconnectTimer)
-    reconnectAttempt = 0
-    const socket = roomSocket
-    roomSocket = null
-    roomSocketGameId = null
-    connectionState.value = 'idle'
+    roomChannel.close()
+  }
 
-    if (socket && socket.readyState < WebSocket.CLOSING) {
-      socket.close(1000, 'room closed')
-    }
+  async function setCompetitionReady(ready: boolean, options?: { signal: AbortSignal }) {
+    return await roomChannel.request('competitionReady', { ready }, options)
+  }
+
+  async function readCompetitionClock(options?: { signal: AbortSignal }) {
+    return await roomChannel.request('clock', undefined, options)
   }
 
   function clearRoom() {
@@ -868,7 +762,6 @@ export function useGameRoom(viewer: ViewerRef) {
     pendingChoiceDraftEpoch.value += 1
     playableActions.value = []
     errorMessage.value = null
-    isLoading.value = false
     isSubmittingCommand.value = false
     isQueryingPlayableActions.value = false
     playableQueryInFlight = false
@@ -907,6 +800,8 @@ export function useGameRoom(viewer: ViewerRef) {
     roomDissolved,
     applyRoomResponse,
     refreshOnlineGame,
+    setCompetitionReady,
+    readCompetitionClock,
     startOnlineGame,
     toggleReady,
     leaveOnlineRoom,

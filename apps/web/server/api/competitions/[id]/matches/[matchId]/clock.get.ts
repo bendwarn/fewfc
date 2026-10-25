@@ -18,9 +18,10 @@ function hasRequestBody(event: H3Event): boolean {
 
 export default defineEventHandler(async event => {
   const session = await requireSession(event)
-  const competitionId = normalizeCompetitionMatchClockPathId(getRouterParam(event, 'id'))
-  const matchId = normalizeCompetitionMatchClockPathId(getRouterParam(event, 'matchId'))
-  assertCompetitionMatchClockQuery(getQuery(event), hasRequestBody(event))
+  const competitionId = normalizeCompetitionMatchClockPathId(getRouterParam(event, 'id', { decode: true }))
+  const matchId = normalizeCompetitionMatchClockPathId(getRouterParam(event, 'matchId', { decode: true }))
+  // H3 的空 query 有專用原型；邊界轉成資料物件後再套用嚴格 DTO 檢核。
+  assertCompetitionMatchClockQuery({ ...getQuery<Record<string, unknown>>(event) }, hasRequestBody(event))
   const request = buildCompetitionMatchClockReadRequest(competitionId, matchId, session.user.id, serverCompetitionMatchClockTime())
   return await readCompetitionMatchClock(event, request)
 })

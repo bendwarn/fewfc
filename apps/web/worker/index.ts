@@ -26,6 +26,7 @@ interface WorkerEnv {
 }
 
 interface AuthSessionResponse {
+  session?: { id?: string }
   user?: {
     id?: string
     name?: string
@@ -36,7 +37,7 @@ async function authenticatedUser(
   request: Request,
   env: WorkerEnv,
   context: ExecutionContext,
-): Promise<{ id: string; name: string } | null> {
+): Promise<{ id: string; name: string; sessionId: string } | null> {
   const headers = new Headers()
   const cookie = request.headers.get('cookie')
 
@@ -55,13 +56,14 @@ async function authenticatedUser(
 
   const session = await response.json() as AuthSessionResponse
 
-  if (!session.user?.id) {
+  if (!session.user?.id || !session.session?.id) {
     return null
   }
 
   return {
     id: session.user.id,
     name: session.user.name || '玩家',
+    sessionId: session.session.id,
   }
 }
 
@@ -82,6 +84,9 @@ async function websocketResponse(
     return null
   }
 
+  const origin = request.headers.get('Origin')
+  if (origin && origin !== url.origin) return Response.json({ error: 'origin not allowed' }, { status: 403 })
+
   const user = await authenticatedUser(request, env, context)
 
   if (!user) {
@@ -96,6 +101,8 @@ async function websocketResponse(
         headers: {
           Upgrade: 'websocket',
           'x-fewfc-user-id': user.id,
+          'x-fewfc-user-name': encodeURIComponent(user.name),
+          'x-fewfc-session-id': user.sessionId,
         },
       },
     )
@@ -109,6 +116,7 @@ async function websocketResponse(
       Upgrade: 'websocket',
       'x-fewfc-user-id': user.id,
       'x-fewfc-user-name': encodeURIComponent(user.name),
+      'x-fewfc-session-id': user.sessionId,
     },
   })
 }

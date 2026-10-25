@@ -9,7 +9,7 @@ import {
 
 export default defineEventHandler(async (event) => {
   const session = await requireSession(event)
-  const gameId = normalizeCompetitionGameId(getRouterParam(event, 'id'))
+  const gameId = normalizeCompetitionGameId(getRouterParam(event, 'id', { decode: true }))
 
   let body: unknown
   try {

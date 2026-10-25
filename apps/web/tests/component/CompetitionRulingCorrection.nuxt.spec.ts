@@ -348,7 +348,7 @@ it('真正父頁重新整理報名loading不卸載child，也不遺失未知更�
   const panel = child.get('.correction-panel').element
   const retryButton = child.get('[data-testid="same-command-retry"]').element
   expect(child.emitted('unresolved')).toBeUndefined()
-  await page.get('.detail-heading .refresh-button').trigger('click')
+  await page.get('.refresh-button').trigger('click')
   expect(page.get('.correction-panel').element).toBe(panel)
   expect(page.get('[data-testid="same-command-retry"]').element).toBe(retryButton)
   expect(child.emitted('unresolved')).toBeUndefined()

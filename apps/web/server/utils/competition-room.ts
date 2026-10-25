@@ -192,7 +192,7 @@ export interface CompetitionRoomStub {
 export function serverTrustedTime(clock: TrustedClock = Date.now): number {
   const value = clock()
   if (!Number.isFinite(value)) {
-    throw createError({ statusCode: 500, statusMessage: '伺服器時間暫時無法使用。' })
+    throw createError({ statusCode: 500, message: '伺服器時間暫時無法使用。' })
   }
   return value
 }
@@ -202,7 +202,7 @@ export function competitionRoomNamespace(event: H3Event): CompetitionRoomNamespa
   if (!namespace) {
     throw createError({
       statusCode: 501,
-      statusMessage: '賽事服務目前不可用。',
+      message: '賽事服務目前不可用。',
       data: { code: 'competitionRoomUnavailable' },
     })
   }
@@ -226,7 +226,7 @@ export async function callCompetitionRoom<T>(
   } catch {
     throw createError({
       statusCode: 502,
-      statusMessage: '賽事服務暫時無法處理要求。',
+      message: '賽事服務暫時無法處理要求。',
       data: { code: 'competitionRoomFailure' },
     })
   }
@@ -247,7 +247,7 @@ export async function callCompetitionRoomExact<T>(
   } catch {
     throw createError({
       statusCode: 502,
-      statusMessage: '賽事服務暫時無法處理要求。',
+      message: '賽事服務暫時無法處理要求。',
       data: { code: 'competitionRoomFailure' },
     })
   }
@@ -288,9 +288,9 @@ export function competitionRoomError(error: { code: string }): ReturnType<typeof
       : 'competitionRoomFailure'
   const statusCode = ROOM_ERROR_STATUS[knownCode]
     ?? 502
-  const statusMessage = ROOM_ERROR_MESSAGE[knownCode]
+  const message = ROOM_ERROR_MESSAGE[knownCode]
     ?? '賽事服務暫時無法處理要求。'
-  return createError({ statusCode, statusMessage, data: { code: knownCode } })
+  return createError({ statusCode, message, data: { code: knownCode } })
 }
 
 export function projectCreateTournamentPublicValue(input: unknown): CompetitionRoomCreateTournamentValue {
@@ -305,7 +305,7 @@ export function projectCreateTournamentPublicValue(input: unknown): CompetitionR
     || !isJsonValue(input.projection.public)) {
     throw createError({
       statusCode: 502,
-      statusMessage: '賽事服務暫時無法處理要求。',
+      message: '賽事服務暫時無法處理要求。',
       data: { code: 'engineProtocolError' },
     })
   }
@@ -1018,7 +1018,7 @@ function containsPrivateRoomFields(value: unknown): boolean {
 function protocolError(): ReturnType<typeof createError> {
   return createError({
     statusCode: 502,
-    statusMessage: ROOM_ERROR_MESSAGE.engineProtocolError,
+    message: ROOM_ERROR_MESSAGE.engineProtocolError,
     data: { code: 'engineProtocolError' },
   })
 }
@@ -1136,7 +1136,7 @@ export function buildRegistrationCommand(
   if (type !== 'registrationView' && type !== 'registrationExecute') {
     throw createError({
       statusCode: 403,
-      statusMessage: '此操作不可由 HTTP API 執行。',
+      message: '此操作不可由 HTTP API 執行。',
       data: { code: 'operationNotAllowed' },
     })
   }
@@ -1522,5 +1522,5 @@ function commandIdValue(value: unknown): string | undefined {
 }
 
 function badRequest(message: string): ReturnType<typeof createError> {
-  return createError({ statusCode: 400, statusMessage: message, data: { code: 'invalidRequest' } })
+  return createError({ statusCode: 400, message, data: { code: 'invalidRequest' } })
 }

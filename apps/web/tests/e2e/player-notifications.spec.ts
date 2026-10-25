@@ -31,17 +31,23 @@ test('retains a room dot after the prompt expires and reloads, consuming it only
     await expect(dot).toBeVisible()
     await expect(prompt).toBeHidden()
 
-    // 房間載入與補做加入都失敗時，不應提早消耗通知。
-    const roomApi = new RegExp(`/api/games/${gameId}(?:/join)?$`)
-    await page.route(roomApi, route => route.fulfill({
-      status: 403,
-      contentType: 'application/json',
-      body: JSON.stringify({ statusMessage: 'room access denied' }),
-    }))
+    // 以 WS 拒絕入房，失敗不能提早消耗通知。
+    let denyEntry = true
+    await page.routeWebSocket('**/api/notifications/socket', socket => {
+      const server = socket.connectToServer()
+      socket.onMessage(wire => {
+        const request = JSON.parse(String(wire))
+        if (denyEntry && request.operation === 'enter' && request.input.gameId === gameId) {
+          socket.send(JSON.stringify({ type: 'result', requestId: request.requestId, ok: false,
+            error: { statusCode: 403, code: 'forbidden', message: '無法進入房間。' } }))
+        } else server.send(wire)
+      })
+    })
+    await page.reload({ waitUntil: 'domcontentloaded' })
     await roomButton.click()
     await page.getByRole('button', { name: '返回房間大廳' }).click()
     await expect(dot).toBeVisible()
-    await page.unroute(roomApi)
+    denyEntry = false
 
     await roomButton.click()
     await expect(page.locator('.waiting-overlay')).toBeVisible()

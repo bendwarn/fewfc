@@ -34,7 +34,7 @@ function stage(): StageConfig {
 }
 // 按 Rust camelCase 的 DTO fixture；此檔不證明 DO／native 或實際 390px 幾何。
 function publicSnapshot(config: StageConfig = stage()) {
-  return { tournamentId: 'competition a', stages: [{ config, status: 'active', rounds: [], standings: [], corrections: [],
+  return { tournamentId: 'competition a', stages: [{ config, status: 'active', resolution: null, rankingTieDecisions: [], rounds: [], standings: [], corrections: [],
     lastScheduleError: null, scheduleGeneration: 0, supersededRounds: [],
     teams: Object.fromEntries(config.teams.map(team => [team.teamId, { seed: team.seed, dropped: false, hadBye: false }])),
     doubleState: config.format === 'doubleElimination' ? { phase: 'winners', winnersPool: [...teamIds], losersWaiting: [], lowerPool: [],
@@ -143,7 +143,7 @@ it('預填五分鐘主時間與三十秒讀秒；必填與四賽制標籤／勝�
     expect(wrapper.text()).toContain(format.includes('Elimination') ? '勝局門檻' : '每場局數')
   }
   await wrapper.get('[data-testid="tournament-form"]').trigger('submit')
-  expect(wrapper.find('[role="alert"]').text()).toContain('整數設定')
+  expect(wrapper.find('[role="alert"]').text()).toContain('各項設定都必須是整數')
   expect(fetchMock).toHaveBeenCalledTimes(1)
   expect(crypto.randomUUID).toHaveBeenCalledTimes(0)
   expect(wrapper.text()).toContain('不是既有排名')

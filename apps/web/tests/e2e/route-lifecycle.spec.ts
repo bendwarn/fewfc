@@ -115,33 +115,28 @@ fastPageTest('Deck owns its import dialog focus, cleans up its listener, and Rep
 })
 
 test('Lobby exposes its route-local loading state before rooms arrive', async ({ page }) => {
-  let releaseRoomListLoad: (() => void) | undefined
-  const roomListGate = new Promise<void>((resolve) => { releaseRoomListLoad = resolve })
-  const roomListUrl = '**/api/games'
-  await page.route(roomListUrl, async (route) => {
-    if (route.request().method() === 'GET') await roomListGate
-    try {
-      await route.continue()
-    } catch (error) {
-      if (!(error instanceof Error) || !error.message.includes('already handled')) throw error
-    }
-  })
-
-  const roomListRequest = page.waitForRequest(request => {
-    if (request.method() !== 'GET') return false
-    return new URL(request.url()).pathname === '/api/games'
+  let release!: () => void
+  let requested!: () => void
+  const gate = new Promise<void>(resolve => { release = resolve })
+  const arrived = new Promise<void>(resolve => { requested = resolve })
+  await page.routeWebSocket('**/api/notifications/socket', socket => {
+    const server = socket.connectToServer()
+    socket.onMessage(async wire => {
+      const request = JSON.parse(String(wire))
+      if (request.operation === 'list') { requested(); await gate }
+      server.send(wire)
+    })
   })
   const navigation = page.goto('/rooms')
   try {
-    await roomListRequest
+    await arrived
     await expect(page.getByRole('status').filter({ hasText: '正在載入房間…' })).toBeVisible()
-    releaseRoomListLoad?.()
+    release()
     await navigation
     await expect(page.getByRole('heading', { name: '公開房間' })).toBeVisible()
   } finally {
-    releaseRoomListLoad?.()
+    release()
     await navigation.catch(() => undefined)
-    await page.unroute(roomListUrl)
   }
 })
 
@@ -211,7 +206,6 @@ test('Lobby navigation reloads Game state, resets parameter-local state, and tea
 fastPageTest('leaving a loading Game route cannot recreate its room session', async ({ page }) => {
   const roomName = `離開載入中的房間 ${Date.now()}`
   const gameId = await createWaitingRoomViaRequest(page, roomName)
-  await page.goto('/rooms')
 
   const openedSockets: string[] = []
   page.on('websocket', socket => {
@@ -220,15 +214,15 @@ fastPageTest('leaving a loading Game route cannot recreate its room session', as
 
   let releaseRoomFetch: (() => void) | undefined
   const roomFetchGate = new Promise<void>((resolve) => { releaseRoomFetch = resolve })
-  const roomUrl = `**/api/games/${gameId}`
-  await page.route(roomUrl, async (route) => {
-    if (route.request().method() === 'GET') await roomFetchGate
-    try {
-      await route.continue()
-    } catch (error) {
-      if (!(error instanceof Error) || !error.message.includes('already handled')) throw error
-    }
+  await page.routeWebSocket('**/api/notifications/socket', socket => {
+    const server = socket.connectToServer()
+    socket.onMessage(async wire => {
+      const request = JSON.parse(String(wire))
+      if (request.operation === 'enter' && request.input.gameId === gameId) await roomFetchGate
+      server.send(wire)
+    })
   })
+  await page.goto('/rooms')
 
   try {
     const roomButton = page.getByRole('region', { name: '我的房間' }).getByRole('button').filter({ hasText: roomName })
@@ -241,7 +235,6 @@ fastPageTest('leaving a loading Game route cannot recreate its room session', as
     await expect(page).toHaveURL(/\/rooms$/)
   } finally {
     releaseRoomFetch?.()
-    if (!page.isClosed()) await page.unroute(roomUrl)
   }
 
   await page.waitForTimeout(250)

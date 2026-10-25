@@ -6,6 +6,7 @@ const meta = {
   component: CompetitionReadyControls,
   tags: ['autodocs'],
   args: {
+    submitReady: async (ready: boolean) => ({ ready }),
     gameId: 'game-demo',
     mode: { kind: 'ordinary' },
     sessionUserId: null,

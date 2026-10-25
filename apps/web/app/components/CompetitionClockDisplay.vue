@@ -62,11 +62,12 @@ import type { ClockCheckpointWindow } from '../../shared/competition'
 import type { CompetitionRoomMatchClockReadValue } from '../../shared/competition-room'
 import type { CompetitionRoomMode } from '../lib/competition-ready'
 import {
-  competitionClockErrorMessage, competitionClockPath, createCompetitionClockScope,
+  competitionClockErrorMessage, createCompetitionClockScope,
   formatCompetitionClockTime, parseCompetitionClockResponse,
 } from '../lib/competition-clock'
 
 const props = defineProps<{
+  readClock: (options: { signal: AbortSignal }) => Promise<unknown>
   mode: CompetitionRoomMode
   gameId: string
   roomGameId: string | null
@@ -144,9 +145,7 @@ async function readClock() {
   let succeeded = false
   const stillCurrent = () => requestSequence === sequence && activeKey.value === key && !requestController.signal.aborted
   try {
-    const response: unknown = await $fetch(competitionClockPath(current), {
-      method: 'GET', signal: requestController.signal, retry: 0,
-    })
+    const response: unknown = await props.readClock({ signal: requestController.signal })
     if (!stillCurrent()) return
     projection.value = parseCompetitionClockResponse(response, current)
     succeeded = true
@@ -171,7 +170,7 @@ watch(activeKey, (key) => {
   if (!key) return
   const scheduledSequence = sequence
   loading.value = true
-  // 合併同批 props 更新才查詢；排程期間仍停用按鈕，不讓半套 context 發出多筆 GET。
+  // 合併同批 props 更新才查詢；排程期間仍停用按鈕，不讓半套 context 發出多筆查詢。
   void nextTick(() => {
     if (scheduledSequence !== sequence || activeKey.value !== key) return
     loading.value = false

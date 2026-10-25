@@ -7,8 +7,8 @@ import {
 
 export default defineEventHandler(async (event) => {
   const session = await requireSession(event)
-  const competitionId = getRouterParam(event, 'id')
-  const matchId = getRouterParam(event, 'matchId')
+  const competitionId = getRouterParam(event, 'id', { decode: true })
+  const matchId = getRouterParam(event, 'matchId', { decode: true })
   if (!competitionId?.trim() || !matchId?.trim()) {
     throw createError({ statusCode: 400, statusMessage: '缺少賽事或交手識別碼。', data: { code: 'invalidRequest' } })
   }

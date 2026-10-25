@@ -21,9 +21,9 @@ function hasRequestBody(event: H3Event): boolean {
 
 export default defineEventHandler(async (event) => {
   const session = await optionalSession(event)
-  const competitionId = normalizeCompetitionTournamentPathId(getRouterParam(event, 'id'))
+  const competitionId = normalizeCompetitionTournamentPathId(getRouterParam(event, 'id', { decode: true }))
 
-  assertCompetitionTournamentQuery(getQuery(event), hasRequestBody(event))
+  assertCompetitionTournamentQuery({ ...getQuery<Record<string, unknown>>(event) }, hasRequestBody(event))
 
   return await readCompetitionTournament(event, competitionId, session?.user.id ?? null)
 })

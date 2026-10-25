@@ -40,13 +40,15 @@
     "build:storybook": "storybook build",
     "test:storybook": "bun scripts/test-storybook.ts",
     "test:storybook:layout": "playwright test --config playwright.storybook.config.ts",
-    "test:integration": "bun test server",
+    "test:integration": "bun test --isolate ./server",
     "test:worktree": "bun test ../../scripts/setup-worktree.test.ts",
     "dev:stop": "bun scripts/stop-servers.ts"
   },
   "dependencies": {
     "@better-auth/drizzle-adapter": "1.7.12",
+    "@vueuse/core": "^15.0.0",
     "better-auth": "1.7.12",
+    "crossws": "0.4.12",
     "drizzle-orm": "^0.45.4",
     "h3": "^2.0.7",
     "nuxt": "^4.6.2",

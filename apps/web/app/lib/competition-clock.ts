@@ -56,11 +56,6 @@ export function createCompetitionClockScope(input: CompetitionClockScopeInput): 
   }
 }
 
-/** URL 只有路徑識別碼；session、時間、gameId 與 revision 不進入 HTTP 輸入。 */
-export function competitionClockPath(scope: CompetitionClockScope): string {
-  return `/api/competitions/${encodeURIComponent(scope.competitionId)}/matches/${encodeURIComponent(scope.matchId)}/clock`
-}
-
 export class CompetitionClockProtocolError extends Error {
   constructor() { super('時計回應無法安全驗證，已停止自動更新。') }
 }

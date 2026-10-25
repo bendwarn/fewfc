@@ -1,3 +1,4 @@
+import { waitForGameCommand } from './realtime-helpers'
 import { expect, test, type APIResponse, type BrowserContext } from '@playwright/test'
 import type { GameRoomResponse } from '../../shared/game-room'
 import {
@@ -151,14 +152,10 @@ test('finished rooms retain observers through reset without granting player repl
     await active.locator('.playing-card:enabled:not(.hidden)').first().click()
     const attack = active.locator('.action-panel .action-candidates button[title*="進行五行攻擊"]')
     await expect(attack).toBeVisible({ timeout: 20_000 })
-    const finishedCommand = active.waitForResponse(response => (
-      response.request().method() === 'POST'
-      && new URL(response.url()).pathname === `/api/games/${gameId}/commands`
-      && response.request().postDataJSON()?.action?.type === 'performFormation'
-    ))
+    const finishedCommand = waitForGameCommand(active, action => action.type === 'performFormation')
     await attack.click()
     const finishedResponse = await finishedCommand
-    expect(finishedResponse.ok(), `${finishedResponse.status()}: ${await finishedResponse.text()}`).toBe(true)
+    expect(finishedResponse.ok, JSON.stringify(finishedResponse.error)).toBe(true)
     await expect(observerPage.locator('.battlefield .result-reason')).toContainText('生命值歸零')
     await expect(observerPage.locator('.result-panel').getByRole('button', { name: '離開觀戰', exact: true }))
       .toBeVisible()

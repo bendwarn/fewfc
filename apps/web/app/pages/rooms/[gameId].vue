@@ -13,6 +13,7 @@
       </button>
     </p>
     <CompetitionClockDisplay
+      :read-clock="game.readCompetitionClock"
       v-if="competitionRoomMode.kind === 'competition'"
       :mode="competitionRoomMode"
       :game-id="typeof route.params.gameId === 'string' ? route.params.gameId : ''"
@@ -925,6 +926,7 @@
                   複製邀請連結
                 </button>
                 <CompetitionReadyControls
+                  :submit-ready="game.setCompetitionReady"
                   v-if="competitionRoomMode.kind === 'competition' && roomWaiting && currentMember"
                   :game-id="roomCode"
                   :mode="competitionRoomMode"
@@ -2046,7 +2048,7 @@ async function saveCurrentReplay() {
   if (!sourceGameId || replaySaved.value) return
   replaySaving.value = true
   try {
-    await $fetch('/api/replays', { method: 'POST', body: { sourceGameId } })
+    await notifications.request('saveReplay', { sourceGameId })
     replaySaved.value = true
   } catch (error: unknown) {
     const code = (error as { data?: { data?: { code?: string } } }).data?.data?.code
@@ -2084,20 +2086,15 @@ async function loadRoomRoute() {
 
   let response: GameRoomResponse
   try {
-    response = await $fetch<GameRoomResponse>(`/api/games/${encodeURIComponent(gameId)}`)
-  } catch {
-    try {
-      response = await $fetch<GameRoomResponse>(`/api/games/${encodeURIComponent(gameId)}/join`, {
-        method: 'POST',
-        body: { invite: typeof route.query.invite === 'string' ? route.query.invite : undefined },
-      })
-    } catch (error) {
-      if (revision === roomLoadRevision) {
-        roomRouteError.value = roomRouteResult(error)
-        routeReady.value = true
-      }
-      return
+    response = await notifications.request('enter', {
+      gameId, invite: typeof route.query.invite === 'string' ? route.query.invite : undefined,
+    })
+  } catch (error) {
+    if (revision === roomLoadRevision) {
+      roomRouteError.value = roomRouteResult(error)
+      routeReady.value = true
     }
+    return
   }
 
   if (revision !== roomLoadRevision) return

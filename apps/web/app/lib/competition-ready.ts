@@ -94,7 +94,7 @@ export function competitionWaitingMemberStatus(
   return member.ready ? '已準備' : '未準備'
 }
 
-/** HTTP 成功只承認 exact { ready }，而且值必須等於本次要求的狀態。 */
+/** 成功回覆只承認 exact { ready }，而且值必須等於本次要求的狀態。 */
 export function isExactCompetitionReadyAck(value: unknown, desired: boolean): boolean {
   try {
     if (!isRecord(value)) return false

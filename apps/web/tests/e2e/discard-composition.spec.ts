@@ -1,3 +1,4 @@
+import { waitForGameCommand } from './realtime-helpers'
 import { type Page } from '@playwright/test'
 import {
   expect,
@@ -36,14 +37,6 @@ async function activePlayerPage(pages: Page[]) {
   throw new Error('No active player page')
 }
 
-async function waitForGameCommand(page: Page) {
-  const gameId = new URL(page.url()).pathname.split('/').at(-1)
-  return await page.waitForResponse(response => (
-    response.request().method() === 'POST'
-    && new URL(response.url()).pathname === `/api/games/${gameId}/commands`
-  ))
-}
-
 async function beginSingleCardTurn(pages: Page[]) {
   const page = await activePlayerPage(pages)
   const cards = page.locator('.playing-card:enabled:not(.hidden)')
@@ -61,7 +54,7 @@ async function beginSingleCardTurn(pages: Page[]) {
   await expect(formation).toBeVisible()
   const command = waitForGameCommand(page)
   await formation.click()
-  expect((await command).ok()).toBe(true)
+  expect((await command).ok).toBe(true)
 
   let outcomePage: Page | undefined
   await expect.poll(async () => {
@@ -93,7 +86,7 @@ async function finishSingleCardTurn(page: Page) {
   const confirm = page.getByRole('button', { name: '確認選擇' })
   const command = waitForGameCommand(page)
   await choice.click()
-  expect((await command).ok()).toBe(true)
+  expect((await command).ok).toBe(true)
   await expect(confirm).toHaveCount(0)
   await expect(page.locator('.choice-overlay')).toBeHidden()
   return await page.locator('.result-panel').isVisible()

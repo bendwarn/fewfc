@@ -321,7 +321,7 @@ test('real H3 errors expose fixed ASCII reasons and safe Chinese data without RP
     expect(response.statusText).toBe(statusMessage)
     const text = await response.text()
     const value: unknown = JSON.parse(text)
-    expect(value).toMatchObject({ statusCode, statusMessage, data: { code, message } })
+    expect(value).toMatchObject({ status: statusCode, statusText: statusMessage, data: { code, message } })
     expect(text).not.toMatch(/private-reason-secret|engine:/)
     expect(harness.requests).toHaveLength(1)
   }

@@ -30,7 +30,7 @@
 import LobbyScreen from '~/components/LobbyScreen.vue'
 import type { LobbyRoomListItem } from '~/lib/lobby-presentation'
 import { modulesForVersion } from '#shared/utils/rule-versions'
-import type { GameRoomEntryResponse, GameRoomLobbyItem, GameRoomLobbyResponse } from '#shared/game-room'
+import type { GameRoomLobbyItem } from '#shared/game-room'
 import { presentApiError } from '~/lib/api-error-presentation'
 import { selectJoinablePublicRooms } from '~/lib/lobby-room-selection'
 import { presentRoomRuleDifferences } from '#shared/utils/ruleset-presentation'
@@ -90,14 +90,11 @@ async function createRoom() {
   lobbyBusy.value = true
   lobbyError.value = ''
   try {
-    const response = await $fetch<GameRoomEntryResponse>('/api/games', {
-      method: 'POST',
-      body: {
-        name: roomName.value || `${session.displayName.value}的房間`,
-        access: roomAccess.value,
-        capacity: roomCapacity.value,
-        ruleVersion: roomRuleVersion.value,
-      },
+    const response = await notifications.request('create', {
+      name: roomName.value || `${session.displayName.value}的房間`,
+      access: roomAccess.value,
+      capacity: roomCapacity.value,
+      ruleVersion: roomRuleVersion.value,
     })
     await router.push(`/rooms/${encodeURIComponent(response.gameId)}`)
   } catch (error) {
@@ -111,7 +108,7 @@ async function refreshRoomLists() {
   lobbyLoading.value = true
   lobbyError.value = ''
   try {
-    const response = await $fetch<GameRoomLobbyResponse>('/api/games')
+    const response = await notifications.request('list', undefined)
     publicRooms.value = response.rooms
     myRooms.value = response.myRooms
   } catch (error) {
@@ -126,10 +123,7 @@ async function joinRoomByCode() {
   lobbyBusy.value = true
   lobbyError.value = ''
   try {
-    const response = await $fetch<GameRoomEntryResponse>('/api/games/join', {
-      method: 'POST',
-      body: { code: joinRoomCode.value.toUpperCase() },
-    })
+    const response = await notifications.request('joinCode', { code: joinRoomCode.value.toUpperCase() })
     await router.push(`/rooms/${encodeURIComponent(response.gameId)}`)
   } catch (error) {
     lobbyError.value = presentApiError(error, '無法加入房間')

@@ -77,7 +77,8 @@ test('fixed ready errors use ASCII reasons and retain safe Chinese message and d
     expect(error.statusMessage).toBe(statusMessage)
     expect(error.message).toBe(message)
     expect(error.data).toEqual({ code, message })
-    expect(error.toJSON()).toEqual({ statusCode, statusMessage, message, data: { code, message } })
+    const serialized: unknown = JSON.parse(JSON.stringify(error))
+    expect(serialized).toEqual({ status: statusCode, statusText: statusMessage, message, data: { code, message } })
   }
 })
 

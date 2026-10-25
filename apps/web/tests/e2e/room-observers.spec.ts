@@ -1,3 +1,4 @@
+import { waitForGameCommand } from './realtime-helpers'
 import { expect, test, type BrowserContext, type Page } from '@playwright/test'
 import { gotoAppRoute, signInAnonymously } from './fixtures'
 
@@ -16,11 +17,7 @@ async function roomPage(context: BrowserContext, gameId: string): Promise<Page> 
 }
 
 function initialPouchCommit(page: Page) {
-  return page.waitForResponse(response => (
-    response.request().method() === 'POST'
-    && new URL(response.url()).pathname.endsWith('/commands')
-    && response.request().postData()?.includes('chooseInitialPouch') === true
-  ))
+  return waitForGameCommand(page, action => action.type === 'chooseInitialPouch')
 }
 
 test('full and active rooms admit observers, skip offline FIFO entries, and promote a connected observer', async ({ browser }) => {
@@ -66,10 +63,10 @@ test('full and active rooms admit observers, skip offline FIFO entries, and prom
     // 兩位玩家皆完成自己的初始錦囊，才會進入發牌後的私有手牌投影。
     const observerPouch = initialPouchCommit(observerPage)
     await observerPage.getByRole('dialog', { name: '選擇初始錦囊' }).getByRole('button').first().click()
-    expect((await observerPouch).ok()).toBe(true)
+    expect((await observerPouch).ok).toBe(true)
     const hostPouch = initialPouchCommit(hostPage)
     await hostPage.getByRole('dialog', { name: '選擇初始錦囊' }).getByRole('button').first().click()
-    expect((await hostPouch).ok()).toBe(true)
+    expect((await hostPouch).ok).toBe(true)
     await expect(observerPage.getByRole('region', { name: '五行戰鬥牌對戰桌' })).toBeVisible()
     const promotedState = await json(connectedObserver!, `/api/games/${gameId}`)
     const promotedPlayer = (promotedState.body.metadata as { members: Array<{ userId: string, player: string }> })

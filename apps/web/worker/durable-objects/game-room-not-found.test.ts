@@ -1,6 +1,7 @@
 import { expect, mock, test } from 'bun:test'
 
 mock.module('cloudflare:workers', () => ({
+  env: {},
   DurableObject: class {
     protected ctx: unknown
     protected env: unknown

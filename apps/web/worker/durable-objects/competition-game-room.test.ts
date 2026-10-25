@@ -44,6 +44,7 @@ let rulesEngineBoundaryCalls = 0
 let competitionContextPrivateHands = false
 
 mock.module('cloudflare:workers', () => ({
+  env: {},
   DurableObject: class {
     protected ctx: unknown
     protected env: unknown
@@ -56,6 +57,7 @@ mock.module('cloudflare:workers', () => ({
 }))
 
 mock.module('../rules-engine', () => ({
+  callPersonalDeckResolution: async () => { throw new Error('此 fixture 未設定個人牌組查詢') },
   callRuleModuleResolution: async (modules: string[] = []) => {
     rulesEngineBoundaryCalls += 1
     if (rulesModuleGate) {
@@ -523,6 +525,8 @@ async function connectCompetitionMember(
   global.WebSocketPair = class {
     client = new FakeSocket()
     server = new FakeSocket()
+    get 0() { return this.client }
+    get 1() { return this.server }
   }
   try {
     const request = new Request('https://game-room.internal/socket', {
@@ -713,6 +717,8 @@ for (const key of ['competitionBinding', 'metadata', 'competitionGameAdmission']
     global.WebSocketPair = class {
       client = new FakeSocket()
       server = new FakeSocket()
+      get 0() { return this.client }
+      get 1() { return this.server }
     }
     try {
       const fixture = await roundReleaseFixture({ roundStartMs: 900_000 })
@@ -3960,6 +3966,8 @@ test('競賽 outsider 不可 join、observer 或補位；fixed member 斷線重�
   ;(globalThis as Record<string, unknown>).WebSocketPair = class {
     client = new FakeSocket()
     server = new FakeSocket()
+    get 0() { return this.client }
+    get 1() { return this.server }
   }
   try {
     const connected = await (room as unknown as {

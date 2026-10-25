@@ -6,6 +6,7 @@ const meta = {
   component: CompetitionClockDisplay,
   tags: ['autodocs'],
   args: {
+    readClock: async () => { throw new Error('此情境不應查詢時計') },
     mode: { kind: 'ordinary' },
     gameId: 'game-demo',
     roomGameId: null,

@@ -332,6 +332,7 @@ export type GameRoomRequest =
     }
   | {
       type: 'toggleReady'
+      ready?: boolean
       actorUserId: string
       deckList: PlayerDeckList
     }

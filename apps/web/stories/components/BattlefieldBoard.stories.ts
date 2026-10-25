@@ -1,5 +1,6 @@
 import type { Meta, StoryObj } from '@storybook/vue3-vite'
 import { expect, userEvent, waitFor, within } from 'storybook/test'
+import { ref } from 'vue'
 import BattlefieldBoard from '~/components/BattlefieldBoard.vue'
 import GameConclusionPanel from '~/components/GameConclusionPanel.vue'
 import { createExampleGameState, createFourPlayerGameState, exampleCards } from '../fixtures/components'
@@ -178,6 +179,20 @@ const meta = {
 export default meta
 type Story = StoryObj<typeof meta>
 
+// 僅情境控制：用新狀態替換圖騰，驗證詳情不殘留舊資訊。
+const renderTotemRules: NonNullable<Story['render']> = args => ({
+  components: { BattlefieldBoard },
+  setup() {
+    const state = ref(args.state)
+    const clearTotem = () => { state.value = { ...state.value, totems: [] } }
+    return { args, state, clearTotem }
+  },
+  template: `<div style="width: 100%; height: 100vh; min-height: 560px;">
+    <button type="button" style="position: fixed; top: 8px; right: 8px; z-index: 100;" @click="clearTotem">清除圖騰（情境控制）</button>
+    <BattlefieldBoard v-bind="args" :state="state" />
+  </div>`,
+})
+
 export const TwoPlayerLive: Story = {
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement)
@@ -252,6 +267,8 @@ export const LivePublicForeignHand: Story = {
 }
 
 export const LiveTotemRules: Story = {
+  render: renderTotemRules,
+  tags: ['totem-rules'],
   args: { state: totemState },
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement)
@@ -269,6 +286,11 @@ export const LiveTotemRules: Story = {
     await userEvent.click(within(detail).getByRole('button', { name: '關閉詳情' }))
     await expect(page.queryByRole('dialog', { name: '小明的對局資訊' })).toBeNull()
     await waitFor(() => expect(trigger).toHaveFocus())
+    await userEvent.click(canvas.getByRole('button', { name: '清除圖騰（情境控制）' }))
+    await userEvent.click(trigger)
+    const updated = await page.findByRole('dialog', { name: '小明的對局資訊' })
+    await expect(within(updated).queryByRole('button', { name: /^青角圖騰：/ })).toBeNull()
+    await userEvent.click(within(updated).getByRole('button', { name: '關閉詳情' }))
   },
 }
 
@@ -321,6 +343,8 @@ export const MultiModulePlayerDetail: Story = {
 }
 
 export const ReplayTotemRules: Story = {
+  render: renderTotemRules,
+  tags: ['totem-rules'],
   args: { state: totemState, mode: 'replay' },
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement)
@@ -338,6 +362,11 @@ export const ReplayTotemRules: Story = {
     await userEvent.click(within(detail).getByRole('button', { name: '關閉詳情' }))
     await expect(page.queryByRole('dialog', { name: '小明的對局資訊' })).toBeNull()
     await waitFor(() => expect(trigger).toHaveFocus())
+    await userEvent.click(canvas.getByRole('button', { name: '清除圖騰（情境控制）' }))
+    await userEvent.click(trigger)
+    const updated = await page.findByRole('dialog', { name: '小明的對局資訊' })
+    await expect(within(updated).queryByRole('button', { name: /^青角圖騰：/ })).toBeNull()
+    await userEvent.click(within(updated).getByRole('button', { name: '關閉詳情' }))
   },
 }
 

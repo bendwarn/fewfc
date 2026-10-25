@@ -1,17 +1,16 @@
 import { mountSuspended } from '@nuxt/test-utils/runtime'
-import { mockNuxtImport } from '@nuxt/test-utils/runtime'
 import { flushPromises } from '@vue/test-utils'
 import { afterEach, beforeEach, expect, it, vi } from 'vitest'
 import type { CompetitionRoomMode } from '~/lib/competition-ready'
 import CompetitionReadyControls from '~/components/CompetitionReadyControls.vue'
 
 const fetchMock = vi.hoisted(() => vi.fn())
-mockNuxtImport('$fetch', () => fetchMock)
 
 const context = { competitionId: 'competition-a', matchId: 'match-a', gameNumber: 1 }
 
 function initialProps() {
   return {
+    submitReady: fetchMock,
     gameId: 'room/a',
     mode: { kind: 'competition' as const, context },
     sessionUserId: 'member-a',
@@ -31,7 +30,7 @@ function signalAt(index: number): AbortSignal {
 }
 
 function requestBodies(): unknown[] {
-  return fetchMock.mock.calls.map(([, options]) => options?.body)
+  return fetchMock.mock.calls.map(([ready]) => ({ ready }))
 }
 
 beforeEach(() => fetchMock.mockReset())
@@ -46,10 +45,8 @@ it('sends an explicit desired state for any fixed member and waits for server re
   await flushPromises()
 
   expect(fetchMock).toHaveBeenCalledTimes(1)
-  expect(fetchMock.mock.calls[0]?.[0]).toBe('/api/games/room%2Fa/competition-ready')
-  expect(fetchMock.mock.calls[0]?.[1]?.method).toBe('POST')
-  expect(fetchMock.mock.calls[0]?.[1]?.body).toEqual({ ready: true })
-  expect(Object.keys(fetchMock.mock.calls[0]?.[1] ?? {}).sort()).toEqual(['body', 'method', 'signal'])
+  expect(fetchMock.mock.calls[0]?.[0]).toBe(true)
+  expect(signalAt(0).aborted).toBe(false)
   expect(wrapper.text()).toContain('目前狀態：尚未準備')
   expect(wrapper.text()).toContain('正在同步房間狀態')
   expect(wrapper.emitted('refresh')).toHaveLength(1)

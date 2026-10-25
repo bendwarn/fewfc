@@ -8,8 +8,10 @@ unit/integration and E2E coverage, read [Storybook](storybook.md#validation-scop
 
 - A Playwright `click()` waits for the browser click action, not for an async Vue
   handler's command request to commit. Before reload or reconnect assertions,
-  wait for the specific `/commands` response and identify it by request action
-  type; otherwise navigation can race a valid command.
+  wait for the specific WebSocket `result` with `waitForGameCommand` from
+  `tests/e2e/realtime-helpers.ts`, identifying it by request action type. The
+  fixtures install socket observation before navigation. A `roomState` broadcast
+  does not acknowledge a command; otherwise navigation can race a valid command.
 - When an E2E state assertion fails despite correct API JSON, inspect retained
   trace console errors before changing replay or persistence. A Vue render
   exception can hide state that is present in command responses, refresh

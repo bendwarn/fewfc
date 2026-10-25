@@ -3,6 +3,7 @@ import { expect, mock, test } from 'bun:test'
 const rulesRequests: Array<{ action: { type: string }, viewer: string }> = []
 
 mock.module('cloudflare:workers', () => ({
+  env: {},
   DurableObject: class {
     protected ctx: unknown
     protected env: unknown
@@ -15,6 +16,7 @@ mock.module('cloudflare:workers', () => ({
 }))
 
 mock.module('../rules-engine', () => ({
+  callPersonalDeckResolution: async () => { throw new Error('此 fixture 未設定個人牌組查詢') },
   callRulesEngine: async (request: { action: { type: string }, viewer: string }) => {
     rulesRequests.push(structuredClone(request))
     return {

@@ -70,6 +70,12 @@ composable, router, transport, and application integration contracts in their
 appropriate unit or integration suites. Retain representative E2E flows for real
 service wiring rather than enumerating every UI or rules variant through them.
 
+`BattlefieldBoard`'s `LiveTotemRules` and `ReplayTotemRules` own the Totem
+presentation claims formerly in `BattlefieldBoard.nuxt.spec.ts`: rule text,
+keyboard access, and removal after a state update. They open the current Player
+detail dialog and also check focus restoration when it closes. The story-only
+clear control supplies the updated state without involving a service.
+
 ## Full page dependency fixtures
 
 `WorkspacePages.stories.ts` renders the production login, deck, account, replay,

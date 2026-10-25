@@ -1,3 +1,4 @@
+import { waitForGameCommand, gameCommandRequests } from './realtime-helpers'
 import {
   expect,
   reloadFastGameRoute,
@@ -19,15 +20,7 @@ test('a Profession change and activated ability survive public reconnect', async
 
     await expect(host.getByLabel('職業 幻術師', { exact: true })).toBeVisible()
     await expect(guest.getByLabel('職業 幻術師', { exact: true })).toBeVisible()
-    let activationRequests = 0
-    host.on('request', (request) => {
-      if (
-        request.url().endsWith(`/api/games/${roomId}/commands`)
-        && request.postDataJSON()?.action?.type === 'activateProfessionAbility'
-      ) {
-        activationRequests += 1
-      }
-    })
+    const activationRequests = () => gameCommandRequests(host).filter(action => action.type === 'activateProfessionAbility').length
     const selectable = host.locator('.playing-card:enabled:not(.hidden)')
     await expect(selectable).toHaveCount(5)
     await selectable.nth(0).click()
@@ -39,11 +32,11 @@ test('a Profession change and activated ability survive public reconnect', async
     await illusion.click()
     const virtualCardDialog = host.getByRole('dialog', { name: '幻術：選擇虛擬牌' })
     await expect(virtualCardDialog).toBeVisible()
-    expect(activationRequests).toBe(0)
+    expect(activationRequests()).toBe(0)
 
     await reloadFastGameRoute(host, roomId)
     await expect(virtualCardDialog).toHaveCount(0)
-    expect(activationRequests).toBe(0)
+    expect(activationRequests()).toBe(0)
 
     await selectable.nth(0).click()
     await selectable.nth(1).click()
@@ -52,30 +45,27 @@ test('a Profession change and activated ability survive public reconnect', async
     await expect(virtualCardDialog).toBeVisible()
     await host.keyboard.press('Escape')
     await expect(virtualCardDialog).toHaveCount(0)
-    expect(activationRequests).toBe(0)
+    expect(activationRequests()).toBe(0)
     await expect(illusion).toHaveCount(1)
 
     await illusion.click()
     await virtualCardDialog.getByRole('button', { name: '取消' }).click()
     await expect(virtualCardDialog).toHaveCount(0)
-    expect(activationRequests).toBe(0)
+    expect(activationRequests()).toBe(0)
 
     await illusion.click()
     const [activationResponse] = await Promise.all([
-      host.waitForResponse(response => (
-        response.url().endsWith(`/api/games/${roomId}/commands`)
-        && response.request().postDataJSON()?.action?.type === 'activateProfessionAbility'
-      )),
+      waitForGameCommand(host, action => action.type === 'activateProfessionAbility'),
       virtualCardDialog.getByRole('button', { name: '幻術：火行 3 級' }).click(),
     ])
-    expect(activationResponse.ok()).toBe(true)
-    expect(activationResponse.request().postDataJSON()?.action).toMatchObject({
+    expect(activationResponse.ok).toBe(true)
+    expect(activationResponse.action).toMatchObject({
       abilityId: 'illusion',
       declaredElement: 'Fire',
       declaredLevel: 3,
     })
     await expect(virtualCardDialog).toHaveCount(0)
-    expect(activationRequests).toBe(1)
+    expect(activationRequests()).toBe(1)
 
     await expect(host.locator('.battle-record-timeline')).toContainText('虛擬牌')
     await reloadFastGameRoute(host, roomId)

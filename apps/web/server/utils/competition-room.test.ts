@@ -541,9 +541,9 @@ test('referee and audit request helpers use route identity and bounded limits', 
 test('competition room errors expose only a fixed safe message and machine code', () => {
   const error = competitionRoomError({ code: 'engine:secretInternalMessage' })
   expect(error.statusCode).toBe(422)
-  expect(error.statusMessage).toBe('賽程要求無法完成。')
+  expect(error.message).toBe('賽程要求無法完成。')
   expect(error.data).toEqual({ code: 'engineRejected' })
-  expect(JSON.stringify({ statusCode: error.statusCode, statusMessage: error.statusMessage, data: error.data }))
+  expect(JSON.stringify(error.toJSON()))
     .not.toContain('secretInternalMessage')
 })
 
@@ -595,12 +595,12 @@ test('E5a tournament errors map to stable statuses and fixed safe messages', () 
     ['engineRejected', 422, '賽程要求無法完成。'],
     ['engineProtocolError', 502, '賽事服務暫時無法處理要求。'],
   ] as const
-  for (const [code, statusCode, statusMessage] of cases) {
+  for (const [code, statusCode, message] of cases) {
     const error = competitionRoomError({ code, message: 'private engine detail' } as { code: string })
     expect(error.statusCode).toBe(statusCode)
-    expect(error.statusMessage).toBe(statusMessage)
+    expect(error.message).toBe(message)
     expect(error.data).toEqual({ code })
-    expect(error.statusMessage).not.toContain('private engine detail')
+    expect(error.message).not.toContain('private engine detail')
   }
 })
 
@@ -872,7 +872,7 @@ test('missing competition namespace returns 501 and room failures do not reflect
     error: { code: 'internalFailure', message: 'database password leaked' },
   }))).rejects.toMatchObject({
     statusCode: 502,
-    statusMessage: '賽事服務暫時無法處理要求。',
+    message: '賽事服務暫時無法處理要求。',
   })
 })
 
@@ -1038,6 +1038,6 @@ test('E5d2c policy errors map to fixed safe conflict responses', () => {
   for (const code of ['assignmentNotCurrent', 'firstPlayerPolicyUnresolved', 'eliminationDrawLossUnresolved']) {
     const error = competitionRoomError({ code })
     expect(error.statusCode).toBe(409)
-    expect(error.statusMessage).not.toContain(code)
+    expect(error.message).not.toContain(code)
   }
 })

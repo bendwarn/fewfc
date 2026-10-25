@@ -24,7 +24,7 @@ function stage(): StageConfig {
 }
 function publicSnapshot(competitionId = 'competition-a') {
   const config = stage()
-  return { tournamentId: competitionId, stages: [{ config, status: 'active', rounds: [], standings: [], corrections: [],
+  return { tournamentId: competitionId, stages: [{ config, status: 'active', resolution: null, rankingTieDecisions: [], rounds: [], standings: [], corrections: [],
     lastScheduleError: null, scheduleGeneration: 0, supersededRounds: [],
     teams: Object.fromEntries(config.teams.map(team => [team.teamId, { seed: team.seed, dropped: false, hadBye: false }])), doubleState: null }] }
 }
@@ -157,17 +157,21 @@ it('a signed-in non-organizer sees the safe tournament permission error without 
   })
   const page = await mountPage()
   expect(page.get('.tournament-view [role="alert"]').text())
-    .toBe('目前帳號沒有這場賽事的賽程讀取權限。')
+    .toBe('此賽事目前沒有可公開查閱的賽程。')
   expect(page.text()).not.toContain('private ACL detail')
   expect(fetchMock.mock.calls.filter(call => method(call[1]) === 'POST'
     && operation(call[1]) !== 'registrationView')).toHaveLength(0)
 })
 
-it('a signed-out parent waits for an authenticated session before reading either projection', async () => {
+it('a signed-out parent reads only the public tournament and waits for login before private registration reads', async () => {
   getSessionMock.mockResolvedValue({ data: null, error: null })
   const page = await mountPage()
   expect(page.get('.status-panel').text()).toContain('登入後即可查看賽事公告與報名狀態')
-  expect(fetchMock).not.toHaveBeenCalled()
+  expect(fetchMock).toHaveBeenCalledTimes(1)
+  expect(fetchMock.mock.calls[0]?.[0]).toBe('/api/competitions/competition-a/tournament')
+  expect(fetchMock.mock.calls[0]?.[1]).toMatchObject({ method: 'GET', retry: 0 })
+  expect(registrationReads()).toHaveLength(0)
+  expect(tournamentPosts()).toHaveLength(0)
 })
 
 it('session switch aborts the prior tournament read and ignores its late schedule', async () => {
@@ -339,7 +343,7 @@ it('輪次公告父頁接線：unknown 刷新後保留原命令手動 retry 並�
   const retry = page.get('[data-testid="round-same-command-retry"]').element
   const refresh = deferred()
   queuedRegistrationReads.push(refresh)
-  await page.get('.detail-heading .refresh-button').trigger('click')
+  await page.get('.refresh-button').trigger('click')
   expect(page.get('.round-publication').element).toBe(panel)
   expect(page.get('[data-testid="round-same-command-retry"]').element).toBe(retry)
   expect(page.get('[data-testid="round-same-command-retry"]').attributes('disabled')).toBeDefined()
@@ -567,7 +571,7 @@ it('真 NuxtPage 輪次公告 A→B→A 後拒收舊 valid ACK，保留原 inten
   await flushPromises()
   expect(router.currentRoute.value.path).toBe(`/competitions/${competitionB}`)
   expect(originalSignal.aborted).toBe(true)
-  expect(page.get('.detail-heading').text()).toContain(competitionB)
+  expect(page.get('.page-intro .identifier').text()).toContain(competitionB)
   expect(page.get('.round-publication').element).toBe(panel)
   expect(page.get('.round-publication').text()).toContain('原公告命令仍未確認')
   expect(posts()).toHaveLength(1)
@@ -578,7 +582,7 @@ it('真 NuxtPage 輪次公告 A→B→A 後拒收舊 valid ACK，保留原 inten
   await nextTick()
   await flushPromises()
   expect(router.currentRoute.value.path).toBe(`/competitions/${competitionA}`)
-  expect(page.get('.detail-heading').text()).toContain(competitionA)
+  expect(page.get('.page-intro .identifier').text()).toContain(competitionA)
   expect(page.get('.round-publication').element).toBe(panel)
   expect(page.get('.revision-label').text()).toBe('狀態版本 4')
   expect(page.get('.tournament-view .revision-note').text()).toBe('賽程版本 20')

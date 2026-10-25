@@ -1,3 +1,4 @@
+import { waitForGameCommand, gameCommandRequests } from './realtime-helpers'
 import {
   battleRecordEntry,
   expect,
@@ -30,13 +31,10 @@ test('a Spirit Skill is usable from the Ability panel and survives reconnect', a
     await expect(flyingBlade).toBeVisible()
     await expect(host.getByText('你的回合', { exact: true })).toBeVisible()
     const [skillResponse] = await Promise.all([
-      host.waitForResponse(response => (
-        response.url().endsWith(`/api/games/${roomId}/commands`)
-        && response.request().postDataJSON()?.action?.type === 'useSpiritSkill'
-      )),
+      waitForGameCommand(host, action => action.type === 'useSpiritSkill'),
       flyingBlade.click(),
     ])
-    expect(skillResponse.ok()).toBe(true)
+    expect(skillResponse.ok).toBe(true)
 
     const hostEntry = await battleRecordEntry(host, '使用「飛刃」')
     await expect(hostEntry).toContainText('靈力由 2 變為 0')

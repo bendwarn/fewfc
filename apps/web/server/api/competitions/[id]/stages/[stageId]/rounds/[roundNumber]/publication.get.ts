@@ -12,12 +12,12 @@ import {
 
 export default defineEventHandler(async (event) => {
   const session = await requireSession(event)
-  const competitionId = normalizeCompetitionRoundPublicationPathId(getRouterParam(event, 'id'))
-  const stageId = normalizeCompetitionRoundPublicationPathId(getRouterParam(event, 'stageId'))
-  const roundNumber = parseCompetitionRoundPublicationRoundNumber(getRouterParam(event, 'roundNumber'))
+  const competitionId = normalizeCompetitionRoundPublicationPathId(getRouterParam(event, 'id', { decode: true }))
+  const stageId = normalizeCompetitionRoundPublicationPathId(getRouterParam(event, 'stageId', { decode: true }))
+  const roundNumber = parseCompetitionRoundPublicationRoundNumber(getRouterParam(event, 'roundNumber', { decode: true }))
 
   assertCompetitionRoundPublicationNoQuery(
-    getQuery(event),
+    { ...getQuery<Record<string, unknown>>(event) },
     competitionRoundPublicationHasQueryMarker(event),
     competitionRoundPublicationHasRequestBody(event),
   )

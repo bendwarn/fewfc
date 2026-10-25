@@ -1,4 +1,4 @@
-import { mountSuspended, mockNuxtImport } from '@nuxt/test-utils/runtime'
+import { mountSuspended } from '@nuxt/test-utils/runtime'
 import { flushPromises } from '@vue/test-utils'
 import { afterEach, beforeEach, expect, it, vi } from 'vitest'
 import CompetitionClockDisplay from '~/components/CompetitionClockDisplay.vue'
@@ -6,7 +6,6 @@ import type { CompetitionRoomMode } from '~/lib/competition-ready'
 import type { CompetitionRoomMatchClockReadValue } from '../../shared/competition-room'
 
 const fetchMock = vi.hoisted(() => vi.fn())
-mockNuxtImport('$fetch', () => fetchMock)
 
 // 正常報名產生的機器識別碼不是玩家輸入的隊名，呈現測試必須使用中文映射。
 const teamIds: [string, string] = [
@@ -15,6 +14,7 @@ const teamIds: [string, string] = [
 ]
 
 interface ClockProps {
+  readClock: (options: { signal: AbortSignal }) => Promise<unknown>
   mode: CompetitionRoomMode
   gameId: string
   roomGameId: string | null
@@ -26,7 +26,7 @@ function props(): ClockProps {
   const mode: CompetitionRoomMode = {
     kind: 'competition', context: { competitionId: 'competition a', matchId: 'match/one', gameNumber: 2 },
   }
-  return { mode, gameId: 'room/one', roomGameId: 'room/one', sessionUserId: 'member-a', memberUserId: 'member-a' }
+  return { readClock: fetchMock, mode, gameId: 'room/one', roomGameId: 'room/one', sessionUserId: 'member-a', memberUserId: 'member-a' }
 }
 
 function response(): CompetitionRoomMatchClockReadValue {
@@ -52,8 +52,8 @@ function deferred() {
 }
 
 function signal(index: number): AbortSignal {
-  const value: unknown = fetchMock.mock.calls[index]?.[1]?.signal
-  if (!(value instanceof AbortSignal)) throw new Error('時計 GET 應帶 AbortSignal')
+  const value: unknown = fetchMock.mock.calls[index]?.[0]?.signal
+  if (!(value instanceof AbortSignal)) throw new Error('時計查詢應帶 AbortSignal')
   return value
 }
 
@@ -91,14 +91,13 @@ afterEach(() => {
   vi.restoreAllMocks()
 })
 
-it('visible 固定成員以專用 GET 單飛取樣，完成一秒後才再次取樣，不在 client 扣時', async () => {
+it('visible 固定成員以房間 WS 單飛取樣，完成一秒後才再次取樣，不在 client 扣時', async () => {
   const first = deferred()
   const second = deferred()
   fetchMock.mockReturnValueOnce(first.promise).mockReturnValueOnce(second.promise)
   const wrapper = await mountClock()
   expect(fetchMock).toHaveBeenCalledTimes(1)
-  expect(fetchMock.mock.calls[0]?.[0]).toBe('/api/competitions/competition%20a/matches/match%2Fone/clock')
-  expect(fetchMock.mock.calls[0]?.[1]).toEqual({ method: 'GET', signal: signal(0), retry: 0 })
+  expect(fetchMock.mock.calls[0]?.[0]).toEqual({ signal: signal(0) })
   expect(wrapper.get('.clock-refresh').attributes('disabled')).toBeDefined()
   await vi.advanceTimersByTimeAsync(5000)
   expect(fetchMock).toHaveBeenCalledTimes(1)
@@ -251,8 +250,7 @@ it('unknown response loss 清舊值、停自動、手動 retry 仍只有同一�
   await wrapper.get('.clock-refresh').trigger('click')
   await wrapper.get('.clock-refresh').trigger('click')
   expect(fetchMock).toHaveBeenCalledTimes(3)
-  expect(fetchMock.mock.calls[2]?.[0]).toBe(fetchMock.mock.calls[0]?.[0])
-  expect(fetchMock.mock.calls[2]?.[1]).toEqual({ method: 'GET', signal: signal(2), retry: 0 })
+  expect(fetchMock.mock.calls[2]?.[0]).toEqual({ signal: signal(2) })
   retry.resolve(response())
   await flushPromises()
   expect(wrapper.text()).toContain('299.001 秒')

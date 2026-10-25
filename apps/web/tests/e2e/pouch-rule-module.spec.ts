@@ -1,3 +1,4 @@
+import { waitForGameCommand } from './realtime-helpers'
 import type { APIResponse, Page } from '@playwright/test'
 import {
   battleRecordRuleEntry,
@@ -31,12 +32,8 @@ async function requestJson<T>(operation: string, responsePromise: Promise<APIRes
 }
 
 async function waitForCommand(page: Page, actionType: string) {
-  const response = await page.waitForResponse(response => (
-    response.url().includes('/commands')
-    && response.request().method() === 'POST'
-    && (response.request().postData() ?? '').includes(`"type":"${actionType}"`)
-  ))
-  expect(response.ok(), await response.text()).toBe(true)
+  const response = await waitForGameCommand(page, action => action.type === actionType)
+  expect(response.ok, JSON.stringify(response.error)).toBe(true)
   return response
 }
 
@@ -140,7 +137,7 @@ test('Pouch preparation is private, reconnectable, and triggers through the Abil
     const command = waitForCommand(active, 'triggerSecretStrategy')
     await goldenCicada.click()
     const triggerResponse = await command
-    expect(triggerResponse.request().postDataJSON()?.action).toMatchObject({
+    expect(triggerResponse.action).toMatchObject({
       type: 'triggerSecretStrategy',
       decision: {
         type: 'noInput',
@@ -256,7 +253,7 @@ test('Chain stages Sheep Stealing as a typed exchange choice', async ({ browser 
     const chainAnswer = waitForCommand(actor, 'answerChoice')
     await chainDialog.getByRole('button', { name: '確認' }).click()
     const chainResponse = await chainAnswer
-    expect(chainResponse.request().postDataJSON()?.action).toMatchObject({
+    expect(chainResponse.action).toMatchObject({
       type: 'answerChoice',
       answer: {
         type: 'chain',

@@ -7,6 +7,7 @@ import {
   type Page,
 } from '@playwright/test'
 import type { DevelopmentScenario } from '../../shared/development-scenarios'
+import { observeRoomSocket } from './realtime-helpers'
 
 const roomUrl = /\/rooms\/[0-9a-f-]+$/
 
@@ -26,6 +27,7 @@ async function waitForClientRoute(page: Page, navigate: () => Promise<unknown>) 
  * 就緒邊界，而不讓測試耦合到 Nuxt 內部實作。
  */
 export async function gotoAppRoute(page: Page, path: string) {
+  observeRoomSocket(page)
   // 僅驗證測試會執行表單在用戶端工作階段更新後才掛載的路由。使用該路由自身
   // 可觀察的回應，避免欄位填入更新前的實例後，在重新掛載時被丟棄。
   const sessionRefresh = page.waitForResponse(response => (
@@ -247,6 +249,7 @@ async function waitForFastGameRoute(
 }
 
 async function gotoFastGameRoute(page: Page, gameId: string) {
+  observeRoomSocket(page)
   await waitForFastGameRoute(page, gameId, () => (
     page.goto(`/rooms/${gameId}`, { waitUntil: 'domcontentloaded' })
   ))

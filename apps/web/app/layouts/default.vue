@@ -43,15 +43,10 @@ async function openNotification(gameId: string) {
   await router.push(`/rooms/${encodeURIComponent(gameId)}`)
 }
 
-onMounted(() => {
-  notifications.setUserId(session.userId.value)
-  notifications.connect()
-})
-
 watch(() => session.userId.value, (userId) => {
   notifications.setUserId(userId)
   if (userId) notifications.connect()
-})
+}, { immediate: true })
 
 onBeforeUnmount(() => {
   notifications.disconnect()

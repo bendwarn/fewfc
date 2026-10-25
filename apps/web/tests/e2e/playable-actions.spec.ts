@@ -1,5 +1,5 @@
 import type { Page } from '@playwright/test'
-import { activePlayerPage, expect, setupFastTwoPlayerGame, test } from './fixtures'
+import { activePlayerPage, expect, reloadFastGameRoute, setupFastTwoPlayerGame, test } from './fixtures'
 
 async function expectVerticalPanels(page: Page) {
   const ability = page.getByRole('region', { name: '能力' })
@@ -33,17 +33,26 @@ test('selected cards expose rule-backed actions in vertically ordered control pa
     await active.setViewportSize({ width: 377, height: 734 })
     await expectVerticalPanels(active)
 
-    const commandUrl = '**/api/games/*/commands'
-    await active.route(commandUrl, async (route) => {
-      const body = route.request().postDataJSON()
-      if (body?.action?.type === 'playableActions') {
-        expect(body.commandId).toMatch(/\S/)
-        expect(body.gameInstanceId).toMatch(/\S/)
-        expect(body.transactionId).toMatch(/\S/)
-        await new Promise(resolve => setTimeout(resolve, 300))
-      }
-      await route.continue()
+    let queryMode: 'delay' | 'fail' = 'delay'
+    await active.routeWebSocket('**/api/games/*/socket', socket => {
+      const server = socket.connectToServer()
+      socket.onMessage(async wire => {
+        const request = JSON.parse(String(wire))
+        if (request.operation === 'command' && request.input.action.type === 'playableActions') {
+          expect(request.input.commandId).toMatch(/\S/)
+          expect(request.input.gameInstanceId).toMatch(/\S/)
+          expect(request.input.transactionId).toMatch(/\S/)
+          if (queryMode === 'fail') {
+            socket.send(JSON.stringify({ type: 'result', requestId: request.requestId, ok: false,
+              error: { statusCode: 500, code: 'queryFailed', message: 'query failed' } }))
+            return
+          }
+          await new Promise(resolve => setTimeout(resolve, 300))
+        }
+        server.send(wire)
+      })
     })
+    await reloadFastGameRoute(active, game.gameId)
 
     const card = active.locator('.playing-card:enabled:not(.hidden)').first()
     await card.click()
@@ -55,20 +64,8 @@ test('selected cards expose rule-backed actions in vertically ordered control pa
     await expect(formation).toBeFocused()
     await expect(active.locator('.action-detail')).toBeVisible()
 
-    await active.unroute(commandUrl)
     await card.click()
-    await active.route(commandUrl, async (route) => {
-      const body = route.request().postDataJSON()
-      if (body?.action?.type === 'playableActions') {
-        await route.fulfill({
-          status: 500,
-          contentType: 'application/json',
-          body: JSON.stringify({ statusMessage: 'query failed' }),
-        })
-        return
-      }
-      await route.continue()
-    })
+    queryMode = 'fail'
     await card.click()
     await expect(active.locator('.action-error'))
       .toHaveText('無法取得可用行動，請稍後再試。')

@@ -46,6 +46,7 @@ function callWasm<T>(
 }
 
 mock.module('cloudflare:workers', () => ({
+  env: {},
   DurableObject: class {
     protected ctx: unknown
     protected env: unknown
@@ -58,6 +59,7 @@ mock.module('cloudflare:workers', () => ({
 }))
 
 mock.module('../rules-engine', () => ({
+  callPersonalDeckResolution: async () => { throw new Error('此 fixture 未設定個人牌組查詢') },
   callRulesEngine: async (request: unknown) => (
     callWasm<RulesReadyResult>(request, wasm.fewfc_handle_request)
   ),
@@ -220,6 +222,8 @@ async function connectAndReady(room: InstanceType<typeof GameRoom>, binding: Com
   Reflect.set(globalThis, 'WebSocketPair', class {
     client = new FixtureSocket()
     server = new FixtureSocket()
+    get 0() { return this.client }
+    get 1() { return this.server }
   })
   globalThis.Response = SocketResponse
   try {

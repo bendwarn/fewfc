@@ -1,4 +1,12 @@
 import { DurableObject } from 'cloudflare:workers'
+import { parseSocketRequest } from '../../shared/realtime'
+import { attachRealtimeIdentity, durableSocket, durableWebSocketHandler, realtimeEvent, requireRealtimeIdentity, socketFailure, socketResponse } from '../realtime-handler'
+import { customDeckForUser } from '../../server/utils/player-deck'
+import { updatePublicRoom } from '../../server/utils/public-room-index'
+import { competitionGameReadyError } from '../../server/utils/competition-game-room'
+import { buildCompetitionMatchClockReadRequest, readCompetitionMatchClock, serverCompetitionMatchClockTime } from '../../server/utils/competition-match-clock'
+import { callPersonalDeckResolution } from '../rules-engine'
+import { maintenanceEnabled } from '../maintenance'
 import {
   emptyPublicState,
   invitationCredentialMatches,
@@ -114,6 +122,9 @@ function canonicalEventTypes(record: unknown[]): string[] {
 }
 
 interface GameRoomEnv {
+  DB?: D1Database
+  APP_ENV?: string
+  MAINTENANCE_MODE?: string
   PLAYER_NOTIFICATIONS: DurableObjectNamespace
   COMPETITION_ROOM?: CompetitionRoomNamespace
 }
@@ -226,6 +237,7 @@ interface CompetitionPendingTimeout {
 
 interface SocketAttachment {
   userId: string
+  i?: string
 }
 
 interface PreparedCompetitionGameStart {
@@ -297,6 +309,80 @@ type RulesEngineAction =
   | { type: 'resolveRandomness'; requestId: string; shuffledOrder: number[] }
 
 export class GameRoom extends DurableObject<GameRoomEnv> {
+  private replySocketId: string | undefined
+  private directoryUpdates: Promise<void> = Promise.resolve()
+  private readonly socketHandler = durableWebSocketHandler({
+    open: peer => { attachRealtimeIdentity(durableSocket(this.ctx, peer), peer.request) },
+    message: async (peer, message) => {
+      const wire = message.text()
+      if (wire === 'ping') { peer.send('pong'); return }
+      let requestId = 'invalid'
+      try {
+        const raw = wire.length <= 65_536 ? JSON.parse(wire) : undefined
+        if (typeof raw?.requestId === 'string' && raw.requestId.length <= 200) requestId = raw.requestId
+        const request = parseSocketRequest(raw, 'room')
+        if (!request) throw { statusCode: 400, code: 'invalidRequest', message: '無效的連線請求。' }
+        requestId = request.requestId
+        if (!this.env.DB) throw new Error('Missing database binding')
+        const actor = await requireRealtimeIdentity(durableSocket(this.ctx, peer), this.env.DB)
+        if (request.operation !== 'state' && request.operation !== 'clock' && maintenanceEnabled(this.env.MAINTENANCE_MODE)) {
+          throw { statusCode: 503, code: 'maintenanceMode', message: '系統維護中，請稍後再試。' }
+        }
+        if (request.operation === 'clock') {
+          const binding = await this.competitionBinding()
+          if (!binding) throw competitionGameReadyError('notCompetitionRoom')
+          const data = await readCompetitionMatchClock(realtimeEvent(this.env), buildCompetitionMatchClockReadRequest(
+            binding.competitionId, binding.matchId, actor.userId, serverCompetitionMatchClockTime(),
+          ))
+          peer.send(JSON.stringify({ type: 'result', requestId, ok: true, data }))
+          return
+        }
+        if (request.operation === 'competitionReady') {
+          const result = await this.setCompetitionReady({ actorUserId: actor.userId, ready: request.input.ready })
+          if (!result.ok) throw competitionGameReadyError(result.code)
+          peer.send(JSON.stringify({ type: 'result', requestId, ok: true, data: { ready: result.ready } }))
+          return
+        }
+        let body: GameRoomRequest
+        switch (request.operation) {
+          case 'state': body = { type: 'getState', actorUserId: actor.userId }; break
+          case 'command': body = { ...request.input, type: 'submitCommand', actorUserId: actor.userId }; break
+          case 'ready': case 'start': {
+            const candidate = await customDeckForUser(realtimeEvent(this.env), actor.userId)
+            const resolved = await callPersonalDeckResolution(actor.userId, candidate)
+            const deckList = { name: resolved.effective.name, cards: resolved.effective.cards }
+            body = request.operation === 'ready'
+              ? { type: 'toggleReady', actorUserId: actor.userId, deckList, ready: request.input.ready }
+              : { type: 'startGame', actorUserId: actor.userId, deckList }
+            break
+          }
+          case 'rules': body = { type: 'updateRuleModules', actorUserId: actor.userId, ...request.input }; break
+          case 'remove': body = { type: 'removePlayer', actorUserId: actor.userId, targetUserId: request.input.userId }; break
+          case 'leave': body = { type: 'leaveGame', actorUserId: actor.userId }; break
+          case 'dissolve': body = { type: 'dissolveGame', actorUserId: actor.userId }; break
+          case 'reset': body = { type: 'resetGame', actorUserId: actor.userId }; break
+        }
+        // 共用現有權限、賽事入口與序列化執行；不經過對外 HTTP 或第二次提交。
+        const response = await this.fetch(new Request('https://game-room.internal/', {
+          method: 'POST', headers: { 'content-type': 'application/json', 'x-fewfc-reply-socket': peer.id },
+          body: JSON.stringify(body),
+        }))
+        const result = await socketResponse(requestId, response)
+        peer.send(JSON.stringify(result))
+        if (result.ok && result.data && typeof result.data === 'object' && 'metadata' in result.data) {
+          // 回覆不等待大廳索引，但同房索引依序寫入，避免快速棄牌讓舊狀態最後覆寫。
+          this.directoryUpdates = this.directoryUpdates
+            .then(() => updatePublicRoom(realtimeEvent(this.env), result.data as GameRoomResponse))
+            .catch(error => console.error('room directory update failed', error))
+          this.ctx.waitUntil(this.directoryUpdates)
+        }
+        if (result.ok && (request.operation === 'leave' || request.operation === 'dissolve')) peer.close(1000, 'room closed')
+      } catch (error) {
+        peer.send(JSON.stringify(socketFailure(requestId, error)))
+        if ((error as { statusCode?: number })?.statusCode === 401) peer.close(4001, 'session expired')
+      }
+    },
+  })
   private operationTail: Promise<void> = Promise.resolve()
   private competitionDeliveryInFlight: Promise<void> | null = null
   private competitionReadyNoticeInFlight = false
@@ -1637,6 +1723,7 @@ export class GameRoom extends DurableObject<GameRoomEnv> {
     const body = (await request.json()) as GameRoomRequest
 
     return await this.serialized(async () => {
+      this.replySocketId = request.headers.get('x-fewfc-reply-socket') ?? undefined
       try {
       switch (body.type) {
         case 'createGame':
@@ -1647,7 +1734,7 @@ export class GameRoom extends DurableObject<GameRoomEnv> {
         case 'joinGame':
           return await this.joinGame(body.actorUserId, body.actorName, body.credential)
         case 'toggleReady':
-          return await this.toggleReady(body.actorUserId, body.deckList)
+          return await this.toggleReady(body.actorUserId, body.deckList, body.ready)
         case 'updateRuleModules':
           return await this.updateRuleModules(body.actorUserId, body.enabledRuleModules, body.ruleVersion)
         case 'leaveGame':
@@ -1692,17 +1779,18 @@ export class GameRoom extends DurableObject<GameRoomEnv> {
           error: '房間服務暫時無法處理要求，請稍後再試。',
           code: 'gameRoomFailure',
         }, 500)
+      } finally {
+        this.replySocketId = undefined
       }
     })
   }
 
   async webSocketMessage(socket: WebSocket, message: string | ArrayBuffer) {
-    if (typeof message === 'string' && message === 'ping') {
-      socket.send('pong')
-    }
+    await this.socketHandler.handleDurableMessage(this, socket, message)
   }
 
-  async webSocketClose(socket: WebSocket) {
+  async webSocketClose(socket: WebSocket, code = 1000, reason = '', wasClean = true) {
+    await this.socketHandler.handleDurableClose(this, socket, code, reason, wasClean)
     await this.serialized(() => this.disconnect(socket))
   }
 
@@ -1891,6 +1979,7 @@ export class GameRoom extends DurableObject<GameRoomEnv> {
   private async toggleReady(
     actorUserId: string,
     deckList: PlayerDeckList,
+    desiredReady?: boolean,
   ): Promise<Response> {
     const metadata = await this.requireMetadata()
     const actor = this.memberFor(metadata, actorUserId)
@@ -1935,7 +2024,8 @@ export class GameRoom extends DurableObject<GameRoomEnv> {
         }
       }
 
-      const ready = !actor.ready
+      const ready = desiredReady ?? !actor.ready
+      if (ready === actor.ready) return this.json(await this.response(metadata, actorUserId))
       const updatedMetadata = {
         ...metadata,
         members: metadata.members.map(member => (
@@ -1967,7 +2057,8 @@ export class GameRoom extends DurableObject<GameRoomEnv> {
       return this.json({ error: 'room has already started' }, 409)
     }
 
-    const ready = !actor.ready
+    const ready = desiredReady ?? !actor.ready
+    if (ready === actor.ready) return this.json(await this.response(metadata, actorUserId))
     if (ready) {
       await this.ctx.storage.put(this.lockedDeckKey(actorUserId), deckList)
     } else {
@@ -3204,11 +3295,13 @@ export class GameRoom extends DurableObject<GameRoomEnv> {
       return this.json({ error: 'only room members may connect' }, 403)
     }
 
-    const pair = new WebSocketPair()
-    const [client, server] = Object.values(pair)
-
-    this.ctx.acceptWebSocket(server)
-    server.serializeAttachment({ userId: actorUserId } satisfies SocketAttachment)
+    const previousSockets = new Set(this.ctx.getWebSockets())
+    const upgraded = await this.socketHandler.handleDurableUpgrade(this, request)
+    const server = this.ctx.getWebSockets().find(socket => {
+      const attachment = socket.deserializeAttachment<SocketAttachment>()
+      return attachment?.userId === actorUserId && socket.readyState === WebSocket.OPEN
+        && !previousSockets.has(socket)
+    })
 
     const updatedMetadata: GameRoomMetadata = {
       ...metadata,
@@ -3236,13 +3329,13 @@ export class GameRoom extends DurableObject<GameRoomEnv> {
     } else {
       await this.ctx.storage.put('metadata', promotedMetadata)
     }
-    server.send(JSON.stringify({
+    server?.send(JSON.stringify({
       type: 'roomState',
       data: await this.response(promotedMetadata, actorUserId),
     }))
     this.ctx.waitUntil(this.broadcast(promotedMetadata))
 
-    return new Response(null, { status: 101, webSocket: client })
+    return upgraded
   }
 
   private async disconnect(socket: WebSocket) {
@@ -3351,6 +3444,7 @@ export class GameRoom extends DurableObject<GameRoomEnv> {
   }
 
   private async broadcast(metadata?: GameRoomMetadata) {
+    const excludeSocketId = this.replySocketId
     // 不使用呼叫端暫存的 metadata，避免舊廣播外洩離房後的私人房間狀態。
     const currentMetadata = await this.requireMetadata()
     const competition = await this.competitionBinding()
@@ -3361,6 +3455,8 @@ export class GameRoom extends DurableObject<GameRoomEnv> {
       }
 
       const attachment = socket.deserializeAttachment() as SocketAttachment | null
+
+      if (excludeSocketId && attachment?.i === excludeSocketId) return
 
       if (!attachment?.userId) {
         return
@@ -3387,6 +3483,7 @@ export class GameRoom extends DurableObject<GameRoomEnv> {
 
   private broadcastDissolved(gameId: string) {
     for (const socket of this.ctx.getWebSockets()) {
+      if (this.replySocketId && socket.deserializeAttachment<SocketAttachment>()?.i === this.replySocketId) continue
       if (socket.readyState === WebSocket.OPEN) {
         socket.send(JSON.stringify({ type: 'roomDissolved', gameId }))
         socket.close(1000, 'room dissolved')
@@ -3397,6 +3494,8 @@ export class GameRoom extends DurableObject<GameRoomEnv> {
   private closeUserSockets(userId: string, code: number, reason: string) {
     for (const socket of this.ctx.getWebSockets()) {
       const attachment = socket.deserializeAttachment() as SocketAttachment | null
+
+      if (this.replySocketId && attachment?.i === this.replySocketId) continue
 
       if (attachment?.userId === userId && socket.readyState === WebSocket.OPEN) {
         socket.close(code, reason)

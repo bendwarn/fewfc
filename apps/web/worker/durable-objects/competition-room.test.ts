@@ -65,6 +65,7 @@ import type { CompetitionEngineAdapter, CompetitionRoom } from './competition-ro
 const announcedPlan = createCompetitionAnnouncementPlanFixture()
 
 mock.module('cloudflare:workers', () => ({
+  env: {},
   DurableObject: class {
     protected ctx: unknown
     protected env: unknown
@@ -11021,6 +11022,7 @@ test('single-elimination publishes the championship and bronze matches together 
     throw new Error('published championship or bronze match is missing')
   }
   mock.module('../rules-engine', () => ({
+  callPersonalDeckResolution: async () => { throw new Error('此 fixture 未設定個人牌組查詢') },
     callRuleModuleResolution: async (modules: string[] = []) => ({ modules }),
     callRulesEngine: async (request: {
       setup: {
@@ -11168,7 +11170,12 @@ test('single-elimination publishes the championship and bronze matches together 
   async function connectAndReady(child: ReturnType<typeof createChildRoom>, userId: string) {
     const globals = globalThis as unknown as Record<string, unknown>
     const previousPair = globals.WebSocketPair
-    globals.WebSocketPair = class { client = new ChildSocket(); server = new ChildSocket() }
+    globals.WebSocketPair = class {
+      client = new ChildSocket()
+      server = new ChildSocket()
+      get 0() { return this.client }
+      get 1() { return this.server }
+    }
     try {
       const response = await child.room.fetch(new Request('https://game-room.internal/socket', {
         headers: { Upgrade: 'websocket', 'x-fewfc-user-id': userId,
@@ -12499,6 +12506,7 @@ test('ticket 16 waits for every announced stage before ending the competition', 
 
 test.serial('four-team double elimination automatically publishes and opens every advancing round, with and without its reset', async () => {
   mock.module('../rules-engine', () => ({
+  callPersonalDeckResolution: async () => { throw new Error('此 fixture 未設定個人牌組查詢') },
     callRuleModuleResolution: async (modules: string[] = []) => ({ modules }),
     callRulesEngine: async (request: {
       setup: {
@@ -12635,7 +12643,12 @@ test.serial('four-team double elimination automatically publishes and opens ever
   async function readyPlayer(child: Child, userId: string) {
     const globals = globalThis as unknown as Record<string, unknown>
     const previousPair = globals.WebSocketPair
-    globals.WebSocketPair = class { client = new ChildSocket(); server = new ChildSocket() }
+    globals.WebSocketPair = class {
+      client = new ChildSocket()
+      server = new ChildSocket()
+      get 0() { return this.client }
+      get 1() { return this.server }
+    }
     try {
       const response = await child.room.fetch(new Request('https://game-room.internal/socket', {
         headers: { Upgrade: 'websocket', 'x-fewfc-user-id': userId,
@@ -17925,6 +17938,7 @@ const roundReleasePouchModules = [
 for (const preparing of [false, true]) {
 test(`round-release parent ingests an early ${preparing ? 'Pouch preparation' : 'direct action'} GameStarted and starts the schedule at the child sample`, async () => {
   mock.module('../rules-engine', () => ({
+  callPersonalDeckResolution: async () => { throw new Error('此 fixture 未設定個人牌組查詢') },
     callRuleModuleResolution: async (modules: string[] = []) => ({ modules }),
     callRulesEngine: async (request: {
       setup: {
@@ -18213,6 +18227,8 @@ test(`round-release parent ingests an early ${preparing ? 'Pouch preparation' : 
     globals.WebSocketPair = class {
       client = new ChildSocket()
       server = new ChildSocket()
+      get 0() { return this.client }
+      get 1() { return this.server }
     }
     try {
       const response = await child.room.fetch(new Request('https://game-room.internal/socket', {
@@ -18449,6 +18465,7 @@ test(`round-release parent ingests an early ${preparing ? 'Pouch preparation' : 
 
 test('round-release initial GameStarted retries the same durable child entry after committed parent response loss and restart', async () => {
   mock.module('../rules-engine', () => ({
+  callPersonalDeckResolution: async () => { throw new Error('此 fixture 未設定個人牌組查詢') },
     callRuleModuleResolution: async (modules: string[] = []) => ({ modules }),
     callRulesEngine: async (request: {
       setup: {
@@ -18622,6 +18639,8 @@ test('round-release initial GameStarted retries the same durable child entry aft
     globals.WebSocketPair = class {
       client = new ChildSocket()
       server = new ChildSocket()
+      get 0() { return this.client }
+      get 1() { return this.server }
     }
     try {
       const response = await child.room.fetch(new Request('https://game-room.internal/socket', {
@@ -18865,6 +18884,7 @@ test('round-release parent accepts the second room initial GameStarted after the
   }
 
   mock.module('../rules-engine', () => ({
+  callPersonalDeckResolution: async () => { throw new Error('此 fixture 未設定個人牌組查詢') },
     callRuleModuleResolution: async (modules: string[] = []) => ({ modules }),
     callRulesEngine: async (request: {
       setup: {
@@ -19019,7 +19039,12 @@ test('round-release parent accepts the second room initial GameStarted after the
   async function connectAndReady(child: ReturnType<typeof createChildRoom>, userId: string) {
     const globals = globalThis as unknown as Record<string, unknown>
     const previousPair = globals.WebSocketPair
-    globals.WebSocketPair = class { client = new ChildSocket(); server = new ChildSocket() }
+    globals.WebSocketPair = class {
+      client = new ChildSocket()
+      server = new ChildSocket()
+      get 0() { return this.client }
+      get 1() { return this.server }
+    }
     try {
       const response = await child.room.fetch(new Request('https://game-room.internal/socket', {
         headers: { Upgrade: 'websocket', 'x-fewfc-user-id': userId,
@@ -19349,6 +19374,7 @@ test('round-release initial GameStarted late receipt failure rolls back the join
   }
   // 僅 RulesEngine system boundary 使用既有 fixed harness；首局 event/evidence 由 GameRoom 提交。
   mock.module('../rules-engine', () => ({
+  callPersonalDeckResolution: async () => { throw new Error('此 fixture 未設定個人牌組查詢') },
     callRuleModuleResolution: async (modules: string[] = []) => ({ modules }),
     callRulesEngine: async (request: {
       setup: {
@@ -19474,7 +19500,12 @@ test('round-release initial GameStarted late receipt failure rolls back the join
   async function connectAndReady(child: ReturnType<typeof createChildRoom>, userId: string) {
     const globals = globalThis as unknown as Record<string, unknown>
     const previousPair = globals.WebSocketPair
-    globals.WebSocketPair = class { client = new ChildSocket(); server = new ChildSocket() }
+    globals.WebSocketPair = class {
+      client = new ChildSocket()
+      server = new ChildSocket()
+      get 0() { return this.client }
+      get 1() { return this.server }
+    }
     try {
       const response = await child.room.fetch(new Request('https://game-room.internal/socket', {
         headers: { Upgrade: 'websocket', 'x-fewfc-user-id': userId,

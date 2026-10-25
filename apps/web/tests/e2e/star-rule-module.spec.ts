@@ -1,3 +1,4 @@
+import { waitForGameCommand } from './realtime-helpers'
 import { type Locator, type Page } from '@playwright/test'
 import {
   battleRecordRuleEntry,
@@ -228,12 +229,9 @@ test('a Star endgame fixture finishes through normal UI play and resets with its
       '.action-panel .action-candidates button[title*="進行五行攻擊"]',
     )
     await expect(attack).toBeVisible()
-    const command = active.waitForResponse(response => (
-      response.request().method() === 'POST'
-      && new URL(response.url()).pathname.endsWith('/commands')
-    ))
+    const command = waitForGameCommand(active, action => action.type === 'performFormation')
     await attack.click()
-    expect((await command).ok()).toBe(true)
+    expect((await command).ok).toBe(true)
 
     await Promise.all(pages.map(async (page) => {
       await expect(page.locator('.battlefield .result-reason')).toContainText('生命值歸零')

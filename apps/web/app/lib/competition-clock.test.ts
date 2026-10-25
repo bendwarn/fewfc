@@ -1,5 +1,5 @@
 import { expect, test } from 'bun:test'
-import { CompetitionClockProtocolError, competitionClockErrorMessage, competitionClockPath, createCompetitionClockScope, formatCompetitionClockTime, parseCompetitionClockResponse } from './competition-clock'
+import { CompetitionClockProtocolError, competitionClockErrorMessage, createCompetitionClockScope, formatCompetitionClockTime, parseCompetitionClockResponse } from './competition-clock'
 import type { ClockCheckpointWindow, ClockDisplay } from '../../shared/competition'
 import type { CompetitionRoomMatchClockReadValue } from '../../shared/competition-room'
 
@@ -36,8 +36,7 @@ test('時計僅接受伺服器競賽 context、同一房間及本人固定成員
   })
 })
 
-test('只建立專用 GET 路徑並複製相同局的 exact 公開權威 DTO，不重新扣時', () => {
-  expect(competitionClockPath(scope())).toBe('/api/competitions/competition%20a/matches/match%2Fone/clock')
+test('複製相同局的 exact 公開權威 DTO，不重新扣時', () => {
   const source = response()
   const projected = parseCompetitionClockResponse(source, scope())
   expect(projected).toEqual(response())
