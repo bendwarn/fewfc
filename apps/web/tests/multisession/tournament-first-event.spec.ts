@@ -130,6 +130,26 @@ function announcementPlan(): CompetitionAnnouncementPlan {
   }
 }
 
+function twoVTwoAnnouncementPlan(): CompetitionAnnouncementPlan {
+  return {
+    initialSeedPolicy: 'randomDrawAfterRegistrationDeadline',
+    swissPairingPolicy: 'publishedRulesWithPersistedRandomSeed',
+    rankingPolicy: 'matchPointsThenOpponentWinsThenOpponentLosses',
+    exactRankingTiePolicy: 'organizerOrUnconflictedRefereeWithPublicReason',
+    stages: [
+      {
+        stageId: 'two-v-two-round-robin',
+        format: 'roundRobin',
+        matchFormat: { type: 'fixedGames', value: 1 },
+        clockConfig: { mainTimeMs: 0, actionTimeMs: 30_000, outOfTurnChoiceTimeMs: 30_000 },
+        swissRounds: null,
+        swissPolicy: null,
+        qualification: { type: 'allEligibleTeams' },
+      },
+    ],
+  }
+}
+
 async function responseJson<T>(operation: string, responsePromise: Promise<import('@playwright/test').APIResponse>): Promise<T> {
   const response = await responsePromise
   const body = await response.text()
@@ -217,7 +237,11 @@ async function createPlayer(browser: Browser, name: string): Promise<Player> {
   }
 }
 
-async function createCompetition(organizer: Player): Promise<CompetitionCreated> {
+async function createCompetition(
+  organizer: Player,
+  teamSize = 1,
+  plan = announcementPlan(),
+): Promise<CompetitionCreated> {
   const registrationDeadline = (Math.floor(Date.now() / 60_000) + 2) * 60_000
   const checkInDeadline = registrationDeadline + 6 * 60_000
   const created = await responseJson<{ competitionId?: unknown }>(
@@ -227,12 +251,12 @@ async function createCompetition(organizer: Player): Promise<CompetitionCreated>
         ruleVersion: '5.17',
         ruleset: 'base',
         enabledRuleModules: pouchRuleModules,
-        teamSize: 1,
+        teamSize,
         registrationMode: 'public',
         personalDecks: 'required',
         registrationDeadline,
         checkInDeadline,
-        plan: announcementPlan(),
+        plan,
       },
     }),
   )
@@ -274,6 +298,67 @@ async function registerIndividual(player: Player, competitionId: string) {
   )).toBeVisible()
   await expect(player.page.getByRole('button', { name: '隊長資料完成確認', exact: true })).toBeVisible()
   await player.page.getByRole('button', { name: '隊長資料完成確認', exact: true }).click()
+  await expect(ownTeam.locator('.team-status')).toContainText('資料完成')
+}
+
+async function registerTeamCaptain(
+  captain: Player,
+  otherMember: Player,
+  competitionId: string,
+): Promise<string> {
+  await gotoAppRoute(captain.page, `/competitions/${encodeURIComponent(competitionId)}`)
+  await expect(captain.page.getByLabel('其他隊員使用者 ID（每行一位）', { exact: true })).toBeVisible()
+  await captain.page.getByLabel('其他隊員使用者 ID（每行一位）', { exact: true }).fill(otherMember.userId)
+  const registrationResponse = captain.page.waitForResponse(response => {
+    if (response.request().method() !== 'POST'
+      || new URL(response.url()).pathname !== `/api/competitions/${competitionId}/commands`) return false
+    try { return response.request().postDataJSON()?.operation?.type === 'registrationExecute' } catch { return false }
+  })
+  await captain.page.getByRole('button', { name: '登記隊伍', exact: true }).click()
+  const registered = await registrationResponse
+  const registrationBody = await registered.text()
+  if (!registered.ok()) {
+    throw new Error(`2v2 team registration failed with HTTP ${registered.status()}: ${registrationBody}`)
+  }
+  const registration = parseCompetitionRegistrationResponse(
+    JSON.parse(registrationBody), competitionId, undefined, captain.userId,
+  )
+  expect(registration.teamSize).toBe(2)
+  expect(registration.initialHp).toBe(20)
+  if (!registration.ownTeam) {
+    throw new Error(`2v2 team registration response did not include the captain's team: ${registrationBody}`)
+  }
+  expect(registration.ownTeam.members).toEqual(expect.arrayContaining([captain.userId, otherMember.userId]))
+  return registration.ownTeam.teamId
+}
+
+async function completeTeamMemberRegistration(
+  player: Player,
+  competitionId: string,
+  teamId: string,
+) {
+  await gotoAppRoute(player.page, `/competitions/${encodeURIComponent(competitionId)}`)
+  const ownTeam = player.page.locator('.team-card').filter({ hasText: teamId })
+  await expect(ownTeam).toBeVisible()
+  const confirmMembership = ownTeam.getByRole('button', { name: '確認本人隊員身分', exact: true })
+  if (await confirmMembership.count()) await confirmMembership.click()
+  await expect(player.page.getByRole('button', { name: '提交目前帳號牌組作為賽事快照', exact: true })).toBeEnabled()
+  await player.page.getByRole('button', { name: '提交目前帳號牌組作為賽事快照', exact: true }).click()
+  await expect(player.page.getByText(
+    '目前賽事已保存本人牌組快照。下方帳號牌組可能已更新；兩者是不同資料。',
+    { exact: true },
+  )).toBeVisible()
+  await expect(ownTeam.locator('.member-list li').filter({ hasText: player.userId })
+    .locator('.confirmation')).toHaveText('已確認')
+}
+
+async function completeTeamCheckIn(captain: Player, competitionId: string, teamId: string) {
+  await reloadAppRoute(captain.page)
+  const ownTeam = captain.page.locator('.team-card').filter({ hasText: teamId })
+  await expect(ownTeam).toBeVisible()
+  await expect(ownTeam.locator('.confirmation').filter({ hasText: '已確認' })).toHaveCount(2)
+  await expect(captain.page.getByRole('button', { name: '隊長資料完成確認', exact: true })).toBeEnabled()
+  await captain.page.getByRole('button', { name: '隊長資料完成確認', exact: true }).click()
   await expect(ownTeam.locator('.team-status')).toContainText('資料完成')
 }
 
@@ -584,6 +669,125 @@ async function finishScheduledMatch(
   }
   throw new Error(`Match ${matchId} did not finish within eight game results.`)
 }
+
+test('2v2 四位玩家各自報名資料、準備並完成實戰', async ({ browser }) => {
+  test.setTimeout(20 * 60_000)
+  const organizer = await createPlayer(browser, 'ticket 22 2v2 organizer')
+  let organizerContextOpen = true
+  const teamACaptain = await createPlayer(browser, 'ticket 22 2v2 team A captain')
+  const teamAMember = await createPlayer(browser, 'ticket 22 2v2 team A member')
+  const teamBCaptain = await createPlayer(browser, 'ticket 22 2v2 team B captain')
+  const teamBMember = await createPlayer(browser, 'ticket 22 2v2 team B member')
+  const players = [teamACaptain, teamAMember, teamBCaptain, teamBMember] as const
+
+  try {
+    const created = await createCompetition(organizer, 2, twoVTwoAnnouncementPlan())
+    await gotoAppRoute(organizer.page, `/competitions/${encodeURIComponent(created.competitionId)}`)
+    await organizer.page.getByRole('button', { name: '開放報名', exact: true }).click()
+    await organizer.context.close()
+    organizerContextOpen = false
+
+    const teamAId = await registerTeamCaptain(teamACaptain, teamAMember, created.competitionId)
+    await completeTeamMemberRegistration(teamACaptain, created.competitionId, teamAId)
+    await completeTeamMemberRegistration(teamAMember, created.competitionId, teamAId)
+    await completeTeamCheckIn(teamACaptain, created.competitionId, teamAId)
+
+    const teamBId = await registerTeamCaptain(teamBCaptain, teamBMember, created.competitionId)
+    await completeTeamMemberRegistration(teamBCaptain, created.competitionId, teamBId)
+    await completeTeamMemberRegistration(teamBMember, created.competitionId, teamBId)
+    await completeTeamCheckIn(teamBCaptain, created.competitionId, teamBId)
+
+    await expect.poll(async () => {
+      const view = await responseJson<{ projection?: { public?: { lifecycle?: string } } }>(
+        'GET 2v2 competition registration',
+        teamACaptain.context.request.post(
+          `/api/competitions/${encodeURIComponent(created.competitionId)}/commands`,
+          {
+            data: {
+              commandId: `ticket22-2v2-view-${crypto.randomUUID()}`,
+              expectedRevision: 1,
+              operation: { type: 'registrationView' },
+            },
+          },
+        ),
+      )
+      return view.projection?.public?.lifecycle ?? ''
+    }, {
+      timeout: Math.max(180_000, created.registrationDeadline - Date.now() + 90_000),
+      intervals: [1_000, 3_000, 5_000],
+    }).toBe('locked')
+
+    await Promise.all(players.map(player => reloadAppRoute(player.page)))
+    await Promise.all(players.map(player => expect(player.page.locator('.lifecycle-badge')).toHaveText('名單已鎖定')))
+    const schedule = await until(async () => {
+      try { return await tournamentView(teamACaptain.context, created.competitionId) } catch { return null }
+    }, 90_000, 'The 2v2 initial tournament schedule')
+    expect(schedule.stages).toHaveLength(1)
+    expect(schedule.stages[0]?.config.stageId).toBe('two-v-two-round-robin')
+    expect(schedule.stages[0]?.config.teams).toHaveLength(2)
+    const match = allMatches(schedule).find(candidate => candidate.stageId === 'two-v-two-round-robin')
+    expect(match).toBeDefined()
+    expect(match?.participants).toHaveLength(2)
+    expect(match?.participants).toEqual(expect.arrayContaining([teamAId, teamBId]))
+
+    await Promise.all(players.map(player => enterTournamentMatch(
+      player, created.competitionId, match!.matchId,
+    )))
+    await Promise.all(players.map(async player => {
+      await expect(player.page.getByRole('button', { name: '我準備好了', exact: true })).toBeEnabled()
+      await player.page.getByRole('button', { name: '我準備好了', exact: true }).click()
+    }))
+    await Promise.all(players.map(async player => {
+      await expect(player.page.locator('.player-seat')).toHaveCount(4, { timeout: 90_000 })
+      await expect(player.page.locator('.player-seat .connection-dot.connected')).toHaveCount(4)
+    }))
+    await chooseInitialPouch(players)
+    await Promise.all(players.map(async player => {
+      await expect(player.page.locator('.team-hp-meter')).toHaveCount(2)
+      await expect(player.page.locator('.player-seat .team-label').filter({ hasText: '我方' })).toHaveCount(2)
+      await expect(player.page.locator('.player-seat .team-label').filter({ hasText: '對方' })).toHaveCount(2)
+    }))
+    await finishGameThroughPlayerActions(players)
+    await Promise.all(players.map(player => expect(player.page.locator('.result-panel')).toBeVisible()))
+
+    const completed = await expect.poll(async () => {
+      try {
+        const view = await tournamentView(teamACaptain.context, created.competitionId)
+        return view.publication ? view : null
+      } catch { return null }
+    }, { timeout: 90_000 }).not.toBeNull().then(() => tournamentView(teamACaptain.context, created.competitionId))
+    expect(completed.stages[0]?.status).toBe('finished')
+    expect(allMatches(completed).find(candidate => candidate.matchId === match!.matchId)?.result).not.toBeNull()
+    expect(completed.publication?.lockedDecks).toHaveLength(2)
+    const publishedPlayers = completed.publication!.lockedDecks.flatMap(team => {
+      expect(team.decks).toHaveLength(2)
+      return team.decks.map(deck => deck.player)
+    }).sort()
+    expect(publishedPlayers).toEqual(players.map(player => player.userId).sort())
+    expect(completed.publication?.replays).toHaveLength(1)
+
+    const anonymous = await browser.newContext({ baseURL: `http://localhost:${port('FEWFC_E2E_PORT', 8727)}` })
+    try {
+      const publicResponse = await anonymous.request.get(
+        `/api/competitions/${encodeURIComponent(created.competitionId)}/tournament`,
+      )
+      expect(publicResponse.ok()).toBe(true)
+      const publicView = parseCompetitionTournamentViewResponse(await publicResponse.json(), created.competitionId)
+      expect(publicView.publication?.lockedDecks.flatMap(team => team.decks.map(deck => deck.player)).sort())
+        .toEqual(players.map(player => player.userId).sort())
+      const publicPage = await anonymous.newPage()
+      await gotoAppRoute(publicPage, `/competitions/${encodeURIComponent(created.competitionId)}`)
+      await expect(publicPage.getByRole('heading', { name: '本場賽事已完成', exact: true })).toBeVisible()
+    } finally {
+      await anonymous.close()
+    }
+  } finally {
+    await Promise.all([
+      ...(organizerContextOpen ? [organizer.context] : []),
+      ...players.map(player => player.context),
+    ].map(context => context.close()))
+  }
+})
 
 test('主辦離線後，玩家多 session 從 F 自動凍結並完成賽事', async ({ browser }) => {
   // 淘汰輪之間依正式規則保留兩段五分鐘窗口；完整雙敗總決賽可能再多一輪。

@@ -66,7 +66,7 @@
 
 ## 目前驗收候選（2026-10-26；基底 `1339f7f`）
 
-**整票仍為 HOLD。** 本輪多 session 實跑以 `1339f7f` 為基底；發現的匿名重播修正另隨後續提交 `d8a7488` 併入 `origin/main`。真 Worker／Chromium 多 session 的 1v1 正常路徑 1/1 通過，並實際觸發雙敗重置賽；但其餘矩陣沒有完整的真實瀏覽器／Worker 路徑，不能總放行。
+**整票仍為 HOLD。** 本輪多 session 實跑以 `1339f7f` 為基底；發現的匿名重播修正另隨後續提交 `d8a7488` 併入 `origin/main`。真 Worker／Chromium 的 1v1 四階段路徑與一場 2v2 團體賽均已通過；其餘賽制／例外矩陣仍缺真實瀏覽器／Worker 證據，不能總放行。
 
 ### 本輪執行結果
 
@@ -84,7 +84,7 @@
 | 四賽制正常路徑 | **1v1 真實流程通過** | Round Robin、單輪 Swiss、單敗、雙敗；Swiss 多輪配對與完整排名不在此覆蓋。 |
 | 普通下一局 | **真實流程通過** | Round Robin 第 2、3 局由敗方隊長選先手。 |
 | 雙敗 reset | **真實流程通過** | 實際生成並完成 reset round；這次 run 不只是一般總決賽。 |
-| 2v2／團體與固定成員準備 | **元件測例通過，E2E 未驗** | GameRoom／CompetitionRoom 來源測例有涵蓋，沒有 2v2 多 session 實跑。 |
+| 2v2／團體與固定成員準備 | **真 Worker／Chromium 正常路徑通過** | 兩隊四個獨立帳號；成員各自確認／提交個人牌組／準備並實際完成一局。並行修改曾遇版本衝突，詳見 2v2 追加驗收；不外推為所有併發情境通過。 |
 | Swiss 自訂計分、多輪配對、種子固定、完整排名鍵／同分裁決與迴避 | **元件測例通過，E2E 未驗** | 本輪瀏覽器 Swiss 僅兩隊一輪，未覆蓋排名平手或對手集合差異。 |
 | 淘汰 Draw、判定與時計沿用 | **Rust／Worker 元件測例通過，E2E 未驗** | 沒有真實瀏覽器的淘汰 Draw 對局。 |
 | 單敗季軍賽 | **元件測例通過，E2E 未驗** | 沒有真實半決賽兩敗隊與季軍場流程。 |
@@ -95,4 +95,22 @@
 
 ### 尚待放行
 
-尚缺 2v2 真實整合、多輪 Swiss 與排名同分／迴避、淘汰 Draw 時計沿用、單敗季軍、缺席／超時／退出／空缺及零隊／一隊／未決名次的真 Worker／瀏覽器矩陣。元件測例只能證明各模組分支，不能替代完整平台路徑。驗收條件 1、3–5 未放行；本輪限定通過正常 1v1 多階段路徑、雙敗 reset 與修正後的單一匿名 replay frame，票 22 維持 HOLD。
+尚缺多輪 Swiss 與排名同分／迴避、淘汰 Draw 時計沿用、單敗季軍、雙敗跨輪完整性、缺席／超時／退出／空缺及零隊／一隊／未決名次的真 Worker／瀏覽器矩陣。元件測例只能證明各模組分支，不能替代完整平台路徑。驗收條件 1、3–5 未放行；目前限定通過 1v1 四階段正常路徑、2v2 一階段正常路徑、雙敗 reset 與修正後的單一匿名 replay frame，票 22 維持 HOLD。
+
+### 2v2 追加驗收（2026-10-26）
+
+**限定結果：2v2 Round Robin 一場正常賽事通過；整票仍為 HOLD。** 使用隔離的 Wrangler Worker（port 8798、獨立 `.wrangler/e2e-ticket22-manual-20261026` 儲存目錄）及本機 Chromium `/usr/bin/chromium`，Playwright 1/1 通過，2.9 分鐘。worker 設定 `TICKET22_ISOLATED_INITIAL_HP=20` 僅用於測試環境；不代表正式規則變更。應用程式程式碼取自 `d8a7488`（HEAD `2369b4d` 是其後文件說明提交）。
+
+執行命令（從 `apps/web`）：
+
+```sh
+FEWFC_E2E_PORT=8798 FEWFC_E2E_INSPECTOR_PORT=9298 \
+FEWFC_TICKET22_MULTISESSION=1 PLAYWRIGHT_REUSE_SERVER=1 \
+PLAYWRIGHT_BROWSER_PATH=/usr/bin/chromium \
+bun x --no-install playwright test tests/multisession/tournament-first-event.spec.ts \
+  -g '2v2 四位玩家各自報名資料、準備並完成實戰'
+```
+
+主辦 session 建賽、開放報名後離線。兩位隊長各用一個隊員 ID 建隊，四個獨立玩家 session 依序各自確認隊員身分、提交本人牌組快照；兩位隊長完成資料確認。實際截止 alarm 凍結名單並生成兩隊的一場 Round Robin 配對。四人都從賽程進入競賽房並各自按準備；戰場顯示四個連線席位、雙方各兩人與兩條隊伍生命值。四位玩家選初始錦囊後，透過遊戲操作完成一局。該階段自動結束，公開資料含兩隊、每隊兩份且涵蓋四個玩家 ID 的鎖定牌組，以及一份重播；匿名 API 和公開賽事頁都能讀到完成狀態。
+
+首次嘗試讓同隊兩個 session 同時提交確認／牌組更新時，後送命令遇到版本衝突，頁面顯示需重新載入且不自動重送。通過的主流程將同隊四個人的資料更新依序完成；因此此處放行的是正常順序操作，不包含同隊多人同時修改。正式 Playwright 測例位於 `apps/web/tests/multisession/tournament-first-event.spec.ts`；完整 Swiss 排名、淘汰例外、缺席／超時／退出及零／一隊等其他條件仍待驗。
