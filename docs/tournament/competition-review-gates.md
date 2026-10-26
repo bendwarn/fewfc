@@ -118,6 +118,8 @@ P3 範圍及相依只見[票據索引](tickets/README.md#優先級與首場界�
 
 2026-10-25 在 HEAD `7e98404` 重驗，票 22 維持 **HOLD**：Cargo 778、Web unit 965／6 skip、server integration 232、component 159 全通過；typecheck、fresh WASM／Nuxt production build、fmt 與 diff check 通過，WASM／target SHA-256 相同。此 HEAD 後續變更了競賽 API、GameRoom 與即時同步，因此 10-16 的真 Worker／Brave 正常流程不作目前版證據；目前版尚未重跑多 session，也未實證 2v2 與 3–5 項矩陣。此前本機手動匿名競賽 replay 查詢回 404，與 10-16 runner 紀錄不一致，仍待目前版實測釐清。Storybook 靜態建置成功；自動 Storybook 測試受本機 watcher／Chromium 權限限制，未記為通過。完整命令、SHA 與邊界見[票 22 目前 HEAD 重驗](tickets/22-first-event-integration-validation.md#目前-head-重驗2026-10-25)。
 
+2026-10-26 在基底 `1339f7f` 重驗，票 22 仍 **HOLD**：[完整矩陣與本輪記錄](tickets/22-first-event-integration-validation.md#目前驗收候選2026-10-26基底-1339f7f)。Cargo 778、server integration 233、component 159、typecheck、fresh WASM／Nuxt build、fmt／diff check 通過；Web unit 970 pass／1 fail，失敗在受限 PID 環境的 managed-server descendant cleanup 測例。真 Worker／Chromium 1v1 四階段多 session 流程 1/1 通過 27.7 分鐘，並實際完成雙敗 reset；Swiss 只有一輪。匿名 replay frame 404 根因已在本輪候選修正（DO RPC `Symbol.dispose` 被精確欄位檢查拒絕，加上 Rust `battle_record` snake_case 與 TS `battleRecord` 契約不符），重建後同一實際賽事 step 0 回 HTTP 200。2v2、多輪排名／同分、淘汰 Draw、季軍及缺席／超時／退出／空缺／零一隊分支仍無真 Worker／瀏覽器矩陣證據，因此不放行。
+
 ## 歷史能力與證據
 
 報名／個人牌組、固定玩家入口／準備、目前賽程 GET／單階段管理、更正 HTTP／UI、權威時計顯示與暫停恢復已有歷史限定驗收；不重複派工。原生鏈多數只證 RR 1v1；2v2 牌組快照另有獨立證據，均非全賽制／重啟矩陣。

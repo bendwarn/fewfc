@@ -119,7 +119,9 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 }
 
 function hasExactKeys(value: Record<string, unknown>, keys: readonly string[]): boolean {
-  return Reflect.ownKeys(value).length === keys.length
+  // DO RPC wrappers may attach a platform Symbol.dispose to otherwise plain values.
+  const ownStringKeys = Object.getOwnPropertyNames(value)
+  return ownStringKeys.length === keys.length
     && keys.every(key => Object.hasOwn(value, key))
 }
 

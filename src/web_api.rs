@@ -1685,7 +1685,11 @@ fn viewer_from_request(viewer: Option<&str>) -> Viewer {
 }
 
 #[derive(Serialize)]
-#[serde(tag = "type", rename_all = "camelCase")]
+#[serde(
+    tag = "type",
+    rename_all = "camelCase",
+    rename_all_fields = "camelCase"
+)]
 enum ApiResult {
     NeedsRandomness {
         record: Vec<RecordedDecision>,
@@ -6758,8 +6762,10 @@ mod tests {
         assert_eq!(json["type"], "replayFrame");
         assert!(json.get("currentStep").is_some());
         assert!(json.get("totalSteps").is_some());
+        assert!(json["battleRecord"]["preparation"]["entries"].is_array());
         assert!(json.get("current_step").is_none());
         assert!(json.get("total_steps").is_none());
+        assert!(json.get("battle_record").is_none());
     }
 
     #[test]
