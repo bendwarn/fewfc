@@ -42,6 +42,22 @@ type Player = {
   context: BrowserContext
   page: Page
   userId: string
+  waitForGameCommandResponse: () => Promise<unknown>
+}
+
+type SocketMessage = {
+  type?: unknown
+  requestId?: unknown
+  operation?: unknown
+  ok?: unknown
+  data?: unknown
+  error?: unknown
+}
+
+type SocketResponseWaiter = {
+  resolve: (value: unknown) => void
+  reject: (error: Error) => void
+  timer: ReturnType<typeof setTimeout>
 }
 
 type CompetitionCreated = {
@@ -125,6 +141,65 @@ async function responseJson<T>(operation: string, responsePromise: Promise<impor
   }
 }
 
+function parseSocketMessage(payload: string | Buffer): SocketMessage | null {
+  try {
+    const value: unknown = JSON.parse(typeof payload === 'string' ? payload : payload.toString('utf8'))
+    return value && typeof value === 'object' && !Array.isArray(value) ? value as SocketMessage : null
+  } catch {
+    return null
+  }
+}
+
+function trackGameCommandResponses(page: Page) {
+  const queued: SocketResponseWaiter[] = []
+  const pending = new Map<string, SocketResponseWaiter>()
+
+  page.on('websocket', socket => {
+    if (!new URL(socket.url()).pathname.startsWith('/api/games/')) return
+
+    socket.on('framesent', event => {
+      const message = parseSocketMessage(event.payload)
+      if (message?.type !== 'request' || message.operation !== 'command'
+        || typeof message.requestId !== 'string') return
+      const waiter = queued.shift()
+      if (waiter) pending.set(message.requestId, waiter)
+    })
+
+    socket.on('framereceived', event => {
+      const message = parseSocketMessage(event.payload)
+      if (message?.type !== 'result' || typeof message.requestId !== 'string') return
+      const waiter = pending.get(message.requestId)
+      if (!waiter) return
+      pending.delete(message.requestId)
+      clearTimeout(waiter.timer)
+      if (message.ok === true) {
+        waiter.resolve(message.data)
+      } else {
+        const error = message.error && typeof message.error === 'object'
+          ? (message.error as { message?: unknown }).message
+          : null
+        waiter.reject(new Error(typeof error === 'string' ? error : 'Game command failed over WebSocket.'))
+      }
+    })
+  })
+
+  return () => new Promise<unknown>((resolve, reject) => {
+    const waiter = {
+      resolve,
+      reject,
+      timer: setTimeout(() => {
+        const index = queued.indexOf(waiter)
+        if (index >= 0) queued.splice(index, 1)
+        for (const [requestId, current] of pending) {
+          if (current === waiter) pending.delete(requestId)
+        }
+        reject(new Error('Timed out waiting for a game command WebSocket response.'))
+      }, 20_000),
+    }
+    queued.push(waiter)
+  })
+}
+
 async function createPlayer(browser: Browser, name: string): Promise<Player> {
   const context = await browser.newContext({ baseURL: `http://localhost:${port('FEWFC_E2E_PORT', 8727)}` })
   try {
@@ -135,7 +210,7 @@ async function createPlayer(browser: Browser, name: string): Promise<Player> {
     )
     if (typeof session.user?.id !== 'string' || !session.user.id) throw new Error(`${name} has no session user id`)
     const page = await context.newPage()
-    return { context, page, userId: session.user.id }
+    return { context, page, userId: session.user.id, waitForGameCommandResponse: trackGameCommandResponses(page) }
   } catch (error) {
     await context.close()
     throw error
@@ -251,23 +326,8 @@ async function chooseInitialPouch(players: readonly Player[]) {
   }))
 }
 
-async function waitForGameCommand(page: Page, gameId: string) {
-  const response = await page.waitForResponse(candidate => (
-    candidate.request().method() === 'POST'
-      && new URL(candidate.url()).pathname === `/api/games/${gameId}/commands`
-  ))
-  const body = await response.text()
-  expect(response.ok(), body).toBe(true)
-}
-
-function waitForPlayableActionsResponse(page: Page, gameId: string) {
-  return page.waitForResponse(candidate => {
-    return candidate.request().method() === 'POST'
-      && new URL(candidate.url()).pathname === `/api/games/${gameId}/commands`
-  }, { timeout: 20_000 })
-}
-
-async function selectFirstPlayableMainAction(page: Page, gameId: string) {
+async function selectFirstPlayableMainAction(player: Player) {
+  const page = player.page
   const cards = page.locator('.playing-card:enabled:not(.hidden)')
   const actionCandidates = page.locator('.action-panel .action-candidates button:not(.skip-action):enabled')
   const pass = page.locator('.action-panel .action-candidates button.skip-action:enabled')
@@ -276,21 +336,15 @@ async function selectFirstPlayableMainAction(page: Page, gameId: string) {
   if (await pass.count()) return pass
 
   for (let index = 0; index < await cards.count(); index += 1) {
-    const responsePromise = waitForPlayableActionsResponse(page, gameId)
     const card = cards.nth(index)
     await expect(card).toBeVisible({ timeout: 10_000 })
+    const responsePromise = player.waitForGameCommandResponse()
     await card.click({ timeout: 10_000 })
-    const payload = await responseJson<{
-      playableActions?: Array<{ commandRole?: unknown; type?: unknown }>
-    }>('POST playable actions query', responsePromise)
-    if (!Array.isArray(payload.playableActions)) {
-      throw new Error('The player action response did not include playable actions.')
-    }
-
-    const hasMainAction = payload.playableActions?.some(action => (
-      action.commandRole === 'action' && action.type !== 'pass'
-    )) ?? false
-    if (hasMainAction) {
+    await expect(card).toHaveAttribute('aria-pressed', 'true')
+    const playableActions = await responsePromise as { playableActions?: Array<{ commandRole?: unknown; type?: unknown }> }
+    const actions = playableActions.playableActions
+    if (!Array.isArray(actions)) throw new Error('The player action response did not include playable actions.')
+    if (actions.some(action => action.commandRole === 'action' && action.type !== 'pass')) {
       await expect(actionCandidates.first()).toBeVisible({ timeout: 15_000 })
       return actionCandidates.first()
     }
@@ -298,10 +352,13 @@ async function selectFirstPlayableMainAction(page: Page, gameId: string) {
 
     const selected = page.locator('.playing-card[aria-pressed="true"]')
     if (await selected.count()) {
-      const deselectionResponse = waitForPlayableActionsResponse(page, gameId)
+      const deselectionResponse = player.waitForGameCommandResponse()
       await selected.first().click()
-      await responseJson('POST playable actions query after deselection', deselectionResponse)
-      if (await actionCandidates.count()) return actionCandidates.first()
+      const deselected = await deselectionResponse as { playableActions?: Array<{ commandRole?: unknown; type?: unknown }> }
+      if (deselected.playableActions?.some(action => action.commandRole === 'action' && action.type !== 'pass')) {
+        await expect(actionCandidates.first()).toBeVisible({ timeout: 15_000 })
+        return actionCandidates.first()
+      }
       if (await pass.count()) return pass
     }
   }
@@ -309,7 +366,8 @@ async function selectFirstPlayableMainAction(page: Page, gameId: string) {
   return null
 }
 
-async function resolveVisibleChoice(page: Page, gameId: string) {
+async function resolveVisibleChoice(player: Player) {
+  const page = player.page
   const overlay = page.locator('.choice-overlay').filter({ has: page.locator('h2') }).last()
   if (!await overlay.isVisible()) return
 
@@ -323,7 +381,7 @@ async function resolveVisibleChoice(page: Page, gameId: string) {
 
   const submit = overlay.getByRole('button', { name: '確認選擇', exact: true })
   const needsSubmit = await submit.count() > 0
-  const command = waitForGameCommand(page, gameId)
+  const command = player.waitForGameCommandResponse()
   if (cardCount > 0) await cards.first().click()
   else await options.first().click()
   if (needsSubmit) {
@@ -337,7 +395,7 @@ async function resolveVisibleChoice(page: Page, gameId: string) {
   await command
 }
 
-async function finishGameThroughPlayerActions(players: readonly Player[], gameId: string) {
+async function finishGameThroughPlayerActions(players: readonly Player[]) {
   const maximumTurns = 120
   for (let turn = 0; turn < maximumTurns; turn += 1) {
     if ((await Promise.all(players.map(player => player.page.locator('.result-panel').isVisible()))).some(Boolean)) return
@@ -350,7 +408,7 @@ async function finishGameThroughPlayerActions(players: readonly Player[], gameId
       }
     }
     if (chooser) {
-      await resolveVisibleChoice(chooser.page, gameId)
+      await resolveVisibleChoice(chooser)
       continue
     }
 
@@ -371,11 +429,11 @@ async function finishGameThroughPlayerActions(players: readonly Player[], gameId
     const active = players[Number(activeState)]
     if (!active) throw new Error('The game has no active player or visible choice.')
 
-    const action = await selectFirstPlayableMainAction(active.page, gameId)
+    const action = await selectFirstPlayableMainAction(active)
     if (!action) throw new Error('No selectable card offered a legal main action or pass.')
     const attack = active.page.locator('.action-panel .action-candidates button[title*="進行五行攻擊"]:enabled').first()
     const chosenAction = await attack.count() ? attack : action
-    const command = waitForGameCommand(active.page, gameId)
+    const command = active.waitForGameCommandResponse()
     await chosenAction.click()
     await command
     await expect.poll(async () => (
@@ -383,7 +441,7 @@ async function finishGameThroughPlayerActions(players: readonly Player[], gameId
         || (await Promise.all(players.map(player => player.page.locator('.choice-overlay').isVisible()))).some(Boolean)
         || (await Promise.all(players.map(player => player.page.locator('.playing-card:enabled:not(.hidden)').count() > 0))).some(Boolean)
     ), { timeout: 20_000 }).toBe(true)
-    for (const player of players) await resolveVisibleChoice(player.page, gameId)
+    for (const player of players) await resolveVisibleChoice(player)
   }
   throw new Error(`The game did not finish after ${maximumTurns} ordinary player turns.`)
 }
@@ -509,9 +567,8 @@ async function finishScheduledMatch(
   }))
   await chooseInitialPouch(players)
 
-  let gameId = new URL(players[0]!.page.url()).pathname.split('/').at(-1)!
   for (let gameNumber = 1; gameNumber <= 8; gameNumber += 1) {
-    await finishGameThroughPlayerActions(players, gameId)
+    await finishGameThroughPlayerActions(players)
     await Promise.all(players.map(player => expect(player.page.locator('.result-panel')).toBeVisible()))
     const next = await until(async () => {
       const view = await tournamentView(players[0]!.context, competitionId).catch(() => null)
@@ -523,7 +580,7 @@ async function finishScheduledMatch(
       return null
     }, 90_000, `A result or ordinary continuation for match ${matchId}`)
     if (next.type === 'finished') return
-    gameId = await createOrdinaryNextGame(players, competitionId, matchId, next.gameNumber)
+    await createOrdinaryNextGame(players, competitionId, matchId, next.gameNumber)
   }
   throw new Error(`Match ${matchId} did not finish within eight game results.`)
 }
@@ -589,8 +646,7 @@ test('主辦離線後，玩家多 session 從 F 自動凍結並完成賽事', as
     }))
     await chooseInitialPouch(players)
 
-    const gameId = new URL(players[0]!.page.url()).pathname.split('/').at(-1)!
-    await finishGameThroughPlayerActions(players, gameId)
+    await finishGameThroughPlayerActions(players)
     await Promise.all(players.map(player => expect(player.page.locator('.result-panel')).toBeVisible()))
 
     for (const gameNumber of [2, 3]) {
@@ -600,8 +656,8 @@ test('主辦離線後，玩家多 session 從 F 自動凍結並完成賽事', as
         return match?.status === 'inProgress' && match.started ? view : null
       }, 45_000, `Game ${gameNumber} in the fixed-game match`)
       expect(allMatches(betweenGames).find(match => match.matchId === firstMatch!.matchId)?.result).toBeNull()
-      const nextGameId = await createOrdinaryNextGame(players, competitionId!, firstMatch!.matchId, gameNumber)
-      await finishGameThroughPlayerActions(players, nextGameId)
+      await createOrdinaryNextGame(players, competitionId!, firstMatch!.matchId, gameNumber)
+      await finishGameThroughPlayerActions(players)
       await Promise.all(players.map(player => expect(player.page.locator('.result-panel')).toBeVisible()))
     }
 
