@@ -1,1 +1,0 @@
-import{t as e}from"./rolldown-runtime-Dh6celcD.js";import{U as t,n}from"./iframe-DZozlCru.js";function r(){return{catalog:a,loading:o,error:s,async load(){return i}}}var i,a,o,s;function c(){return(c=e((()=>{n(),i={deckComposition:{cardDefinitions:[]}},a=t(i),o=t(!1),s=t(null)})))()}export{r as n,c as t};
