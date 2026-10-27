@@ -35,7 +35,7 @@ export function useRealtimeSocket<Operations extends { [Name in keyof Operations
       } else if (enabled.value) reconnecting.value = true
     },
     onMessage(_socket, event) {
-      if (typeof event.data !== 'string' || event.data === 'pong') return
+      if (typeof event.data !== 'string') return
       try {
         const message: unknown = JSON.parse(event.data)
         if (!requests.receive(message)) {

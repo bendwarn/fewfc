@@ -25,7 +25,6 @@ export class PlayerNotifications extends DurableObject<WorkerEnv & { DB: D1Datab
     open: peer => { attachRealtimeIdentity(durableSocket(this.ctx, peer), peer.request) },
     message: async (peer, message) => {
       const wire = message.text()
-      if (wire === 'ping') { peer.send('pong'); return }
       let requestId = 'invalid'
       try {
         const raw = wire.length <= 65_536 ? JSON.parse(wire) : undefined
