@@ -56,6 +56,11 @@ export interface CompetitionRoomInitializeFromRulesRequest {
   trustedTimeMs: number
 }
 
+/** 僅供開發環境建立獨立測試賽事。 */
+export interface CompetitionRoomInitializeTestFromRulesRequest extends CompetitionRoomInitializeFromRulesRequest {
+  testInitialHp: number
+}
+
 export interface CompetitionRoomInitializeValue {
   competitionId: string
   organizerUserId: string

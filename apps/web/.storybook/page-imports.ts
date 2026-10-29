@@ -17,7 +17,7 @@ export function pageImports(): Plugin {
         const vueNames = ['ref', 'shallowRef', 'computed', 'reactive', 'watch', 'onMounted', 'onBeforeUnmount', 'nextTick']
           .filter(name => new RegExp(`\\b${name}(?:<|\\()`).test(source))
         if (vueNames.length) imports.push(`import { ${vueNames.join(', ')} } from 'vue'`)
-        const nuxtNames = ['useRoute', 'useRouter', 'usePlayerSession', 'definePageMeta', 'clearError']
+        const nuxtNames = ['useRoute', 'useRouter', 'usePlayerSession', 'useRuntimeConfig', 'definePageMeta', 'clearError']
           .filter(name => source.includes(`${name}(`))
         if (nuxtNames.length) imports.push(`import { ${nuxtNames.join(', ')} } from '@page-runtime'`)
         if (isRoom) imports.push("import { useGameRoom } from '~/composables/useGameRoom'")

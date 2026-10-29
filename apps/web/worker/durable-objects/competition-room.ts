@@ -66,6 +66,7 @@ import {
   type CompetitionRoomExecuteValue,
   type CompetitionRoomInitializeRequest,
   type CompetitionRoomInitializeFromRulesRequest,
+  type CompetitionRoomInitializeTestFromRulesRequest,
   type CompetitionRoomInitializeValue,
   type CompetitionRoomMatchExecuteRequest,
   type CompetitionRoomMatchExecuteValue,
@@ -568,6 +569,20 @@ export class CompetitionRoom extends DurableObject<CompetitionRoomEnv> {
     request: CompetitionRoomInitializeFromRulesRequest,
   ): Promise<CompetitionRoomResult<CompetitionRoomInitializeValue>> {
     return this.serialized(() => this.initializeFromRulesInternal(request))
+  }
+
+  async initializeTestFromRules(
+    request: CompetitionRoomInitializeTestFromRulesRequest,
+  ): Promise<CompetitionRoomResult<CompetitionRoomInitializeValue>> {
+    if (this.roomEnv.APP_ENV !== 'development') return roomFailure('notFound', 'test competition is unavailable')
+    if (!isExactCompetitionJson(request) || !isJsonObject(request)
+      || !hasExactClockQueryKeys(request, ['competitionId', 'callerUserId', 'announcement', 'trustedTimeMs', 'testInitialHp'])
+      || typeof request.competitionId !== 'string' || !request.competitionId.startsWith('test-')
+      || !Number.isSafeInteger(request.testInitialHp) || request.testInitialHp < 1 || request.testInitialHp > 2147483647) {
+      return roomFailure('invalidRequest', 'test competition configuration is invalid')
+    }
+    const { testInitialHp, ...rulesRequest } = request
+    return this.serialized(() => this.initializeFromRulesInternal(rulesRequest, testInitialHp))
   }
 
   async execute(request: CompetitionRoomExecuteRequest): Promise<CompetitionRoomExecuteResult> {
@@ -3330,6 +3345,7 @@ export class CompetitionRoom extends DurableObject<CompetitionRoomEnv> {
 
   private async initializeFromRulesInternal(
     request: CompetitionRoomInitializeFromRulesRequest,
+    testInitialHp?: number,
   ): Promise<CompetitionRoomResult<CompetitionRoomInitializeValue>> {
     if (!isRulesInitializeRequest(request)) {
       return roomFailure('invalidRequest', 'rules-derived initialization request is invalid')
@@ -3374,7 +3390,7 @@ export class CompetitionRoom extends DurableObject<CompetitionRoomEnv> {
       competitionId: request.competitionId, callerUserId: request.callerUserId,
       trustedTimeMs: request.trustedTimeMs, participantUserIds: [],
       announcement: {
-        organizer: request.callerUserId, initialHp: response.public.initialHp,
+        organizer: request.callerUserId, initialHp: testInitialHp ?? response.public.initialHp,
         ruleVersion: draft.ruleVersion, ruleset: draft.ruleset,
         enabledRuleModules: [...draft.enabledRuleModules], teamSize: draft.teamSize,
         registrationMode: structuredClone(draft.registrationMode), personalDecks: draft.personalDecks,
@@ -3557,7 +3573,11 @@ export class CompetitionRoom extends DurableObject<CompetitionRoomEnv> {
       return roomFailure('forbidden', 'player actor cannot execute an official operation')
     }
 
-    const serverActor = actorFor(role, request.callerUserId)
+    // 官方身分可兼任參賽者；依報名動作選擇 actor，不能以官方身分代做隊員命令。
+    const registrationPlayerAction = request.operation.type === 'registrationExecute'
+      && !['open', 'lock'].includes(request.operation.action.type)
+      && !(request.operation.action.type === 'withdrawTeam' && role === 'organizer')
+    const serverActor = actorFor(registrationPlayerAction ? 'player' : role, request.callerUserId)
     const serverState = parseServerState(current.server_state_json)
     if (request.operation.type === 'tournamentAdjudicateRankingTie') {
       const judgeError = await this.validateRankingTieAdjudicator(
@@ -3711,7 +3731,7 @@ export class CompetitionRoom extends DurableObject<CompetitionRoomEnv> {
       }
     }
 
-    const mayReceivePrivate = role === 'player'
+    const mayReceivePrivate = serverActor.type === 'player'
       && (Boolean(acl?.active) || isRosterMutation(request.operation))
     const projected = publicProjection(response, role, mayReceivePrivate)
     const revision = current.revision + 1
@@ -3773,14 +3793,13 @@ export class CompetitionRoom extends DurableObject<CompetitionRoomEnv> {
         )
       }
       for (const participantId of participantsFromOperation(request.operation, request.callerUserId)) {
-        if (participantId === current.organizer_user_id) continue
         this.storage.sql.exec(
           `INSERT INTO competition_acl (user_id, role, active, participant)
            VALUES (?, 'player', 1, 1)
            ON CONFLICT(user_id) DO UPDATE SET
              active = 1,
              participant = 1,
-             role = CASE WHEN competition_acl.role = 'referee' THEN 'referee' ELSE 'player' END`,
+             role = CASE WHEN competition_acl.role IN ('organizer', 'referee') THEN competition_acl.role ELSE 'player' END`,
           participantId,
         )
       }
@@ -3846,8 +3865,13 @@ export class CompetitionRoom extends DurableObject<CompetitionRoomEnv> {
     if (!acl || !acl.active || (acl.role !== 'organizer' && acl.role !== 'referee')) {
       return roomFailure('forbidden', 'players and unknown users cannot mutate a match')
     }
+    // 測試賽事允許主辦調整時計；正式賽事仍須指派無利益衝突的裁判。
+    const testOrganizerClockControl = this.roomEnv.APP_ENV === 'development'
+      && current.competition_id.startsWith('test-')
+      && acl.role === 'organizer' && request.callerUserId === current.organizer_user_id
+      && isPauseResumeOperation(request.operation)
     if (isPauseResumeOperation(request.operation)
-      && (acl?.role !== 'referee' || !acl.active)) {
+      && !testOrganizerClockControl && (acl?.role !== 'referee' || !acl.active)) {
       return roomFailure('forbidden', 'only an active referee may pause or resume a match clock')
     }
     if (request.operation.type === 'matchCorrectRuling') {
@@ -3866,7 +3890,8 @@ export class CompetitionRoom extends DurableObject<CompetitionRoomEnv> {
       return roomFailure('trustedTimeRegression', 'trusted server time cannot move backwards for this match')
     }
 
-    if (isPauseResumeOperation(request.operation) || request.operation.type === 'matchCorrectRuling') {
+    if ((isPauseResumeOperation(request.operation) && !testOrganizerClockControl)
+      || request.operation.type === 'matchCorrectRuling') {
       const refereeError = await this.validateRefereeOwnMatch(current, row, acl, request.trustedTimeMs)
       if (refereeError) return roomFailure(refereeError.code, refereeError.message)
     }
@@ -3957,8 +3982,10 @@ export class CompetitionRoom extends DurableObject<CompetitionRoomEnv> {
       }
     }
     if (isPauseResumeOperation(request.operation) && inputCheckpoint) {
-      const refereeError = validateClockReferee(request.callerUserId, inputCheckpoint)
-      if (refereeError) return roomFailure(refereeError.code, refereeError.message)
+      if (!testOrganizerClockControl) {
+        const refereeError = validateClockReferee(request.callerUserId, inputCheckpoint)
+        if (refereeError) return roomFailure(refereeError.code, refereeError.message)
+      }
       if (linkedGame) {
         const snapshot = clockEligibilitySnapshot(
           request, current, acl, row, this.latestGameProvision(request.matchId), linkedGame,
@@ -4079,6 +4106,19 @@ export class CompetitionRoom extends DurableObject<CompetitionRoomEnv> {
           parsedUpdate.error.code,
           parsedUpdate.error.message,
           row?.revision ?? 0,
+        )
+      }
+      if (isPauseResumeOperation(request.operation)
+        && ['timedOut', 'doubleTimedOut', 'needsDecision'].includes(parsedUpdate.value.type)) {
+        // 暫停可能在觀測時先遇到超時或待裁決。不可把它當成已暫停寫入父房，
+        // 否則子房會停止原本的截止 alarm，且沒有收到超時終局證據。
+        return this.persistFailedMatchExecution(
+          request,
+          acl.role,
+          fingerprint,
+          'clockControlUnavailable',
+          'clock control was not applied',
+          currentRevision,
         )
       }
       nextClockDeadlineMs = parsedUpdate.value.nextTimeoutDeadlineMs
@@ -4704,8 +4744,21 @@ export class CompetitionRoom extends DurableObject<CompetitionRoomEnv> {
         throw new Error('competition state changed during terminal ingest')
       }
       if (automaticProvision.value) {
+        const previous = automaticProvision.value.previousAuthority
         const prior = this.gameProvision(request.matchId, automaticProvision.value.gameNumber - 1)
-        if (!prior || this.gameProvision(request.matchId, automaticProvision.value.gameNumber)) {
+        const priorValid = previous.type === 'provision'
+          ? sameJson(prior ?? null, previous.row)
+          : !prior && sameJson(this.storage.sql.exec<RoundRoomLedgerRow>(
+              'SELECT * FROM competition_round_room_ledger WHERE game_id = ?', previous.ledger.game_id,
+            ).toArray()[0] ?? null, previous.ledger)
+            && sameJson(this.storage.sql.exec<RoundPublicationRow>(
+              'SELECT * FROM competition_round_publication WHERE round_generation_id = ?', previous.header.round_generation_id,
+            ).toArray()[0] ?? null, previous.header)
+            && sameJson(this.storage.sql.exec<RoundReleaseRow>(
+              'SELECT * FROM competition_round_release_outbox WHERE round_generation_id = ? AND game_id = ?',
+              previous.release.round_generation_id, previous.release.game_id,
+            ).toArray()[0] ?? null, previous.release)
+        if (!priorValid || this.gameProvision(request.matchId, automaticProvision.value.gameNumber)) {
           throw new Error('automatic next-game linkage changed before commit')
         }
       }
@@ -4829,8 +4882,29 @@ export class CompetitionRoom extends DurableObject<CompetitionRoomEnv> {
     if (typeof gameNumber !== 'number' || !Number.isSafeInteger(gameNumber) || gameNumber < 2) {
       return { ok: false, result: roomFailure('engineInvalidMatchResult', 'match continuation is invalid') }
     }
-    if (!this.gameProvision(input.request.matchId, gameNumber - 1)) {
-      return { ok: false, result: roomFailure('gameNotProvisionable', 'previous scheduled game is not linked') }
+    const previousGame = this.gameProvision(input.request.matchId, gameNumber - 1)
+    let previousAuthority: AutomaticDrawProvision['previousAuthority']
+    if (previousGame) {
+      previousAuthority = { type: 'provision', row: previousGame }
+    } else {
+      const confirmed = await this.confirmedRoundParticipantLink(input.request.matchId, gameNumber - 1)
+      if (!confirmed) return { ok: false, result: roomFailure('gameNotProvisionable', 'previous scheduled game is not linked') }
+      const ledger = this.storage.sql.exec<RoundRoomLedgerRow>(
+        'SELECT * FROM competition_round_room_ledger WHERE game_id = ?', confirmed.game_id,
+      ).toArray()[0]
+      const header = ledger && this.storage.sql.exec<RoundPublicationRow>(
+        'SELECT * FROM competition_round_publication WHERE round_generation_id = ?', ledger.round_generation_id,
+      ).toArray()[0]
+      const release = ledger && this.storage.sql.exec<RoundReleaseRow>(
+        'SELECT * FROM competition_round_release_outbox WHERE round_generation_id = ? AND game_id = ?',
+        ledger.round_generation_id, ledger.game_id,
+      ).toArray()[0]
+      if (!ledger || !['confirmed', 'started'].includes(ledger.status) || !header || header.status !== 'released'
+        || !release || release.status !== 'completed' || ledger.match_id !== input.request.matchId
+        || ledger.game_number !== gameNumber - 1 || ledger.binding_json !== confirmed.binding_json) {
+        return { ok: false, result: roomFailure('gameNotProvisionable', 'previous scheduled game is not linked') }
+      }
+      previousAuthority = { type: 'roundLedger', ledger, header, release }
     }
     if (this.gameProvision(input.request.matchId, gameNumber)) {
       return { ok: false, result: roomFailure('gameAlreadyLinked', 'next scheduled game is already linked') }
@@ -4908,6 +4982,7 @@ export class CompetitionRoom extends DurableObject<CompetitionRoomEnv> {
         nextGame: intent.value.nextGame,
         commandId: `auto-draw-provision:${fingerprint}`,
         fingerprint,
+        previousAuthority,
       },
     }
   }
@@ -7081,7 +7156,7 @@ export class CompetitionRoom extends DurableObject<CompetitionRoomEnv> {
       return roomFailure('competitionIdMismatch', 'competition id is bound to this room')
     }
     const caller = this.acl(request.callerUserId)
-    if (!caller || !caller.active || caller.role !== 'player' || caller.participant !== 1) {
+    if (!caller || !caller.active || caller.participant !== 1) {
       return roomFailure('forbidden', 'only an active participant captain may assign the next first player')
     }
     const row = this.match(request.matchId)
@@ -7431,7 +7506,7 @@ export class CompetitionRoom extends DurableObject<CompetitionRoomEnv> {
       return roomFailure('competitionIdMismatch', 'competition id is bound to this room')
     }
     const caller = this.acl(request.callerUserId)
-    if (!caller || !caller.active || caller.role !== 'player' || caller.participant !== 1) {
+    if (!caller || !caller.active || caller.participant !== 1) {
       return roomFailure('forbidden', 'only an active participant captain may provision this game')
     }
     const row = this.match(request.matchId)
@@ -7945,6 +8020,7 @@ export class CompetitionRoom extends DurableObject<CompetitionRoomEnv> {
       return roomFailure('forbidden', 'only the active organizer may read a game linkage')
     }
     const linked = this.latestGameProvision(request.matchId)
+      ?? await this.confirmedRoundParticipantLink(request.matchId, 1)
     if (!linked) return roomFailure('gameNotLinked', 'the match has no game room linkage')
     const value = this.gameProvisionValue(current.competition_id, linked, false)
     return roomSuccess({
@@ -7972,12 +8048,12 @@ export class CompetitionRoom extends DurableObject<CompetitionRoomEnv> {
       return roomFailure('competitionIdMismatch', 'competition id is bound to this room')
     }
     const caller = this.acl(request.callerUserId)
-    if (!caller || caller.active !== 1 || caller.role !== 'player' || caller.participant !== 1) {
+    if (!caller || caller.active !== 1 || caller.participant !== 1) {
       return roomFailure('forbidden', 'caller is not an active match participant')
     }
     const organizer = this.acl(current.organizer_user_id)
     if (!organizer || organizer.active !== 1 || organizer.role !== 'organizer'
-      || organizer.participant !== 0) {
+      || ![0, 1].includes(organizer.participant)) {
       return roomFailure('invalidMatchCheckpoint', 'participant game state is unavailable')
     }
     const row = this.match(request.matchId)
@@ -8288,7 +8364,7 @@ export class CompetitionRoom extends DurableObject<CompetitionRoomEnv> {
       return roomFailure('forbidden', 'caller cannot read this match clock')
     }
     const organizer = this.acl(current.organizer_user_id)
-    if (!organizer || organizer.active !== 1 || organizer.role !== 'organizer' || organizer.participant !== 0) {
+    if (!organizer || organizer.active !== 1 || organizer.role !== 'organizer' || ![0, 1].includes(organizer.participant)) {
       return roomFailure('invalidMatchCheckpoint', 'clock query match state is unavailable')
     }
     const row = this.match(request.matchId)
@@ -8766,7 +8842,7 @@ export class CompetitionRoom extends DurableObject<CompetitionRoomEnv> {
     if (caller.participant !== 1) return unavailable
     const organizer = this.acl(current.organizer_user_id)
     const serverState = parseParticipantServerState(current.server_state_json)
-    if (!organizer || organizer.active !== 1 || organizer.role !== 'organizer' || organizer.participant !== 0
+    if (!organizer || organizer.active !== 1 || organizer.role !== 'organizer' || ![0, 1].includes(organizer.participant)
       || !serverState || !serverState.tournament
       || !isTournamentForCompetition(serverState.tournament, current.competition_id)
       || registrationCheckpointRevision(serverState.registration, current.organizer_user_id) === null) {
@@ -8821,9 +8897,10 @@ export class CompetitionRoom extends DurableObject<CompetitionRoomEnv> {
     }
 
     const role: CompetitionRoomRole = acl?.active ? acl.role : 'player'
+    const queryRole: CompetitionRoomRole = !isExport && acl?.participant === 1 ? 'player' : role
     const allowPrivate = isExport
       ? role === 'organizer'
-      : role === 'player' && Boolean(acl?.active)
+      : queryRole === 'player' && Boolean(acl?.active)
     const serverState = parseServerState(current.server_state_json)
     if (registrationCheckpointRevision(serverState.registration, current.organizer_user_id) === null) {
       return roomFailure('invalidRegistrationCheckpoint', 'stored registration checkpoint is invalid')
@@ -8831,7 +8908,7 @@ export class CompetitionRoom extends DurableObject<CompetitionRoomEnv> {
     let response: CompetitionEngineResponse
     try {
       response = await this.engine({
-        serverActor: actorFor(role, request.callerUserId),
+        serverActor: actorFor(queryRole, request.callerUserId),
         trustedTimeMs: request.trustedTimeMs,
         operation: request.operation,
         serverState,
@@ -8895,7 +8972,7 @@ export class CompetitionRoom extends DurableObject<CompetitionRoomEnv> {
       return roomFailure('notParticipant', 'caller is not an active competition participant')
     }
     const projection = parseStoredProjection(current.public_projection_json)
-    const canReadPrivate = (acl.role === 'player' && projection.operation.startsWith('registration'))
+    const canReadPrivate = (acl.participant === 1 && projection.operation.startsWith('registration'))
       || (acl.role === 'organizer' && projection.operation === 'registrationExportLockedRoster')
     if (!canReadPrivate) {
       return roomSuccess({
@@ -12678,6 +12755,8 @@ type AutomaticDrawProvision = {
   nextGame: JsonObject
   commandId: string
   fingerprint: string
+  previousAuthority: { type: 'provision'; row: GameProvisionRow }
+    | { type: 'roundLedger'; ledger: RoundRoomLedgerRow; header: RoundPublicationRow; release: RoundReleaseRow }
 }
 
 function currentControllableGameNumber(

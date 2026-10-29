@@ -235,6 +235,14 @@ fn handle(request: ApiRequest) -> Result<ApiResult, ApiError> {
                 advance_to_interactive_decision(&mut record)?;
             }
         }
+        ApiAction::StartDevelopmentWithHands { hands } => {
+            record = GameRecord::start(
+                setup.clone(),
+                development_hands_deck_order(&rules, &setup, &hands)?,
+            )
+            .map_err(ApiError::Game)?;
+            advance_to_interactive_decision(&mut record)?;
+        }
         ApiAction::ChooseInitialPouch { player, card } => {
             let _ = record
                 .handle(Command::ChooseInitialPouch {
@@ -780,6 +788,9 @@ enum ApiAction {
         player: String,
         scenario: String,
     },
+    StartDevelopmentWithHands {
+        hands: Vec<Vec<String>>,
+    },
     Refresh,
     AdvanceAutomatic,
     ChooseInitialPouch {
@@ -1133,6 +1144,44 @@ fn development_skill_is_playable(
         }
     }
     Ok(false)
+}
+
+/// 僅調整正式共用牌庫的發牌順序；事件記錄仍由規則引擎正常產生。
+fn development_hands_deck_order(
+    rules: &OfficialRules,
+    setup: &GameSetup,
+    hands: &[Vec<String>],
+) -> Result<Vec<CardInstanceId>, ApiError> {
+    if setup.has_rule_module(crate::domain::PERSONAL_DECK_MODULE_ID)
+        || setup.has_rule_module(crate::domain::POUCH_MODULE_ID)
+        || hands.len() != setup.turn_order.len()
+        || hands
+            .iter()
+            .enumerate()
+            .any(|(index, hand)| hand.len() != if index == 0 { 4 } else { 5 })
+    {
+        return Err(ApiError::Message(
+            "development hands require a shared deck and complete starting hands".to_string(),
+        ));
+    }
+    let deck = rules.official_deck_order(setup).map_err(ApiError::Game)?;
+    let mut remaining = deck;
+    let mut ordered = Vec::new();
+    for definition in hands.iter().flatten() {
+        let position = remaining
+            .iter()
+            .position(|card| {
+                setup.card_instances.iter().any(|instance| {
+                    instance.instance == *card && instance.definition.as_str() == definition
+                })
+            })
+            .ok_or_else(|| {
+                ApiError::Message("development hand uses unavailable cards".to_string())
+            })?;
+        ordered.push(remaining.remove(position));
+    }
+    ordered.extend(remaining);
+    Ok(ordered)
 }
 
 fn development_scenario_deck_order(

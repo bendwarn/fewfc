@@ -16,6 +16,8 @@ import type {
   CompetitionRoomInitializeRequest,
   CompetitionRoomMatchReadRequest,
   CompetitionRoomMatchReadValue,
+  CompetitionRoomGameProvisionReadRequest,
+  CompetitionRoomGameProvisionReadValue,
   CompetitionRoomReadRequest,
   CompetitionRoomReadValue,
   CompetitionRoomRefereeRequest,
@@ -91,6 +93,7 @@ const ROOM_ERROR_STATUS: Record<string, number> = {
   revisionConflict: 409,
   matchRevisionConflict: 409,
   trustedTimeRegression: 409,
+  clockControlUnavailable: 409,
   commandIdConflict: 409,
   alreadyInitialized: 409,
   alreadyExists: 409,
@@ -108,6 +111,7 @@ const ROOM_ERROR_STATUS: Record<string, number> = {
   firstPlayerPending: 409,
   gameAlreadyLinked: 409,
   gameRoomNotProvisioned: 409,
+  gameNotLinked: 409,
   matchIdMismatch: 400,
   randomSourceFailure: 502,
   invalidRefereeAcl: 403,
@@ -134,6 +138,7 @@ const ROOM_ERROR_MESSAGE: Record<string, string> = {
   revisionConflict: '賽事狀態已更新，請重新讀取後再試。',
   matchRevisionConflict: '交手狀態已更新，請重新讀取後再試。',
   trustedTimeRegression: '賽事時間狀態無法倒退。',
+  clockControlUnavailable: '時計已到期或目前無法變更，請重新讀取交手狀態。',
   commandIdConflict: '命令識別碼已用於其他要求。',
   alreadyInitialized: '賽事已經建立。',
   alreadyExists: '目標已經存在。',
@@ -151,6 +156,7 @@ const ROOM_ERROR_MESSAGE: Record<string, string> = {
   firstPlayerPending: '交手先手尚未完成指派。',
   gameAlreadyLinked: '此交手已建立對局。',
   gameRoomNotProvisioned: '對局尚未就緒，計時無法操作。',
+  gameNotLinked: '對局房間尚未就緒。',
   matchIdMismatch: '交手識別碼不一致。',
   randomSourceFailure: '賽事服務暫時無法處理要求。',
   invalidRefereeAcl: '裁判授權狀態已變更，請重新確認。',
@@ -163,6 +169,7 @@ const ROOM_ERROR_MESSAGE: Record<string, string> = {
 
 export interface CompetitionRoomStub {
   initialize(request: CompetitionRoomInitializeRequest): Promise<CompetitionRoomResult<CompetitionRoomInitializeValue>>
+  readProvisionedGame(request: CompetitionRoomGameProvisionReadRequest): Promise<CompetitionRoomResult<CompetitionRoomGameProvisionReadValue>>
   execute(request: CompetitionRoomExecuteRequest): Promise<CompetitionRoomResult<CompetitionRoomExecuteValue>>
   createTournamentFromLockedRoster(
     request: CompetitionRoomCreateTournamentRequest,

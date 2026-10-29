@@ -19,6 +19,7 @@ export function configurePage(options: { path?: string; params?: Record<string, 
   pageNavigations.length = 0
 }
 export function useRoute() { return route }
+export function useRuntimeConfig() { return { public: { appEnv: 'development' } } }
 export function useRouter() { return { push: async (path: unknown) => { pageNavigations.push(path) }, replace: async (path: unknown) => { pageNavigations.push(path) } } }
 export function usePlayerSession() { return { userId, displayName, refresh: async () => {}, clear: () => { userId.value = '' } } }
 export function definePageMeta(_meta: unknown) {}

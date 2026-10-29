@@ -79,6 +79,15 @@
           </div>
         </div>
 
+        <fieldset v-if="isDevelopment" class="module-fieldset">
+          <legend>測試賽事</legend>
+          <label><input v-model="testMode" type="checkbox" :disabled="creating || createOutcomeUnknown"> 建立僅供開發環境驗證的測試賽事</label>
+          <p class="muted">測試賽事的設定與結果僅供驗證，不代表正式辦賽結果。</p>
+          <label v-if="testMode" for="test-initial-hp">每隊初始生命值
+            <input id="test-initial-hp" v-model.number="testInitialHp" class="text-input" type="number" min="1" max="2147483647" step="1" required :disabled="creating || createOutcomeUnknown">
+          </label>
+        </fieldset>
+
         <fieldset class="module-fieldset">
           <legend>規則模組</legend>
           <p class="muted">模組與依賴選項取自目前規則目錄；改變規則版本會移除該版本不支援的模組。</p>
@@ -113,8 +122,8 @@
           </label>
           <div class="fixed-ruleset">
             <span class="field-label">初始生命值</span>
-            <strong>沿用規則設定</strong>
-            <small>建立後以賽事公告為準。</small>
+            <strong>{{ isDevelopment && testMode ? `${testInitialHp}（測試設定）` : '沿用規則設定' }}</strong>
+            <small>{{ isDevelopment && testMode ? '僅適用這場測試賽事。' : '建立後以賽事公告為準。' }}</small>
           </div>
         </div>
 
@@ -346,6 +355,9 @@ import { useRulesCatalog } from '~/lib/rules-catalog'
 
 const router = useRouter()
 const session = usePlayerSession()
+const isDevelopment = useRuntimeConfig().public.appEnv === 'development'
+const testMode = ref(false)
+const testInitialHp = ref(20)
 const rulesCatalog = useRulesCatalog()
 const competitionIdInput = ref('')
 const sessionLoaded = ref(false)
@@ -513,7 +525,11 @@ async function createCompetition() {
   let requestSent = false
   try {
     requestSent = true
-    const response = await $fetch<CompetitionCreateAcknowledgement>('/api/competitions', { method: 'POST', body })
+    const response = testMode.value && isDevelopment
+      ? await $fetch<CompetitionCreateAcknowledgement>('/api/competitions/test-create', {
+          method: 'POST', body: { announcement: body, initialHp: testInitialHp.value },
+        })
+      : await $fetch<CompetitionCreateAcknowledgement>('/api/competitions', { method: 'POST', body })
     const id = parseCreatedCompetitionId(response)
     await router.push(`/competitions/${encodeURIComponent(id)}`)
   } catch (error) {

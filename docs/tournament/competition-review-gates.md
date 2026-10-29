@@ -120,6 +120,30 @@ P3 範圍及相依只見[票據索引](tickets/README.md#優先級與首場界�
 
 2026-10-26 在基底 `1339f7f` 重驗，票 22 仍 **HOLD**：[完整矩陣與本輪記錄](tickets/22-first-event-integration-validation.md#目前驗收候選2026-10-26基底-1339f7f)。Cargo 778、server integration 233、component 159、typecheck、fresh WASM／Nuxt build、fmt／diff check 通過；Web unit 970 pass／1 fail，失敗在受限 PID 環境的 managed-server descendant cleanup 測例。真 Worker／Chromium 1v1 四階段多 session 流程 1/1 通過 27.7 分鐘，並實際完成雙敗 reset；Swiss 只有一輪。匿名 replay frame 404 根因已在本輪候選修正（DO RPC `Symbol.dispose` 被精確欄位檢查拒絕，加上 Rust `battle_record` snake_case 與 TS `battleRecord` 契約不符），重建後同一實際賽事 step 0 回 HTTP 200。後續追加 2v2 Round Robin 真 Worker／Chromium 多 session 正常賽事 1/1 通過（四位玩家各自提交牌組、準備並完成一局），但同隊同時修改曾遇版本衝突；此項不涵蓋所有 2v2 例外。多輪排名／同分、淘汰 Draw、季軍及缺席／超時／退出／空缺／零一隊分支仍無真 Worker／瀏覽器矩陣證據，因此不放行。
 
+2026-10-27 於 HEAD `8898187` 重驗，票 22 維持 **HOLD**：[本輪命令、原始輸出與限制](../../scratch/tour-attempt/ticket22-2026-10-27/report.md)。Cargo 778、Web unit 971／0 skip、server integration 233、component 159、typecheck、fmt 及 fresh WASM／Nuxt build 通過；獨立空 target、Worker 與一般 target 的 WASM SHA-256 均為 `9de409c7d2a2a4ae86f5c770047b9bc5ff7f6480a4aa93e9247ca753f308aa02`。真 Worker／Chromium 多 session 的 2v2 單階段正常賽事及 1v1 四階段各 1／1 通過；後者主辦離線、包含普通下一局及雙敗 `grandFinalReset`，匿名公告與重播清單可讀。兩次均以隔離測試 Worker 初始血量 20，Swiss 僅兩隊一輪。首輪環境未提供 Brave（後續已隔離安裝並追加實跑）；初次測試的本機 socket／sqlite3／程序回收及 rustfmt 限制與處理後重跑結果保留於報告。01–21 的舊版限定兩軸審核不能自動外推為目前 HEAD 完整現況審核；多輪 Swiss、排序裁決、淘汰 Draw、季軍及缺席／超時／退出／空缺／零一隊等真瀏覽器矩陣仍缺，故不放行。
+
+2026-10-27 後續整合實跑更新：隔離安裝 Brave 後，真 Worker／Brave 的 2v2 正常賽事及 1v1 四階段各 1／1 通過，後者雙敗未觸發 reset。真 Worker／Chromium 另完成四隊兩輪 Swiss、自訂勝負分及全同名次主辦裁決、四隊單敗季軍、單隊及雙隊缺席後的一隊／零隊後續階段，以及準備時計單隊與同時超時；真 Worker／Brave 的四隊 Swiss 缺席案例驗證未開打配對排除對手集合、未決擋公開及裁決理由公開，單隊與同時讀秒超時亦各通過一例。上述均限各自案例，完整命令、失敗及重跑與測試 Worker 邊界見[追加紀錄](../../scratch/tour-attempt/ticket22-2026-10-27/report.md#整合情境追加2026-10-27)。淘汰 Draw／時計沿用、利益衝突、配對種子重試、輪空／和局積分、不同時刻超時觀測、團體例外與其餘退出／空缺矩陣，以及目前版本所需完整現況審核仍未閉合；整票維持 **HOLD**。
+
+2026-10-27 再追加的真 Worker／Brave 案例在上述基底驗證：2v2 一人未準備的整隊缺席、參賽裁判迴避與無衝突裁判裁決、五隊 Swiss 首輪輪空／雙負退出與次輪配對、循環賽雙負後取消交手、雙敗首輪全退出與敗部決賽雙負空缺均各 1／1 通過。Swiss 測例止於第二輪生成，重讀種子不代表重試。循環賽退出隊伍完全同分仍須先作明確裁決，初版測例遺漏裁決而逾時，修正後通過。測例移至 [scratch](../../scratch/tour-attempt/ticket22-2026-10-27/tournament-first-event.spec.ts)，完整限制和失敗紀錄見[報告](../../scratch/tour-attempt/ticket22-2026-10-27/report.md#後續驗收與測例移置)。
+
+同輪發現主辦兼參賽者報名遭拒，工作樹修復候選保留官方角色並依動作使用玩家身分；真 Worker／Brave 已驗主辦報名實戰、本人同分迴避、參賽裁判實戰及主辦敗方隊長建立下一局。候選上 CompetitionRoom 389、Web unit 971、server integration 233、component 159、typecheck 與 fresh WASM／Nuxt build 通過。這些與前段基底實證分別計算；淘汰 Draw／時計沿用、瑞士和局、真正配對種子重試、不同截止時刻的延遲超時觀測、剩餘團體及空缺矩陣，與目前來源的完整 Standards／Spec 現況審核仍未完成，票 22 繼續 **HOLD**。
+
+修復候選另以獨立 Worker／Brave 重跑 2v2 單階段正常賽事及 1v1 四階段正常賽事各 1／1；後者主辦離線，完成雙敗 `grandFinalReset`，雙敗三場皆有確認結果。測試用 Worker 初始血量覆寫 20，Swiss 仍限兩隊單輪；完整輸出與命令見[候選紀錄](../../scratch/tour-attempt/ticket22-2026-10-27/report.md#主辦裁判兼參賽修復候選)。
+
+修復候選新增真 Worker／Brave 2v2 雙方各缺一名隊員的雙負案例 1／1 通過：雙敗首輪未開打，兩隊退出且冠軍空缺，沒有重播，四份鎖定牌組保留；限此團體情境。
+
+修復候選新增真 Worker／Brave 兩隊雙敗總決賽雙缺席 1／1 通過：先完成一場勝部真實對局，總決賽雙負後冠軍空缺、不產生重置賽，只保留勝部重播；重置賽雙負仍未實測。
+
+2026-10-28 工作樹候選新增僅限開發測試賽事的共用牌庫起手牌設定，以生命 4 的實際反震／金擊術產生和局；真 Worker／Brave Swiss 和局積分、同分裁決與重播，以及單敗和局後不同剩餘時計沿用並完成續局各 1／1 通過。實跑發現首局輪次建房未被淘汰和局續局辨識，候選已修復並重新實跑；GameRoom 145、CompetitionRoom 389、Cargo 778 通過。以上使用主辦測試介入，不外推正式規則或無介入情境；不同截止時刻延遲觀測、真正配對種子重試、其餘團體／空缺矩陣及目前來源完整 Standards／Spec 審核仍未閉合，票 22 維持 **HOLD**。方法、原始輸出及失敗紀錄見[本輪報告](../../scratch/tour-attempt/ticket22-2026-10-27/test-hands-report.md)。
+
+2026-10-28 後續工作樹候選發現截止後暫停競態：若 alarm 延遲且暫停命令先使父房觀測到超時，原實作仍提交暫停、取消子房 alarm 且未交付終局。候選改為在引擎回覆超時或待裁決時拒絕該控制，保留原 alarm。真 Worker／Brave 的正常延遲恢復 1／1；另以 scratch 固定錦囊洗牌及延遲 alarm 夾具，驗證晚於兩個不同截止的一次觀測只判最早隊伍、控制回 409、終局正常交付 1／1。此證據不代表其他平台故障矩陣通過。Web unit 971、server integration 233、typecheck、fresh WASM／Nuxt build 及 Rust 晚到觀測案例通過；來源完整兩軸審核及其餘矩陣仍待完成，票 22 維持 **HOLD**。見[本輪矩陣與失敗紀錄](../../scratch/tour-attempt/ticket22-2026-10-27/outstanding-matrix-2026-10-28.md)。
+
+同輪隨後核對重試語意，逾期控制拒絕改為保存失敗收據與稽核，不更動時計或 alarm；相同命令在終局後仍返回原 409。最新候選在 scratch 延遲派送夾具實跑 1／1，核對晚到觀測、終局、唯一收據與稽核、無暫停 outbox；fresh build、Web unit 971、server integration 233、component 159 與 typecheck 通過。其餘整合矩陣與完整現況兩軸審核仍待完成，前一候選的案例依原來源界線記錄，不直接當成同一來源的總放行。
+
+2026-10-28 最新含逾期控制失敗收據的工作樹候選，fresh WASM／Nuxt build、Web unit 971、integration 233、component 159、typecheck 通過；Worker／一般及獨立 target WASM SHA-256 均為 `c394d0497ee976d4ebaaf886c11875a9be90baeb421435623ff29ebacd89a8f3`。以真 Worker／Brave 依序追加：主辦離線 1v1 四階段正常流程、正常 2v2、2v2 開局後一人未選導致整隊超時、六隊兩輪 Swiss 排序及反震和局、五隊 Swiss 輪空／退出與已保存公告命令重試、不同生命值全同分裁決、同分主辦與裁判各自迴避、先進讀秒淘汰和局判負及普通新局、兩次連續淘汰和局時計沿用、單敗準決賽及季軍場雙缺席空缺、四隊雙敗重置賽雙缺席，均各 1／1 通過。正常流程使用隔離測試初始生命 20；反震和局使用測試賽事生命 4 和共用牌庫手牌。異時雙截止的晚到觀測另使用 scratch 固定錦囊牌序及延遲 alarm，真實時計與引擎裁決；已保存公告重試不代表故障期間重新計算配對。各案例的來源界線、時間、原始輸出、失敗與重跑見[工作矩陣](../../scratch/tour-attempt/ticket22-2026-10-27/outstanding-matrix-2026-10-28.md)。其他先前限定案例仍按各自來源摘要記錄，不因這些通過而升級為完整現況審核。當時依本地資料判定 01–21 指定檔案的完整 Standards／Spec 現況與獨立末審尚未完成，票 22 維持 **HOLD**；後續使用者確認與最新結論見下一段。[審核範圍](../../scratch/tour-attempt/ticket22-2026-10-27/current-source-review-scope.md)區分局部核對與待完成事項。
+
+2026-10-28 最新工作樹候選，票 22 集中整合驗收 **限定 PASS**：前置 01–21 審核依使用者確認已在其他地方完成；本紀錄未取得或重述該處審核內容。本輪對 `8898187` 至目前工作樹的新增差異自行進行 Standards／Spec 檢查，沒有發現阻擋 finding，並明確區分自行檢查與獨立審核。跨階段真 Worker／Brave 案例以四隊 Swiss 真缺席形成晉級同分，未決後自然等待 310 秒，API 與持久帳本均確認沒有相依階段、輪次公告、房間或整場公告；主辦附公開理由裁決後，正確兩隊才自動進入相依階段並建立對局。最新候選再依序重驗零／一隊後續、同時讀秒耗盡、正常四隊季軍、循環及雙敗退出、2v2 雙缺席、Swiss 缺席對手排除、兩輪 Swiss 賽中自身勝場及測試建賽／時計控制，全部通過；staging／production 測試入口 404 為 6／6。上述與前段同一候選的四賽制正常流程、團體、排序、淘汰和局與空缺案例相互補充。通過限票 22 所列首場辦賽條件與實際案例；已保存公告重送、scratch 延遲 alarm 等各有紀錄邊界，進階故障／重啟仍屬票 28。原始輸出、條件與失敗歷史見[本輪矩陣](../../scratch/tour-attempt/ticket22-2026-10-27/outstanding-matrix-2026-10-28.md)、[本次差異自行審查](../../scratch/tour-attempt/ticket22-2026-10-27/delta-review-2026-10-28.md)。
+
 ## 歷史能力與證據
 
 報名／個人牌組、固定玩家入口／準備、目前賽程 GET／單階段管理、更正 HTTP／UI、權威時計顯示與暫停恢復已有歷史限定驗收；不重複派工。原生鏈多數只證 RR 1v1；2v2 牌組快照另有獨立證據，均非全賽制／重啟矩陣。

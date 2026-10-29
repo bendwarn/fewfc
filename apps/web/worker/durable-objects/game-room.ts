@@ -246,6 +246,7 @@ interface PreparedCompetitionGameStart {
   setup: ReturnType<typeof competitionRulesSetup>
   roomName: string
   admission: CompetitionGameAdmission
+  testHands: string[][] | null
 }
 
 interface CompetitionGameAdmission {
@@ -897,12 +898,57 @@ export class GameRoom extends DurableObject<GameRoomEnv> {
 
     await this.validateCompetitionRules(preparation.binding)
     const rules = await callRulesEngine({
-      action: { type: 'start' },
+      action: preparation.testHands
+        ? { type: 'startDevelopmentWithHands', hands: preparation.testHands }
+        : { type: 'start' },
       viewer: 'observer',
       setup: preparation.setup,
       deckSeed: preparation.binding.deckSeed,
     })
     return await this.serialized(() => this.commitCompetitionGameStart(preparation, rules))
+  }
+
+  /** 測試賽事主辦只能在開局前設定共用牌庫的起手順序。 */
+  async setCompetitionTestHands(request: {
+    competitionId: string; gameId: string; actorUserId: string; hands: string[][]
+  }): Promise<{ ok: true } | { ok: false; code: 'notFound' | 'forbidden' | 'invalidHands' | 'alreadyStarted' }> {
+    return this.serialized(async () => {
+      if (this.env.APP_ENV !== 'development') return { ok: false, code: 'notFound' }
+      if (!isExactCompetitionJson(request) || !isRecord(request)
+        || !hasExactKeys(request, ['competitionId', 'gameId', 'actorUserId', 'hands'])
+        || !isNonEmpty(request.competitionId) || !request.competitionId.startsWith('test-')
+        || !isNonEmpty(request.gameId) || !isNonEmpty(request.actorUserId)
+        || !Array.isArray(request.hands) || request.hands.length < 2 || request.hands.length > 4
+        || request.hands.some((hand, index) => !Array.isArray(hand)
+          || hand.length !== (index === 0 ? 4 : 5)
+          || hand.some(card => typeof card !== 'string' || !/^(metal|wood|water|fire|earth)-[1-5]$/.test(card)))) {
+        return { ok: false, code: 'invalidHands' }
+      }
+      const binding = await this.competitionBinding()
+      const metadata = await this.requireMetadata()
+      if (!binding || binding.competitionId !== request.competitionId || metadata.gameId !== request.gameId
+        || binding.organizerUserId !== request.actorUserId) return { ok: false, code: 'forbidden' }
+      const admission = await this.ctx.storage.get<unknown>(competitionAdmissionKey)
+      if (!competitionAdmissionMatchesBinding(admission, metadata, binding)
+        || !['unreleased', 'released'].includes(admission.status)
+        || (binding.gameNumber === 1 && Date.now() >= binding.roundStartMs)
+        || metadata.status !== 'Waiting' || await this.ctx.storage.get('gameRecord')) {
+        return { ok: false, code: 'alreadyStarted' }
+      }
+      if (request.hands.length !== binding.turnOrder.length
+        || binding.enabledRuleModules.includes('personal-deck') || binding.enabledRuleModules.includes('pouch')) {
+        return { ok: false, code: 'invalidHands' }
+      }
+      const hands = structuredClone(request.hands)
+      try {
+        await callRulesEngine({ action: { type: 'startDevelopmentWithHands', hands }, viewer: 'observer',
+          setup: competitionRulesSetup(binding), deckSeed: binding.deckSeed })
+      } catch {
+        return { ok: false, code: 'invalidHands' }
+      }
+      await this.ctx.storage.put('competitionTestStartingHands', hands)
+      return { ok: true }
+    })
   }
 
   /** 截止時與 GameStarted 共用 serial lane；只記房間 admission，不造遊戲事件。 */
@@ -1157,6 +1203,8 @@ export class GameRoom extends DurableObject<GameRoomEnv> {
       setup: competitionRulesSetup(storedBinding),
       roomName: metadata.name,
       admission: structuredClone(admission),
+      testHands: this.env.APP_ENV === 'development' && storedBinding.competitionId.startsWith('test-')
+        ? (await this.ctx.storage.get<string[][]>('competitionTestStartingHands') ?? null) : null,
     }
   }
 
@@ -1271,6 +1319,8 @@ export class GameRoom extends DurableObject<GameRoomEnv> {
         || !sameCompetitionBindingRef(currentAdmission.bindingRef, preparation.admission.bindingRef)
         || !this.competitionStartAdmitted(currentMetadata, currentBinding, currentAdmission, Date.now())
         || current.has('gameRecord') || currentMetadata.gameInstanceId !== undefined
+        || stableDeliveryFingerprint(current.get('competitionTestStartingHands') ?? null)
+          !== stableDeliveryFingerprint(preparation.testHands)
         || current.get('nextSequence') !== sequence
         || stableDeliveryFingerprint(currentMetadata) !== stableDeliveryFingerprint(metadata)
         || !isPristineCompetitionWaitingQueue(current.get(this.competitionDeliveryQueueKey()), currentBinding)) {

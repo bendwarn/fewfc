@@ -15,9 +15,10 @@ import CompetitionPersonalDeckSubmission from '../app/components/CompetitionPers
 import CompetitionTournamentView from '../app/components/CompetitionTournamentView.vue'
 import CompetitionTournamentManagement from '../app/components/CompetitionTournamentManagement.vue'
 import CompetitionRulingCorrection from '../app/components/CompetitionRulingCorrection.vue'
+import CompetitionTestClockControl from '../app/components/CompetitionTestClockControl.vue'
 
 setup(app => {
-  for (const [name, component] of Object.entries({ RouteStatus, PageIntro, PublicHeader, ConfirmDialog, ModalShell, BattlefieldBoard, BattleRecordTimeline, ReplayEventSheet, GameConclusionPanel, CompetitionPersonalDeckSubmission, CompetitionTournamentView, CompetitionTournamentManagement, CompetitionRulingCorrection })) app.component(name, component)
+  for (const [name, component] of Object.entries({ RouteStatus, PageIntro, PublicHeader, ConfirmDialog, ModalShell, BattlefieldBoard, BattleRecordTimeline, ReplayEventSheet, GameConclusionPanel, CompetitionPersonalDeckSubmission, CompetitionTournamentView, CompetitionTournamentManagement, CompetitionRulingCorrection, CompetitionTestClockControl })) app.component(name, component)
   app.component('NuxtLink', defineComponent({
     props: { to: { type: [String, Object], default: '/' } },
     setup(props, { slots }) {

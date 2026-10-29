@@ -5,6 +5,7 @@ import type {
   CompetitionCreateAcknowledgement,
   CompetitionAnnouncementDraft,
   CompetitionRoomInitializeFromRulesRequest,
+  CompetitionRoomInitializeTestFromRulesRequest,
   CompetitionRoomInitializeValue,
 } from '../../shared/competition-room'
 import { workerEnv } from './worker-env'
@@ -95,7 +96,7 @@ function announcementDraft(input: unknown): CompetitionAnnouncementDraft {
   }
 }
 
-function publicValue(input: unknown, request: CompetitionRoomInitializeFromRulesRequest): CompetitionRoomInitializeValue {
+function publicValue(input: unknown, request: CompetitionRoomInitializeFromRulesRequest | CompetitionRoomInitializeTestFromRulesRequest): CompetitionRoomInitializeValue {
   if (!isExactCompetitionJson(input) || !record(input)
     || !exact(input, ['competitionId', 'organizerUserId', 'revision', 'projection'])
     || input.competitionId !== request.competitionId || input.organizerUserId !== request.callerUserId
@@ -119,7 +120,8 @@ function publicValue(input: unknown, request: CompetitionRoomInitializeFromRules
     || !sameAnnouncementPlan(announcement.plan, expected.plan)
     || JSON.stringify(announcement.enabledRuleModules) !== JSON.stringify(expected.enabledRuleModules)
     || typeof announcement.initialHp !== 'number' || !Number.isSafeInteger(announcement.initialHp)
-    || announcement.initialHp <= 0 || announcement.initialHp > 2147483647) {
+    || announcement.initialHp <= 0 || announcement.initialHp > 2147483647
+    || ('testInitialHp' in request && announcement.initialHp !== request.testInitialHp)) {
     throw competitionCreateFromRulesError('engineProtocolError')
   }
   // 保留既有完整公開回應，但每一欄只取可信設定或已驗證的官方生命，不回傳 raw RPC。
@@ -143,7 +145,7 @@ function capability(value: unknown): value is object {
   return value !== null && !Array.isArray(value) && (typeof value === 'object' || typeof value === 'function')
 }
 
-async function dispatch(event: H3Event, request: CompetitionRoomInitializeFromRulesRequest): Promise<unknown> {
+async function dispatch(event: H3Event, request: CompetitionRoomInitializeFromRulesRequest | CompetitionRoomInitializeTestFromRulesRequest): Promise<unknown> {
   try {
     const namespace: unknown = workerEnv(event).COMPETITION_ROOM
     if (!capability(namespace)) throw new Error('unavailable')
@@ -153,7 +155,7 @@ async function dispatch(event: H3Event, request: CompetitionRoomInitializeFromRu
     const id: unknown = Reflect.apply(idFromName, namespace, [request.competitionId])
     const room: unknown = Reflect.apply(get, namespace, [id])
     if (!capability(room)) throw new Error('unavailable')
-    const initialize: unknown = Reflect.get(room, 'initializeFromRules')
+    const initialize: unknown = Reflect.get(room, 'testInitialHp' in request ? 'initializeTestFromRules' : 'initializeFromRules')
     if (typeof initialize !== 'function') throw new Error('unavailable')
     // 捕捉方法並保留 receiver；唯一專用 RPC 呼叫，不 fallback 或自動重試。
     return await Reflect.apply(initialize, room, [structuredClone(request)])
@@ -162,7 +164,7 @@ async function dispatch(event: H3Event, request: CompetitionRoomInitializeFromRu
   }
 }
 
-function rpcResult(raw: unknown, request: CompetitionRoomInitializeFromRulesRequest): CompetitionRoomInitializeValue {
+function rpcResult(raw: unknown, request: CompetitionRoomInitializeFromRulesRequest | CompetitionRoomInitializeTestFromRulesRequest): CompetitionRoomInitializeValue {
   let disposer: ((this: unknown) => unknown) | undefined
   let rejection: keyof typeof ERRORS = 'engineProtocolError'
   try {
@@ -220,6 +222,32 @@ export async function createCompetitionFromRules(
     throw competitionCreateFromRulesError('serverSourceUnavailable')
   }
   const request = { competitionId, callerUserId, announcement, trustedTimeMs }
+  const initialized = rpcResult(await dispatch(event, request), request)
+  return { competitionId: initialized.competitionId }
+}
+
+export async function createTestCompetitionFromRules(
+  event: H3Event,
+  body: unknown,
+  callerUserId: string,
+): Promise<CompetitionCreateAcknowledgement> {
+  if (!record(body) || !exact(body, ['announcement', 'initialHp'])
+    || !Number.isSafeInteger(body.initialHp) || (body.initialHp as number) < 1
+    || (body.initialHp as number) > 2147483647) throw competitionCreateFromRulesError('invalidRequest')
+  const announcement = announcementDraft(body.announcement)
+  if (!nonEmpty(callerUserId)) throw competitionCreateFromRulesError('forbidden')
+  let competitionId: string
+  let trustedTimeMs: number
+  try {
+    competitionId = `test-${crypto.randomUUID()}`
+    trustedTimeMs = Date.now()
+    if (!nonEmpty(competitionId) || !timestamp(trustedTimeMs)) throw new Error('invalid server source')
+  } catch {
+    throw competitionCreateFromRulesError('serverSourceUnavailable')
+  }
+  const request: CompetitionRoomInitializeTestFromRulesRequest = {
+    competitionId, callerUserId, announcement, trustedTimeMs, testInitialHp: body.initialHp as number,
+  }
   const initialized = rpcResult(await dispatch(event, request), request)
   return { competitionId: initialized.competitionId }
 }

@@ -13,6 +13,11 @@
       </button>
     </PageIntro>
 
+    <section v-if="isTestCompetition" class="panel" role="status">
+      <strong>測試賽事</strong>
+      <p>此賽事僅供開發環境驗證，結果不代表正式辦賽結果。</p>
+    </section>
+
     <section v-if="!sessionLoaded || loading" class="panel" role="status" aria-live="polite">
       {{ !sessionLoaded ? '正在確認登入狀態…' : '正在載入賽事報名狀態…' }}
     </section>
@@ -156,6 +161,12 @@
         :participant-team-id="currentTeam?.teamId ?? null"
         :participant-is-captain="isCurrentCaptain"
         :participant-entry-enabled="canLookupParticipantGame"
+      />
+
+      <CompetitionTestClockControl
+        v-if="isTestCompetition && isOrganizer && session.userId.value"
+        :competition-id="competitionId"
+        :session-user-id="session.userId.value"
       />
 
       <section class="panel teams-card" aria-labelledby="teams-title">
@@ -326,6 +337,7 @@ const route = useRoute()
 const router = useRouter()
 const session = usePlayerSession()
 const competitionId = computed(() => typeof route.params.id === 'string' ? route.params.id.trim() : '')
+const isTestCompetition = computed(() => useRuntimeConfig().public.appEnv === 'development' && competitionId.value.startsWith('test-'))
 const sessionLoaded = ref(false)
 const sessionError = ref('')
 const registration = ref<CompetitionRegistrationState | null>(null)
