@@ -6,7 +6,7 @@ AFK
 
 ## Parent
 
-Derived from `docs/ui-platform-decision.md`.
+Derived from `apps/web/docs/platform-decision.md`.
 
 ## What to build
 

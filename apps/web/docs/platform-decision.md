@@ -21,9 +21,9 @@ Do not expose canonical Game State or canonical Game Events directly to browser 
 
 ## UI Validation
 
-The [Web App Agent Instructions](../apps/web/AGENTS.md#ui-browser-and-e2e-validation)
+The [Web App Agent Instructions](../AGENTS.md#ui-browser-and-e2e-validation)
 define visual acceptance in Storybook and the responsibilities of UI and E2E
-tests. See the [Storybook guide](../apps/web/docs/storybook.md#validation-scope)
+tests. See the [Storybook guide](./storybook.md#validation-scope)
 for page composition, interaction coverage, and the unit/integration and real
 service boundaries.
 

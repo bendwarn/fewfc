@@ -1749,7 +1749,7 @@ and **Action** distinguishable. The **Ability** group contains Active-Effect
 Commands and states that they do not enter `Action`. The **Action** group contains
 Formation Uses, Profession Changes, and Pass Action, and states that choosing
 one enters `Action`. The presentation follows the
-[battlefield UI design](ui-battlefield-design.md), replacing the earlier
+[battlefield UI design](../apps/web/docs/ui-battlefield-design.md), replacing the earlier
 requirement for two permanently stacked panels at every viewport size.
 Do not add a separate Profession panel. Automatic
 Profession Abilities and Formation Proficiencies appear through legal options

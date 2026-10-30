@@ -43,7 +43,7 @@ Create page or composed-component stories for changes to a complete screen.
 Include the viewport sizes, themes, and public-data perspectives required by the
 design. Leaf-component stories alone leave the surrounding page composition
 unverified. For the battle-screen acceptance cases, see
-[Battlefield UI Design](../../../docs/ui-battlefield-design.md#後續實作的驗收重點).
+[Battlefield UI Design](./ui-battlefield-design.md#後續實作的驗收重點).
 
 Manual review in Storybook can accept appearance and layout. Automated screenshot
 comparisons can detect unintended visual changes once a visual runner and

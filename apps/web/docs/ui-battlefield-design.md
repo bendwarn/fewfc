@@ -76,9 +76,9 @@
 
 ## 與既有文件的關係
 
-- [UI Platform Decision](./ui-platform-decision.md) 的規則引擎權威、Public View 與隱藏資訊邊界持續適用。
-- [ADR-0028](./adr/0028-treat-action-detail-as-contextual-supplement.md) 已允許依決策情境組織說明，但要求玩家能在提交前辨識已選輸入、額外代價及重要結果。資訊收合不能省略會改變當前決策的事實。
-- [規則引擎決策第 37 節](./rules-engine-decisions.md) 持續要求能力與行動在語意上可區分，以及各玩家的職業標示；具體版面採本文件的情境面板、摘要與展開方式。
+- [UI Platform Decision](./platform-decision.md) 的規則引擎權威、Public View 與隱藏資訊邊界持續適用。
+- [ADR-0028](../../../docs/adr/0028-treat-action-detail-as-contextual-supplement.md) 已允許依決策情境組織說明，但要求玩家能在提交前辨識已選輸入、額外代價及重要結果。資訊收合不能省略會改變當前決策的事實。
+- [規則引擎決策第 37 節](../../../docs/rules-engine-decisions.md) 持續要求能力與行動在語意上可區分，以及各玩家的職業標示；具體版面採本文件的情境面板、摘要與展開方式。
 - 沒有找到要求所有公開資訊同時顯示的既有決策；目前窄版已有摘要與詳情面板。新版已確認桌機與手機四人對局皆採上方三人同列，取代目前桌機上下左右座位的版面標準；實作時需同步更新相應驗收。
 
 ## 後續實作的驗收重點
@@ -94,6 +94,6 @@
 - 環境背景與明暗外觀可獨立變化，無環境時使用「無」背景。
 - 在 Storybook 建立對局整頁或多元件組合的 stories，涵蓋上述人數、裝置、視角、環境與明暗狀態；外觀及版面只在 Storybook 透過人工檢視或對已確認基準的截圖比對驗收。
 - 以 Storybook 互動測試或對 stories 執行的 Playwright DOM、可存取名稱、焦點與幾何斷言驗證互動；同步更新既有桌機四方位等已被新設計取代的版面斷言。
-- 以少量代表性 E2E 流程驗證實際指令提交、Rust 處理後的 UI 更新、多人同步、重連、重播資料與隱藏資訊邊界；詳細分工依 [Storybook 指南](../apps/web/docs/storybook.md#validation-scope)。
+- 以少量代表性 E2E 流程驗證實際指令提交、Rust 處理後的 UI 更新、多人同步、重連、重播資料與隱藏資訊邊界；詳細分工依 [Storybook 指南](./storybook.md#validation-scope)。
 
 具體色值、欄寬、列高與動畫參數屬後續實作調整，須符合上述行為與可讀性要求。原始 UI kit 內的工具清單與 CSS 範例是參考資料；實作沿用既有 Nuxt 堆疊，依實際需求選用工具。示意圖的卡牌名稱、費用與效果不作為遊戲規則依據。
