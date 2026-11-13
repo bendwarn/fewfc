@@ -1,3 +1,5 @@
+import { parseTournamentStageAssessments, type PlacementExplanation, type TournamentStageAssessment } from '../../shared/tournament-assessment'
+
 export type TournamentFormatView = 'singleElimination' | 'roundRobin' | 'doubleElimination' | 'swiss'
 export type TournamentRoundKindView = 'main' | 'winners' | 'losers' | 'grandFinal' | 'grandFinalReset'
 export type TournamentStageStatusView = 'active' | 'finished'
@@ -97,6 +99,7 @@ export interface TournamentViewRankingTieDecision {
 }
 
 export interface TournamentViewStage {
+  assessment: TournamentStageAssessment
   config: TournamentViewStageConfig
   status: TournamentStageStatusView
   resolution: TournamentStageResolutionView | null
@@ -138,6 +141,18 @@ export class CompetitionTournamentViewProtocolError extends Error {
   }
 }
 
+/** 驗證 Rust 的公開賽程快照；建立收據不包含唯讀評估 facts。 */
+export function parseTournamentPublicSnapshot(input: unknown, expectedId: string): Array<Omit<TournamentViewStage, 'assessment'>> {
+  const publicValue = exactRecord(input, ['tournamentId', 'stages'])
+  if (!publicValue || publicValue.tournamentId !== expectedId) throw new CompetitionTournamentViewProtocolError()
+  const stages = parseArray(publicValue.stages, parseStage)
+  if (!stages || stages.length === 0
+    || new Set(stages.map(stage => stage.config.stageId)).size !== stages.length) {
+    throw new CompetitionTournamentViewProtocolError()
+  }
+  return stages
+}
+
 /** 將 GET 回應中的 unknown 精確縮成 UI 白名單；不把公開 JSON cast 成共享 DTO。 */
 export function parseCompetitionTournamentViewResponse(
   input: unknown,
@@ -152,17 +167,14 @@ export function parseCompetitionTournamentViewResponse(
       throw new CompetitionTournamentViewProtocolError()
     }
 
-    const projection = exactRecord(envelope.projection, ['ok', 'operation', 'public'])
+    const projection = exactRecord(envelope.projection, ['ok', 'operation', 'public', 'stageFacts'])
     if (!projection || projection.ok !== true || projection.operation !== 'tournamentView') {
       throw new CompetitionTournamentViewProtocolError()
     }
-    const publicValue = exactRecord(projection.public, ['tournamentId', 'stages'])
-    if (!publicValue || publicValue.tournamentId !== expectedId) {
-      throw new CompetitionTournamentViewProtocolError()
-    }
-    const stages = parseArray(publicValue.stages, parseStage)
-    if (!stages || stages.length === 0
-      || new Set(stages.map(stage => stage.config.stageId)).size !== stages.length) {
+    const stages = parseTournamentPublicSnapshot(projection.public, expectedId)
+    const publicValue = asPlainRecord(projection.public)
+    const stageFacts = parseTournamentStageAssessments(projection.stageFacts, publicValue?.stages)
+    if (!stageFacts || stageFacts.length !== stages.length) {
       throw new CompetitionTournamentViewProtocolError()
     }
 
@@ -177,7 +189,7 @@ export function parseCompetitionTournamentViewResponse(
       competitionId: expectedId,
       revision: envelope.revision,
       tournamentId: expectedId,
-      stages,
+      stages: stages.map((stage, index) => ({ ...stage, assessment: stageFacts[index]! })),
       ...(publication ? { publication } : {}),
     }
   } catch {
@@ -333,174 +345,24 @@ export function swissTieBreakerLabel(value: SwissTieBreakerView): string {
   }[value]
 }
 
-function singleEliminationSemifinalVacancy(
-  stage: TournamentViewStage,
-  finalRoundNumber: number,
-): { winners: string[], bronzeTeam: string, byeCount: number } | null {
-  if (stage.config.teams.length <= 3) return null
-  const semifinalRound = stage.rounds.find(round => round.roundNumber === finalRoundNumber - 1
-    && round.kind === 'main')
-  if (!semifinalRound) return null
-  const matches = semifinalRound.matches.filter(match => match.purpose === 'standard')
-  if (matches.length === 0 || matches.length > 2 || semifinalRound.matches.length !== matches.length) return null
-
-  const winners: string[] = []
-  const losers: string[] = []
-  const participantsSeen: string[] = []
-  let hasVacantPath = matches.length === 1
-  let byeCount = 0
-  for (const match of matches) {
-    if (match.kind !== 'main' || match.roundNumber !== semifinalRound.roundNumber
-      || match.status !== 'completed' || !match.result) return null
-    const result = match.result
-    if (result.type === 'bye') {
-      if (match.participants.length !== 1 || match.participants[0] !== result.teamId) return null
-      participantsSeen.push(result.teamId)
-      winners.push(result.teamId)
-      byeCount += 1
-      hasVacantPath = true
-    } else if (result.type === 'doubleLoss'
-      || result.type === 'noShow' && result.winnerId === null && result.absentTeams.length === 2) {
-      if (match.participants.length !== 2
-        || result.type === 'noShow' && !sameTeamIds(result.absentTeams, match.participants)) return null
-      participantsSeen.push(...match.participants)
-      hasVacantPath = true
-    } else if (result.type === 'win' || result.type === 'forfeit') {
-      if (match.participants.length !== 2 || result.winnerId === result.loserId
-        || !match.participants.includes(result.winnerId) || !match.participants.includes(result.loserId)) return null
-      participantsSeen.push(...match.participants)
-      winners.push(result.winnerId)
-      losers.push(result.loserId)
-    } else if (result.type === 'noShow' && result.winnerId !== null && result.absentTeams.length === 1) {
-      const absentTeam = result.absentTeams[0]
-      if (match.participants.length !== 2 || !absentTeam || !match.participants.includes(result.winnerId)
-        || !match.participants.includes(absentTeam)) return null
-      participantsSeen.push(...match.participants)
-      winners.push(result.winnerId)
-      losers.push(absentTeam)
-    } else {
-      return null
-    }
+/** 中文呈現只轉換 Rust 已確認的路徑事實，不由畫面重新推演賽程。 */
+export function placementExplanationLabel(fact: PlacementExplanation): string {
+  switch (fact.type) {
+    case 'singleFinalDoubleLoss': return '決賽雙負，冠軍空缺'
+    case 'singleBronzeDoubleLoss': return '季軍賽雙負，第三名與第四名空缺'
+    case 'eliminationPlaceVacant': return `第 ${fact.rank} 名因雙負空缺`
+    case 'singleBronzeByeAfterFinalDoubleLoss': return '決賽雙負後，唯一合格半決賽敗隊沿原季軍空位取得第三名；冠亞軍空缺'
+    case 'singleSemifinalDoubleLossChampionAndBronzeBye': return '半決賽雙負後，唯一勝者輪空取得冠軍；正常敗者輪空取得季軍，亞軍空缺'
+    case 'singleBronzeByeAfterVacancy': return '淘汰空位沿原半決賽位置傳播；正常敗隊保留季軍名次，亞軍空缺'
+    case 'doubleNoChampion': return '雙負空缺已結清，冠軍名次空缺'
+    case 'doubleGrandFinalDoubleLoss': return `總決賽雙負，冠軍與亞軍空缺${fact.thirdPlaceDecided ? '；保留已決出的季軍' : ''}`
+    case 'doubleResetDoubleLoss': return `重置賽雙負，冠軍與亞軍空缺${fact.thirdPlaceDecided ? '；保留已決出的季軍' : ''}`
+    case 'doubleWinnersChampionBye': return `勝部冠軍沿空位取得冠軍${fact.thirdPlaceDecided ? '，亞軍空缺；保留已判名次' : '，亞軍與季軍空缺'}`
+    case 'doubleLosersChampionBye': return `敗部冠軍沿總決賽空位取得冠軍${fact.thirdPlaceDecided ? '，亞軍空缺；保留已判名次' : '，亞軍與季軍空缺'}`
   }
-  const bronzeTeam = losers.length === 1 ? losers[0] : null
-  if (!hasVacantPath || winners.length === 0 || winners.length > 2 || !bronzeTeam
-    || new Set(participantsSeen).size !== participantsSeen.length || winners.includes(bronzeTeam)) return null
-  return { winners, bronzeTeam, byeCount }
 }
 
-function sameTeamIds(left: string[], right: string[]): boolean {
-  return left.length === right.length && left.every(teamId => right.includes(teamId))
-}
-
-/** 只辨識服務已結清的目前單敗決賽；不由排名或被替代的輪次推定冠軍。 */
-export function singleEliminationDoubleLossFinal(stage: TournamentViewStage): TournamentViewMatch | null {
-  if (stage.config.format !== 'singleElimination' || stage.status !== 'finished'
-    || stage.hasScheduleWarning) return null
-
-  const finalRound = stage.rounds[stage.rounds.length - 1]
-  if (!finalRound || finalRound.kind !== 'main') return null
-  let bracketSize = 1
-  while (bracketSize < stage.config.teams.length) bracketSize *= 2
-  if (finalRound.roundNumber !== Math.log2(bracketSize)) return null
-  const finalMatches = finalRound.matches.filter(match => match.purpose === 'standard')
-  const bronzeMatches = finalRound.matches.filter(match => match.purpose === 'bronze')
-  const hasBronzeMatch = stage.config.teams.length >= 4
-  if (finalMatches.length !== 1 || bronzeMatches.length > 1
-    || finalRound.matches.length !== 1 + bronzeMatches.length
-    || (hasBronzeMatch && bronzeMatches.length === 0
-      && !singleEliminationSemifinalVacancy(stage, finalRound.roundNumber)?.byeCount)
-    || !hasBronzeMatch && bronzeMatches.length !== 0) return null
-  const finalMatch = finalMatches[0]
-  const bronzeMatch = bronzeMatches[0]
-  if (!finalMatch || finalMatch.kind !== 'main' || finalMatch.participants.length !== 2
-    || finalMatch.status !== 'completed' || !isDoubleLossVacancy(finalMatch)) return null
-  if (bronzeMatch && (bronzeMatch.kind !== 'main'
-    || bronzeMatch.participants.length !== 2 || bronzeMatch.status !== 'completed'
-    || !bronzeMatch.result
-    || bronzeMatch.participants.some(teamId => finalMatch.participants.includes(teamId)))) return null
-  if (hasBronzeMatch && !bronzeMatch) {
-    const semifinalVacancy = singleEliminationSemifinalVacancy(stage, finalRound.roundNumber)
-    if (!semifinalVacancy || semifinalVacancy.byeCount !== 1 || semifinalVacancy.winners.length !== 2
-      || !sameTeamIds(semifinalVacancy.winners, finalMatch.participants)) return null
-  }
-  if (stage.standings.some(standing => standing.rank === 1 || standing.rank === 2)) return null
-
-  // 已結清的前輪雙負或輪空仍是事實，不當作未決案件或另造勝者。
-  const previousRoundsClosed = stage.rounds.slice(0, -1).every(round =>
-    round.matches.every(match => match.status === 'completed' || match.status === 'cancelled'))
-  return previousRoundsClosed ? finalMatch : null
-}
-
-export function doubleEliminationVacancySummary(stage: TournamentViewStage): string | null {
-  if (stage.config.format !== 'doubleElimination' || stage.status !== 'finished'
-    || stage.hasScheduleWarning) return null
-
-  const finalRound = stage.rounds[stage.rounds.length - 1]
-  const finalMatch = finalRound?.matches.find(match => match.purpose === 'standard')
-  const hasGrandFinal = finalRound?.kind === 'grandFinal' || finalRound?.kind === 'grandFinalReset'
-  if (hasGrandFinal) {
-    if (finalMatch && isDoubleLossVacancy(finalMatch)) {
-      if (stage.standings.some(standing => standing.rank === 1 || standing.rank === 2)) return null
-      const thirdPlaceWasDecided = stage.standings.some(standing => standing.rank === 3)
-      const finalLabel = finalRound.kind === 'grandFinalReset' ? '重置賽' : '總決賽'
-      return `${finalLabel}雙負，冠軍與亞軍空缺${thirdPlaceWasDecided ? '；保留已決出的季軍' : ''}`
-    }
-    return null
-  }
-
-  const hasDoubleLoss = stage.rounds.some(round => round.matches.some(isDoubleLossVacancy))
-  if (!hasDoubleLoss) return null
-  const champion = stage.standings.find(standing => standing.rank === 1)?.teamId
-  if (!champion) return '雙負空缺已結清，冠軍名次空缺'
-  if (stage.standings.some(standing => standing.rank === 2)) return null
-
-  const lastWinnersRound = [...stage.rounds].reverse().find(round => round.kind === 'winners')
-  const winnersRoundSurvivors = lastWinnersRound?.matches.flatMap(match => {
-    const result = match.result
-    if (!result || match.purpose !== 'standard') return []
-    if (result.type === 'win' || result.type === 'forfeit') return [result.winnerId]
-    if (result.type === 'noShow') return result.winnerId === null ? [] : [result.winnerId]
-    if (result.type === 'bye') return [result.teamId]
-    return []
-  }) ?? []
-  const championRoute = winnersRoundSurvivors.length === 1 && winnersRoundSurvivors[0] === champion
-    ? '勝部冠軍沿空位取得冠軍'
-    : '敗部冠軍沿總決賽空位取得冠軍'
-  return stage.standings.some(standing => standing.rank === 3)
-    ? `${championRoute}，亞軍空缺；保留已判名次`
-    : `${championRoute}，亞軍與季軍空缺`
-}
-
-export function singleEliminationVacancySummary(stage: TournamentViewStage): string | null {
-  if (stage.config.format !== 'singleElimination' || stage.status !== 'finished'
-    || stage.hasScheduleWarning || stage.config.teams.length <= 3) return null
-  let bracketSize = 1
-  while (bracketSize < stage.config.teams.length) bracketSize *= 2
-  const finalDoubleLoss = singleEliminationDoubleLossFinal(stage)
-  const semifinalVacancy = singleEliminationSemifinalVacancy(stage, Math.log2(bracketSize))
-  if (!semifinalVacancy
-    || !stage.standings.some(standing => standing.teamId === semifinalVacancy.bronzeTeam && standing.rank === 3)
-    || stage.standings.some(standing => standing.rank === 2)) return null
-  if (finalDoubleLoss) {
-    return '決賽雙負後，唯一合格半決賽敗隊沿原季軍空位取得第三名；冠亞軍空缺'
-  }
-  const champion = stage.standings.find(standing => standing.rank === 1)?.teamId
-  if (!champion || !semifinalVacancy.winners.includes(champion)) return null
-  const semifinalRound = stage.rounds.find(round => round.roundNumber === Math.log2(bracketSize) - 1)
-  const semifinalDoubleLoss = semifinalRound?.matches.some(isDoubleLossVacancy) ?? false
-  if (semifinalVacancy.winners.length === 1 && semifinalDoubleLoss) {
-    return '半決賽雙負後，唯一勝者輪空取得冠軍；正常敗者輪空取得季軍，亞軍空缺'
-  }
-  return '淘汰空位沿原半決賽位置傳播；正常敗隊保留季軍名次，亞軍空缺'
-}
-
-function isDoubleLossVacancy(match: TournamentViewMatch): boolean {
-  return match.result?.type === 'doubleLoss'
-    || (match.result?.type === 'noShow' && match.result.winnerId === null
-      && match.result.absentTeams.length === 2)
-}
-
-function parseStage(input: unknown): TournamentViewStage | null {
+function parseStage(input: unknown): Omit<TournamentViewStage, 'assessment'> | null {
   const value = exactRecord(input, [
     'config', 'status', 'rounds', 'standings', 'corrections', 'lastScheduleError',
     'scheduleGeneration', 'supersededRounds', 'teams', 'doubleState', 'rankingTieDecisions', 'resolution',

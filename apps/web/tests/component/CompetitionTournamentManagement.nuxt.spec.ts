@@ -4,9 +4,10 @@ import { afterEach, beforeEach, expect, it, vi } from 'vitest'
 import type { StageConfig } from '../../shared/competition'
 import type { CompetitionRegistrationState } from '../../app/lib/competition-registration'
 import CompetitionTournamentManagement from '~/components/CompetitionTournamentManagement.vue'
+import { withTournamentStageFacts } from '../fixtures/tournament-assessment'
 
 const fetchMock = vi.hoisted(() => vi.fn())
-mockNuxtImport('$fetch', () => fetchMock)
+mockNuxtImport('$fetch', () => async (...args: unknown[]) => withTournamentStageFacts(await fetchMock(...args)))
 const teamIds: [string, string] = ['b45abe94-a252-4e3d-bff2-7d26c6e2fabc', '535ec115-7bf4-4bbf-b0d3-c6e0ee76c8b7']
 const stageId = 'cd0d3e8b-7c87-46c1-b50d-deb6fb2ad5fa'
 const commandId = 'b9ae10af-54da-429e-a10c-5e8de84021a2'
@@ -34,7 +35,10 @@ function stage(): StageConfig {
 }
 // 按 Rust camelCase 的 DTO fixture；此檔不證明 DO／native 或實際 390px 幾何。
 function publicSnapshot(config: StageConfig = stage()) {
-  return { tournamentId: 'competition a', stages: [{ config, status: 'active', resolution: null, rankingTieDecisions: [], rounds: [], standings: [], corrections: [],
+  return { tournamentId: 'competition a', stages: [{ config, status: 'active', resolution: null, rankingTieDecisions: [], rounds: [], standings: config.teams.map(team => ({
+    teamId: team.teamId, matchPoints: '0', wins: 0, draws: 0, losses: 0, gameWins: 0, gameLosses: 0,
+    netGameWins: 0, opponentWinRateBasisPoints: null, opponentWinScore: '0', opponentLossScore: '0', dropped: false, rank: null,
+  })), corrections: [],
     lastScheduleError: null, scheduleGeneration: 0, supersededRounds: [],
     teams: Object.fromEntries(config.teams.map(team => [team.teamId, { seed: team.seed, dropped: false, hadBye: false }])),
     doubleState: config.format === 'doubleElimination' ? { phase: 'winners', winnersPool: [...teamIds], losersWaiting: [], lowerPool: [],

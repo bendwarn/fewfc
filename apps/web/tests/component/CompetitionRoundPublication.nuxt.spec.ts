@@ -5,9 +5,10 @@ import type { CompetitionRegistrationState } from '../../app/lib/competition-reg
 import { formatCompetitionDeadline } from '../../app/lib/competition-registration'
 import { competitionRoundReadyCutoffMs } from '../../shared/competition-game-room'
 import CompetitionRoundPublication from '~/components/CompetitionRoundPublication.vue'
+import { withTournamentStageFacts } from '../fixtures/tournament-assessment'
 
 const fetchMock = vi.hoisted(() => vi.fn())
-mockNuxtImport('$fetch', () => fetchMock)
+mockNuxtImport('$fetch', () => async (...args: unknown[]) => withTournamentStageFacts(await fetchMock(...args)))
 
 const competitionId = 'competition-a'
 const organizerId = 'organizer-a'
@@ -61,7 +62,10 @@ function tournament(revision = 17, id = competitionId, rounds: unknown[] = [{
       clockConfig: { mainTimeMs: 300_000, actionTimeMs: 30_000, outOfTurnChoiceTimeMs: 15_000 },
       swissRounds: null, swissPolicy: null },
       status: 'active', rounds,
-      standings: [], resolution: null, rankingTieDecisions: [], corrections: [], lastScheduleError: null,
+      standings: ['team-a', 'team-b', 'team-c', 'team-d'].map(teamId => ({ teamId,
+        matchPoints: '0', wins: 0, draws: 0, losses: 0, gameWins: 0, gameLosses: 0, netGameWins: 0,
+        opponentWinRateBasisPoints: null, opponentWinScore: '0', opponentLossScore: '0', dropped: false, rank: null,
+      })), resolution: null, rankingTieDecisions: [], corrections: [], lastScheduleError: null,
       scheduleGeneration: 0, supersededRounds: [],
       teams: {
         'team-a': { seed: 1, dropped: false, hadBye: false },

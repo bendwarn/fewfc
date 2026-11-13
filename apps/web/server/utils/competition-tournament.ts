@@ -1,6 +1,7 @@
 import { createError, type H3Event } from 'h3'
 import type { CompetitionRoomTournamentReadRequest, CompetitionRoomTournamentReadValue } from '../../shared/competition-room'
 import type { JsonValue } from '../../shared/competition'
+import { parseTournamentStageAssessments } from '../../shared/tournament-assessment'
 import { workerEnv } from './worker-env'
 
 type TournamentReadRpc = {
@@ -197,7 +198,7 @@ function projectReadResult(
       || typeof value.revision !== 'number'
       || !Number.isSafeInteger(value.revision)
       || value.revision < 1
-      || !hasExactKeys(value.projection, ['ok', 'operation', 'public'])
+      || !hasExactKeys(value.projection, ['ok', 'operation', 'public', 'stageFacts'])
       || value.projection.ok !== true
       || value.projection.operation !== 'tournamentView') {
       throw httpError('competitionRoomProtocolError')
@@ -216,11 +217,15 @@ function projectReadResult(
       || !isJsonPublicValue(publicValue)) {
       throw httpError('competitionRoomProtocolError')
     }
+    const stageFacts = parseTournamentStageAssessments(value.projection.stageFacts, publicValue.stages)
+    if (!stageFacts || !isJsonPublicValue(value.projection.stageFacts)) {
+      throw httpError('competitionRoomProtocolError')
+    }
 
     return {
       competitionId: value.competitionId,
       revision: value.revision,
-      projection: { ok: true, operation: 'tournamentView', public: publicValue as JsonValue },
+      projection: { ok: true, operation: 'tournamentView', public: publicValue as JsonValue, stageFacts },
       ...(Object.hasOwn(value, 'publication') ? { publication: value.publication as CompetitionRoomTournamentReadValue['publication'] } : {}),
     }
   } catch (error) {

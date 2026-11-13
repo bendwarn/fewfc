@@ -238,6 +238,7 @@ pub enum CompetitionOperation {
     TournamentPreviewQualifiedStage(QualifiedStageBridgeInput),
     TournamentCreateQualifiedStage(QualifiedStageBridgeInput),
     TournamentView(TournamentViewInput),
+    TournamentAssessCompletion(TournamentViewInput),
     TournamentAdjudicateRankingTie {
         stage_id: String,
         ordered_team_ids: Vec<ScheduleTeamId>,
@@ -769,6 +770,7 @@ pub fn handle_request_json(input: &str) -> Result<String, String> {
             | CompetitionOperation::ClockCheckpointMetadata(_)
             | CompetitionOperation::RegistrationResolveSettings(_)
             | CompetitionOperation::TournamentPreviewQualifiedStage(_)
+            | CompetitionOperation::TournamentAssessCompletion(_)
     ) {
         serde_json::from_str::<Value>(input)
             .map_err(|error| error.to_string())?
@@ -1112,6 +1114,36 @@ fn dispatch(
             // 只在公開投影中由正式賽果重算排名，不改動唯讀查詢回傳的 serverState。
             let public =
                 serde_json::to_value(tournament.ranking_projection()).map_err(serialize_error)?;
+            Ok((public, None, state))
+        }
+        CompetitionOperation::TournamentAssessCompletion(_) => {
+            let tournament = state.tournament.as_ref().ok_or_else(|| {
+                BridgeError::new("missingState", "state", "缺少 tournament snapshot")
+            })?;
+            let (assessment, projection) =
+                tournament
+                    .assess_completion_with_projection()
+                    .map_err(|error| {
+                        use crate::tournament::TournamentAssessmentError;
+                        match error {
+                            TournamentAssessmentError::RankingCheckpoint(_) => BridgeError::new(
+                                "rankingCheckpointMismatch",
+                                "tournament",
+                                "原始排名與賽果不一致",
+                            ),
+                            TournamentAssessmentError::InvalidFinishedStage { .. } => {
+                                BridgeError::new(
+                                    "invalidFinishedStage",
+                                    "tournament",
+                                    "已結束階段的賽程資料矛盾",
+                                )
+                            }
+                        }
+                    })?;
+            let public = json!({
+                "tournament": projection,
+                "assessment": assessment,
+            });
             Ok((public, None, state))
         }
         CompetitionOperation::TournamentAdjudicateRankingTie {
@@ -1689,6 +1721,7 @@ fn operation_name(operation: &CompetitionOperation) -> String {
         }
         CompetitionOperation::TournamentCreateQualifiedStage(_) => "tournamentCreateQualifiedStage",
         CompetitionOperation::TournamentView(_) => "tournamentView",
+        CompetitionOperation::TournamentAssessCompletion(_) => "tournamentAssessCompletion",
         CompetitionOperation::TournamentAdjudicateRankingTie { .. } => {
             "tournamentAdjudicateRankingTie"
         }

@@ -1,4 +1,5 @@
 import { expect, test } from 'bun:test'
+import { withTournamentStageFacts } from '../../tests/fixtures/tournament-assessment'
 import type { CompetitionRegistrationState } from './competition-registration'
 import {
   parseCompetitionTournamentViewResponse,
@@ -103,7 +104,10 @@ function tournament(
       clockConfig: { mainTimeMs: 300_000, actionTimeMs: 30_000, outOfTurnChoiceTimeMs: 15_000 },
       swissRounds: null, swissPolicy: null,
     },
-    status, rounds: id === stageId ? rounds : [], standings: [], resolution: null, rankingTieDecisions: [], corrections: [],
+    status, rounds: id === stageId ? rounds : [], standings: ['team-a', 'team-b', 'team-c', 'team-d', 'team-e'].map(teamId => ({
+      teamId, matchPoints: '0', wins: 0, draws: 0, losses: 0, gameWins: 0, gameLosses: 0,
+      netGameWins: 0, opponentWinRateBasisPoints: null, opponentWinScore: '0', opponentLossScore: '0', dropped: false, rank: null,
+    })), resolution: null, rankingTieDecisions: [], corrections: [],
     lastScheduleError: options.warning && id === stageId ? 'stale schedule' : null,
     scheduleGeneration: 0, supersededRounds: [],
     teams: {
@@ -126,10 +130,10 @@ function tournament(
   for (let index = 0; index < (options.finishedStageCount ?? 0); index += 1) {
     stages.push(finishedRoundRobinStage(`finished-stage-${index + 1}`))
   }
-  return parseCompetitionTournamentViewResponse({
+  return parseCompetitionTournamentViewResponse(withTournamentStageFacts({
     competitionId, revision: options.revision ?? 17,
     projection: { ok: true, operation: 'tournamentView', public: { tournamentId: competitionId, stages } },
-  }, competitionId)
+  }), competitionId)
 }
 
 function currentRound() {

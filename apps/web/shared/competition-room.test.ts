@@ -430,12 +430,13 @@ test('E6d1b tournament query contract is exact and carries only the complete pub
         tournamentId: 'competition-1',
         stages: [{ config: { clockConfig: { mainTimeMs: 300_000 } }, rounds: [] }],
       },
+      stageFacts: [],
     },
   } satisfies CompetitionRoomTournamentReadValue
 
   expect(Object.keys(request).sort()).toEqual(['callerUserId', 'competitionId'])
   expect(Object.keys(value).sort()).toEqual(['competitionId', 'projection', 'revision'])
-  expect(Object.keys(value.projection).sort()).toEqual(['ok', 'operation', 'public'])
+  expect(Object.keys(value.projection).sort()).toEqual(['ok', 'operation', 'public', 'stageFacts'])
   expect(JSON.stringify(value)).toContain('clockConfig')
   expect(JSON.stringify(value)).not.toMatch(
     /"(?:serverState|private|roster|captain|members|decks|binding|history|commandId|callerUserId)"\s*:/,

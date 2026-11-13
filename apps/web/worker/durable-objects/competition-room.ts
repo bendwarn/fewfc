@@ -26,6 +26,7 @@ import {
   type GameTerminalEvidence,
 } from '../../shared/competition'
 import { parseCompetitionAnnouncementPlan } from '../../shared/competition-announcement-plan'
+import { parseTournamentAssessment, type TournamentAssessment } from '../../shared/tournament-assessment'
 import {
   clockCheckpointDigest, clockTimeoutId,
   isCompetitionRoomAnnounceRoundRequest,
@@ -6106,6 +6107,33 @@ export class CompetitionRoom extends DurableObject<CompetitionRoomEnv> {
     return 'none'
   }
 
+  private async assessTournament(
+    state: CompetitionServerState,
+    current: CompetitionTournamentReadMetaRow,
+  ): Promise<TournamentAssessment | null> {
+    if (!isJsonObject(state.tournament)
+      || !isTournamentForCompetition(state.tournament, current.competition_id)) return null
+    const expectedState = structuredClone(state)
+    let response: CompetitionEngineResponse
+    try {
+      response = await this.engine({
+        serverActor: actorFor('organizer', current.organizer_user_id),
+        trustedTimeMs: current.updated_trusted_time_ms,
+        operation: { type: 'tournamentAssessCompletion' },
+        serverState: structuredClone(state),
+      })
+    } catch { return null }
+    const raw = response as unknown
+    if (!isJsonObject(raw) || !hasExactKeys(raw, ['ok', 'operation', 'public', 'serverState'])
+      || raw.ok !== true || raw.operation !== 'tournamentAssessCompletion'
+      || !sameJson(raw.serverState, expectedState) || !isJsonObject(raw.public)
+      || !hasExactKeys(raw.public, ['tournament', 'assessment'])
+      || !isJsonObject(raw.public.tournament)
+      || !sameJson(raw.public.tournament, expectedState.tournament)
+      || containsPrivateRosterFields(raw.public.tournament)) return null
+    return parseTournamentAssessment(raw.public.assessment, expectedState.tournament)
+  }
+
   /** 只在全部公告階段收尾、賽果閉合且正式名次不再待裁決時凍結公開資料。 */
   private async completeCompetitionIfReady(): Promise<void> {
     const current = this.meta()
@@ -6116,8 +6144,10 @@ export class CompetitionRoom extends DurableObject<CompetitionRoomEnv> {
     if (!isJsonObject(tournament) || !Array.isArray(tournament.stages)
       || !isLockedRegistrationCheckpoint(state.registration, current.organizer_user_id)) return
     const stages = tournament.stages
-    if (stages.length === 0
-      || !stages.every(stage => this.isCompletionCandidateStage(stage))) return
+    if (stages.length === 0 || stages.some(stage => !isJsonObject(stage) || stage.status !== 'finished')) return
+
+    const assessment = await this.assessTournament(state, current)
+    if (!assessment?.ready) return
 
     const registration = state.registration as JsonObject
     const registrationAnnouncement = registration.announcement as JsonObject
@@ -6150,11 +6180,10 @@ export class CompetitionRoom extends DurableObject<CompetitionRoomEnv> {
       const announced = plan.stages[index]
       const stage = stages[index]
       const stageConfig = isJsonObject(stage) && isJsonObject(stage.config) ? stage.config : null
-      if (!announced || !this.isCompletionCandidateStage(stage)
+      if (!announced || !isJsonObject(stage)
         || !stageConfig || stageConfig.stageId !== announced.stageId
         || !Array.isArray(stageConfig.teams)) return
 
-      const stageTeamIds = stageConfig.teams.map(team => (team as JsonObject).teamId as string)
       for (const team of stageConfig.teams) {
         if (isJsonObject(team) && nonEmpty(team.teamId)) participatingTeamIds.add(team.teamId)
       }
@@ -6185,478 +6214,6 @@ export class CompetitionRoom extends DurableObject<CompetitionRoomEnv> {
         current.competition_id, completedAt, JSON.stringify(lockedDecks), JSON.stringify(replayRefs),
       )
     })
-  }
-
-  private isCompletionCandidateStage(value: unknown): value is JsonObject {
-    if (!isJsonObject(value) || value.status !== 'finished' || value.lastScheduleError !== null
-      || !isJsonObject(value.config) || !Array.isArray(value.config.teams)
-      || !value.config.teams.every(team => isJsonObject(team) && nonEmpty(team.teamId))
-      || !Array.isArray(value.rounds) || !value.rounds.every(round => (
-        isJsonObject(round) && Array.isArray(round.matches)
-      )) || !Array.isArray(value.standings) || !Array.isArray(value.rankingTieDecisions)) return false
-
-    const config = value.config as JsonObject
-    const stages = value.rounds as JsonObject[]
-    const standings = value.standings as JsonValue[]
-    const stageTeamIds = (config.teams as JsonObject[]).map(team => team.teamId as string)
-    const standingTeamIds = standings.map(standing => (
-      isJsonObject(standing) && nonEmpty(standing.teamId) ? standing.teamId : ''
-    ))
-    if (new Set(stageTeamIds).size !== stageTeamIds.length
-      || standingTeamIds.some(teamId => !teamId)
-      || new Set(standingTeamIds).size !== standingTeamIds.length
-      || standingTeamIds.length !== stageTeamIds.length
-      || stageTeamIds.some(teamId => !standingTeamIds.includes(teamId))) return false
-
-    const matches = stages.flatMap(round => round.matches as JsonValue[])
-    if (!matches.every(match => {
-      if (!isJsonObject(match)) return false
-      if (match.status === 'completed') return isJsonObject(match.result)
-      return match.status === 'cancelled' && nonEmpty(match.cancellationReason)
-    })) return false
-
-    if (stageTeamIds.length === 0) {
-      return value.resolution !== null && isJsonObject(value.resolution)
-        && hasExactKeys(value.resolution, ['type', 'reason'])
-        && value.resolution.type === 'cancelled'
-        && value.resolution.reason === 'noQualifiedParticipants'
-        && matches.length === 0 && standings.length === 0
-    }
-    if (stageTeamIds.length === 1) {
-      return value.resolution !== null && isJsonObject(value.resolution)
-        && hasExactKeys(value.resolution, ['type', 'teamId'])
-        && value.resolution.type === 'winnerWithoutMatch'
-        && value.resolution.teamId === stageTeamIds[0]
-        && matches.length === 0 && standings.length === 1
-        && isJsonObject(standings[0]) && standings[0].teamId === stageTeamIds[0]
-        && standings[0].rank === 1
-    }
-    if (value.resolution !== null) return false
-    if (this.isClosedEliminationVacancy(value)) return true
-
-    const ranks = standings.map(row => isJsonObject(row) ? row.rank : null)
-    return ranks.length > 0
-      && ranks.every(safePositiveIntegerValue)
-      && new Set(ranks).size === ranks.length
-  }
-
-  /** 已結清淘汰賽只允許雙負明確退出隊伍保留空名次。 */
-  private isClosedEliminationVacancy(stage: JsonObject): boolean {
-    if (!isJsonObject(stage.config)
-      || (stage.config.format !== 'singleElimination' && stage.config.format !== 'doubleElimination')
-      || !Array.isArray(stage.rounds) || !Array.isArray(stage.standings)) return false
-    const format = stage.config.format
-    const rounds = stage.rounds as JsonValue[]
-    const stageTeamIds = Array.isArray(stage.config.teams)
-      ? stage.config.teams.flatMap(team => isJsonObject(team) && nonEmpty(team.teamId) ? [team.teamId] : [])
-      : []
-    const stageTeamIdSet = new Set(stageTeamIds)
-    if (stageTeamIdSet.size !== stageTeamIds.length) return false
-    const matches = rounds.flatMap(round => (
-      isJsonObject(round) && Array.isArray(round.matches) ? round.matches : []
-    ))
-    const matchParticipants = (match: JsonObject): [string, string] | null => (
-      isTeamPair(match.participants) ? match.participants : null
-    )
-    const isDoubleLoss = (match: JsonObject): boolean => {
-      if (match.status !== 'completed' || !isJsonObject(match.result)) return false
-      const result = match.result
-      const participants = matchParticipants(match)
-      return result.type === 'doubleLoss'
-        || (result.type === 'noShow' && result.winnerId === null
-          && isTeamPair(result.absentTeams) && participants !== null
-          && sameTeamSet(result.absentTeams, participants))
-    }
-    const exitedByDoubleLoss = new Set<string>()
-    const exitRounds = new Map<string, number>()
-    const exitKinds = new Map<string, string>()
-    for (const match of matches) {
-      if (!isJsonObject(match) || match.status !== 'completed' || !isJsonObject(match.result)) continue
-      const result = match.result
-      if (isDoubleLoss(match)) {
-        const participants = matchParticipants(match)
-        if (!participants || !safePositiveIntegerValue(match.roundNumber)
-          || participants.some(teamId => !stageTeamIdSet.has(teamId))) return false
-        for (const teamId of participants) {
-          exitedByDoubleLoss.add(teamId)
-          exitRounds.set(teamId, match.roundNumber)
-        }
-      } else if (result.type === 'win' || result.type === 'forfeit') {
-        const participants = matchParticipants(match)
-        if (!participants || !nonEmpty(result.winnerId) || !nonEmpty(result.loserId)
-          || result.winnerId === result.loserId || !participants.includes(result.winnerId)
-          || !participants.includes(result.loserId) || !stageTeamIdSet.has(result.winnerId)
-          || !stageTeamIdSet.has(result.loserId) || !safePositiveIntegerValue(match.roundNumber)) return false
-        exitRounds.set(result.loserId, match.roundNumber)
-        exitKinds.set(result.loserId, typeof match.kind === 'string' ? match.kind : '')
-      } else if (result.type === 'noShow' && nonEmpty(result.winnerId)
-        && Array.isArray(result.absentTeams) && result.absentTeams.length === 1
-        && nonEmpty(result.absentTeams[0]) && result.absentTeams[0] !== result.winnerId) {
-        const participants = matchParticipants(match)
-        const winnerId = result.winnerId
-        const absentTeam = result.absentTeams[0]
-        if (!nonEmpty(winnerId) || !nonEmpty(absentTeam) || !participants
-          || !participants.includes(winnerId) || !participants.includes(absentTeam)
-          || !stageTeamIdSet.has(winnerId) || !stageTeamIdSet.has(absentTeam)
-          || !safePositiveIntegerValue(match.roundNumber)) return false
-        exitRounds.set(absentTeam, match.roundNumber)
-        exitKinds.set(absentTeam, typeof match.kind === 'string' ? match.kind : '')
-      }
-    }
-    if (exitedByDoubleLoss.size === 0) return false
-
-    const lastRound = rounds.at(-1)
-    const lastMatches = isJsonObject(lastRound) && Array.isArray(lastRound.matches)
-      ? lastRound.matches.filter(isJsonObject) : []
-    const finalStandardMatches = lastMatches.filter(match => !Object.hasOwn(match, 'purpose'))
-    const bronzeMatches = lastMatches.filter(match => match.purpose === 'bronze')
-    const teamCount = stageTeamIds.length
-    const finalRoundNumber = Math.ceil(Math.log2(teamCount))
-    const finalMatch = finalStandardMatches[0]
-    const bronzeMatch = bronzeMatches[0]
-    const finalParticipants = finalMatch ? matchParticipants(finalMatch) : null
-    const bronzeParticipants = bronzeMatch ? matchParticipants(bronzeMatch) : null
-    const doubleFinalMatch = finalStandardMatches[0]
-    const doubleFinalParticipants = doubleFinalMatch ? matchParticipants(doubleFinalMatch) : null
-    const finalRoundHasBronzeResult = Boolean(bronzeMatch && bronzeParticipants && finalParticipants
-      && bronzeParticipants.every(teamId => stageTeamIdSet.has(teamId))
-      && bronzeParticipants.every(teamId => !finalParticipants.includes(teamId))
-      && bronzeMatch.status === 'completed' && isJsonObject(bronzeMatch.result))
-    const singleEliminationBronzeByeTeam = (): string | null => {
-      if (teamCount < 4 || bronzeMatches.length !== 0 || !finalParticipants
-        || !isJsonObject(lastRound) || lastRound.roundNumber !== finalRoundNumber) return null
-      const semifinalRound = rounds.at(-2)
-      if (!isJsonObject(semifinalRound) || semifinalRound.kind !== 'main'
-        || semifinalRound.roundNumber !== finalRoundNumber - 1
-        || !Array.isArray(semifinalRound.matches)) return null
-      const semifinalMatches = semifinalRound.matches.filter(match => isJsonObject(match)
-        && !Object.hasOwn(match, 'purpose'))
-      if (semifinalMatches.length !== 2 || semifinalRound.matches.length !== semifinalMatches.length) return null
-      const semifinalWinners: string[] = []
-      const semifinalLosers: string[] = []
-      const semifinalParticipants: string[] = []
-      let byeCount = 0
-      for (const match of semifinalMatches) {
-        if (!isJsonObject(match) || match.kind !== 'main'
-          || match.roundNumber !== semifinalRound.roundNumber
-          || match.status !== 'completed' || !isJsonObject(match.result)) return null
-        const result = match.result
-        if (result.type === 'bye') {
-          const participants = Array.isArray(match.participants) ? match.participants : null
-          if (!participants || participants.length !== 1 || !nonEmpty(result.teamId)
-            || participants[0] !== result.teamId || !stageTeamIdSet.has(result.teamId)) return null
-          semifinalParticipants.push(result.teamId)
-          byeCount += 1
-          semifinalWinners.push(result.teamId)
-        } else if (result.type === 'win' || result.type === 'forfeit') {
-          const participants = matchParticipants(match)
-          if (!participants || !nonEmpty(result.winnerId) || !nonEmpty(result.loserId)
-            || result.winnerId === result.loserId || !participants.includes(result.winnerId)
-            || !participants.includes(result.loserId) || !stageTeamIdSet.has(result.winnerId)
-            || !stageTeamIdSet.has(result.loserId)) return null
-          semifinalParticipants.push(...participants)
-          semifinalWinners.push(result.winnerId)
-          semifinalLosers.push(result.loserId)
-        } else if (result.type === 'noShow' && nonEmpty(result.winnerId)
-          && Array.isArray(result.absentTeams) && result.absentTeams.length === 1
-          && nonEmpty(result.absentTeams[0])) {
-          const absentTeam = result.absentTeams[0]
-          const participants = matchParticipants(match)
-          if (!participants || !participants.includes(result.winnerId)
-            || !participants.includes(absentTeam) || !stageTeamIdSet.has(result.winnerId)
-            || !stageTeamIdSet.has(absentTeam)) return null
-          semifinalParticipants.push(...participants)
-          semifinalWinners.push(result.winnerId)
-          semifinalLosers.push(absentTeam)
-        } else {
-          return null
-        }
-      }
-      const bronzeCandidate = semifinalLosers[0]
-      if (byeCount !== 1 || semifinalWinners.length !== 2 || semifinalLosers.length !== 1
-        || !nonEmpty(bronzeCandidate)
-        || new Set(semifinalParticipants).size !== semifinalParticipants.length
-        || semifinalWinners.includes(bronzeCandidate)
-        || !sameTeamSet(semifinalWinners, finalParticipants)) return null
-      return bronzeCandidate
-    }
-    const bronzeByeTeam = singleEliminationBronzeByeTeam()
-    const doubleState = isJsonObject(stage.doubleState) ? stage.doubleState : null
-    const hasGrandFinalRound = rounds.some(round => isJsonObject(round)
-      && (round.kind === 'grandFinal' || round.kind === 'grandFinalReset'))
-    const winnersChampion = doubleState?.winnersChampion
-    const losersChampion = doubleState?.losersChampion
-    const grandFinalWinner = doubleState?.grandFinalWinner
-    const hasValidChampionIds = [winnersChampion, losersChampion, grandFinalWinner].every(teamId => (
-      teamId === null || nonEmpty(teamId) && stageTeamIdSet.has(teamId)
-    ))
-    const championCandidates = [winnersChampion, losersChampion].filter(nonEmpty)
-    const singleFinalDoubleLoss = format === 'singleElimination'
-      && isJsonObject(lastRound) && lastRound.kind === 'main'
-      && lastRound.roundNumber === finalRoundNumber
-      && safePositiveIntegerValue(lastRound.roundNumber)
-      && lastMatches.length === 1 + bronzeMatches.length
-      && finalStandardMatches.length === 1
-      && finalMatch !== undefined
-      && finalMatch.roundNumber === finalRoundNumber && finalMatch.kind === 'main'
-      && finalParticipants !== null
-      && finalParticipants.every(teamId => stageTeamIdSet.has(teamId))
-      && isDoubleLoss(finalMatch)
-      && (teamCount >= 4
-        ? (bronzeMatches.length === 1 && finalRoundHasBronzeResult)
-          || (bronzeMatches.length === 0 && bronzeByeTeam !== null)
-        : bronzeMatches.length === 0)
-    const doubleFinalDoubleLoss = format === 'doubleElimination'
-      && isJsonObject(lastRound)
-      && (lastRound.kind === 'grandFinal' || lastRound.kind === 'grandFinalReset')
-      && lastMatches.length === 1 && finalStandardMatches.length === 1
-      && doubleFinalMatch !== undefined
-      && safePositiveIntegerValue(lastRound.roundNumber)
-      && doubleFinalMatch.roundNumber === lastRound.roundNumber
-      && doubleFinalMatch.kind === lastRound.kind
-      && doubleFinalParticipants !== null
-      && doubleFinalParticipants.every(teamId => stageTeamIdSet.has(teamId))
-      && isDoubleLoss(doubleFinalMatch)
-      && doubleState !== null && doubleState.phase === 'finished'
-      && hasValidChampionIds && grandFinalWinner === null
-      && championCandidates.length === 2
-      && sameTeamSet(championCandidates, doubleFinalParticipants)
-    const closedDoubleStatePools = doubleState !== null
-      && ['winnersPool', 'losersWaiting', 'lowerPool'].every(key => Array.isArray(doubleState[key]))
-      && ['winnersPool', 'losersWaiting', 'lowerPool'].flatMap(key => (
-        Array.isArray(doubleState[key]) ? doubleState[key] : []
-      )).every(teamId => teamId === null || nonEmpty(teamId)
-        && stageTeamIdSet.has(teamId) && championCandidates.includes(teamId))
-    const doubleEliminationWithoutFinal = format === 'doubleElimination'
-      && doubleState !== null && doubleState.phase === 'finished'
-      && !hasGrandFinalRound
-      && hasValidChampionIds
-      && closedDoubleStatePools
-      && ((championCandidates.length === 1 && grandFinalWinner === championCandidates[0])
-        || (championCandidates.length === 0 && grandFinalWinner === null))
-    const mayLeaveNonExitRanksBlank = singleFinalDoubleLoss || doubleEliminationWithoutFinal
-    const rankExitRounds = new Map<number, number[]>()
-    for (const value of stage.standings) {
-      if (!isJsonObject(value) || !nonEmpty(value.teamId) || typeof value.dropped !== 'boolean') return false
-      if (exitedByDoubleLoss.has(value.teamId)) {
-        if (!value.dropped || value.rank !== null) return false
-        continue
-      }
-      if (value.dropped) return false
-      if (value.rank === null) {
-        if (!mayLeaveNonExitRanksBlank) return false
-        continue
-      }
-      if (!safePositiveIntegerValue(value.rank)) return false
-      const rankExitRound = exitRounds.get(value.teamId)
-      const tiedRanks = rankExitRounds.get(value.rank) ?? []
-      tiedRanks.push(rankExitRound ?? 0)
-      rankExitRounds.set(value.rank, tiedRanks)
-    }
-    const sameExitRoundRanks = [...rankExitRounds.values()].every(teamExitRounds => teamExitRounds.length <= 1
-      || teamExitRounds[0] !== 0 && teamExitRounds.every(round => round === teamExitRounds[0]))
-    if (!sameExitRoundRanks) return false
-    if (singleFinalDoubleLoss) {
-      const misplacedFinalRank = stage.standings.some(value => isJsonObject(value)
-        && (value.rank === 1 || value.rank === 2))
-      if (misplacedFinalRank) return false
-      const expectedRanks = new Map<string, number>()
-      if (bronzeMatches.length === 1 && bronzeMatch && bronzeParticipants
-        && isJsonObject(bronzeMatch.result)) {
-        if (!isDoubleLoss(bronzeMatch)) {
-          const result = bronzeMatch.result
-          const bronzeWinner = result.type === 'win' || result.type === 'forfeit'
-            ? result.winnerId
-            : result.type === 'noShow' && nonEmpty(result.winnerId) ? result.winnerId : null
-          const bronzeLoser = result.type === 'win' || result.type === 'forfeit'
-            ? result.loserId
-            : result.type === 'noShow' && Array.isArray(result.absentTeams)
-              && result.absentTeams.length === 1 ? result.absentTeams[0] : null
-          if (!nonEmpty(bronzeWinner) || !nonEmpty(bronzeLoser)
-            || bronzeWinner === bronzeLoser || !stageTeamIdSet.has(bronzeWinner)
-            || !stageTeamIdSet.has(bronzeLoser) || !bronzeParticipants.includes(bronzeWinner)
-            || !bronzeParticipants.includes(bronzeLoser)) return false
-          expectedRanks.set(bronzeWinner, 3)
-          expectedRanks.set(bronzeLoser, 4)
-        }
-      } else if (teamCount >= 4) {
-        if (bronzeMatches.length !== 0 || !bronzeByeTeam) return false
-        expectedRanks.set(bronzeByeTeam, 3)
-      } else if (bronzeMatches.length !== 0) {
-        return false
-      }
-      for (const value of stage.standings) {
-        if (!isJsonObject(value) || !nonEmpty(value.teamId)) return false
-        if (exitedByDoubleLoss.has(value.teamId)) continue
-        let expectedRank = expectedRanks.get(value.teamId) ?? null
-        if (expectedRank === null) {
-          const exitRound = exitRounds.get(value.teamId)
-          if (exitRound !== undefined) {
-            const bracketGap = finalRoundNumber - exitRound
-            const bracketRank = bracketGap >= 0 ? 1 + 2 ** bracketGap : Number.NaN
-            expectedRank = safePositiveIntegerValue(bracketRank) ? bracketRank : null
-          }
-        }
-        if (value.rank !== expectedRank) return false
-      }
-      return true
-    }
-
-    // 同步推演單一敗者的輪空層，讓實際敗部輪次對應原槽位深度。
-    const doubleEliminationLowerRanksByRound = (): Map<number, number | null> | null => {
-      const firstWinnersRound = rounds.find(round => isJsonObject(round) && round.kind === 'winners')
-      if (!isJsonObject(firstWinnersRound) || !Array.isArray(firstWinnersRound.matches)) return null
-      const firstWinnersMatches = firstWinnersRound.matches.filter(
-        (match): match is JsonObject & { sequence: number } => (
-          isJsonObject(match) && !Object.hasOwn(match, 'purpose')
-            && safePositiveIntegerValue(match.sequence)
-        ),
-      )
-      if (firstWinnersMatches.length === 0) return null
-      const upperSlotCount = Math.max(...firstWinnersMatches.map(match => match.sequence))
-      let winnersPool = Array.from({ length: upperSlotCount }, () => false)
-      let freshLosers = Array.from({ length: upperSlotCount }, () => false)
-      const initialSequences = new Set<number>()
-      for (const match of firstWinnersMatches) {
-        const sequence = match.sequence
-        if (sequence > upperSlotCount || initialSequences.has(sequence)
-          || !Array.isArray(match.participants) || match.participants.length < 1
-          || match.participants.length > 2
-          || !match.participants.every((teamId: unknown) => (
-            nonEmpty(teamId) && stageTeamIdSet.has(teamId)
-          ))) return null
-        initialSequences.add(sequence)
-        winnersPool[sequence - 1] = true
-        freshLosers[sequence - 1] = match.participants.length === 2
-      }
-      const pairPresenceSlots = (slots: boolean[]) => {
-        const outputSlotCount = Math.ceil(slots.length / 2)
-        const winners = Array.from({ length: outputSlotCount }, () => false)
-        const losers = Array.from({ length: outputSlotCount }, () => false)
-        let eliminations = 0
-        for (let index = 0; index < slots.length; index += 2) {
-          const left = slots[index] ?? false
-          const right = slots[index + 1] ?? false
-          if (!left && !right) continue
-          const sequence = index / 2
-          winners[sequence] = true
-          if (left && right) {
-            losers[sequence] = true
-            eliminations += 1
-          }
-        }
-        return { winners, losers, eliminations }
-      }
-      const activeSlots = (slots: boolean[]) => slots.filter(Boolean).length
-      let losersWaiting: boolean[] = []
-      let lowerPool: boolean[] = []
-      let lowerEliminations = 0
-      let phase: 'winners' | 'losers' = 'winners'
-      const lowerRanks: Array<number | null> = []
-      const actualLowerRounds = rounds.filter(
-        (round): round is JsonObject => isJsonObject(round) && round.kind === 'losers',
-      )
-      const lowerDepthByRound = new Map<number, number>()
-      let winnersDepth = 0
-      let lowerDepth = 0
-      for (const round of rounds) {
-        if (!isJsonObject(round)) continue
-        if (round.kind === 'winners') {
-          winnersDepth += 1
-        } else if (round.kind === 'losers') {
-          lowerDepth = Math.max(lowerDepth + 1, winnersDepth)
-          if (!safePositiveIntegerValue(round.roundNumber)) return null
-          lowerDepthByRound.set(round.roundNumber, lowerDepth)
-        }
-      }
-      const maxOriginalLowerDepth = Math.max(0, ...lowerDepthByRound.values())
-      for (let step = 0; step < teamCount * 4 + 16
-        && lowerRanks.length < maxOriginalLowerDepth; step += 1) {
-        if (phase === 'winners') {
-          losersWaiting.push(...freshLosers)
-          freshLosers = []
-          const winnersCount = activeSlots(winnersPool)
-          const waitingCount = activeSlots(losersWaiting)
-          const lowerCount = activeSlots(lowerPool) + waitingCount
-          const shouldPlayLower = winnersCount > 1
-          const shouldCloseLower = winnersCount <= 1
-            && lowerCount > 1
-          if (shouldPlayLower || shouldCloseLower) {
-            const round = pairPresenceSlots([...lowerPool, ...losersWaiting])
-            lowerPool = round.winners
-            losersWaiting = []
-            lowerEliminations += round.eliminations
-            const rank = teamCount - lowerEliminations + 1
-            lowerRanks.push(safePositiveIntegerValue(rank) && rank <= teamCount ? rank : null)
-            phase = 'losers'
-          } else {
-            break
-          }
-        } else {
-          const winnersCount = activeSlots(winnersPool)
-          const lowerCount = activeSlots(lowerPool) + activeSlots(losersWaiting)
-          if (winnersCount > 1) {
-            const round = pairPresenceSlots(winnersPool)
-            winnersPool = round.winners
-            freshLosers = round.losers
-            phase = 'winners'
-          } else if (lowerCount > 1) {
-            const round = pairPresenceSlots([...lowerPool, ...losersWaiting])
-            lowerPool = round.winners
-            losersWaiting = []
-            lowerEliminations += round.eliminations
-            const rank = teamCount - lowerEliminations + 1
-            lowerRanks.push(safePositiveIntegerValue(rank) && rank <= teamCount ? rank : null)
-          } else {
-            break
-          }
-        }
-      }
-      if (lowerRanks.length < maxOriginalLowerDepth) return null
-      const lowerRanksByRound = new Map<number, number | null>()
-      for (const round of actualLowerRounds) {
-        if (!safePositiveIntegerValue(round.roundNumber)) return null
-        const originalDepth = lowerDepthByRound.get(round.roundNumber)
-        if (!safePositiveIntegerValue(originalDepth)) return null
-        const expectedRank = lowerRanks[originalDepth - 1]
-        if (expectedRank === undefined) return null
-        if (expectedRank !== null
-          && (!safePositiveIntegerValue(expectedRank) || expectedRank > teamCount)) return null
-        lowerRanksByRound.set(round.roundNumber, expectedRank)
-      }
-      return lowerRanksByRound
-    }
-
-    if (format === 'doubleElimination' && doubleState?.phase === 'finished') {
-      const lowerRanksByRound = doubleEliminationLowerRanksByRound()
-      if (!lowerRanksByRound) return false
-      for (const value of stage.standings) {
-        if (!isJsonObject(value) || !nonEmpty(value.teamId)) return false
-        if (exitedByDoubleLoss.has(value.teamId)) continue
-        const exitRound = exitRounds.get(value.teamId)
-        if (exitKinds.get(value.teamId) === 'losers' && exitRound !== undefined) {
-          const expectedRank = lowerRanksByRound.get(exitRound)
-          if (!safePositiveIntegerValue(expectedRank) || value.rank !== expectedRank) return false
-        } else if (!hasGrandFinalRound) {
-          const expectedRank = nonEmpty(grandFinalWinner) && value.teamId === grandFinalWinner ? 1 : null
-          if (value.rank !== expectedRank) return false
-        }
-      }
-    }
-
-    if (doubleFinalDoubleLoss) {
-      return true
-    }
-    if (doubleEliminationWithoutFinal) {
-      if (nonEmpty(grandFinalWinner)) {
-        if (stage.standings.filter(value => isJsonObject(value) && value.rank === 1).length !== 1
-          || !stage.standings.some(value => isJsonObject(value)
-            && value.teamId === grandFinalWinner && value.rank === 1)) return false
-        if (stage.standings.some(value => isJsonObject(value) && value.rank === 2)) return false
-      }
-      return true
-    }
-    return true
   }
 
   private competitionCompletion(competitionId: string): CompetitionCompletionRow | undefined {
@@ -8595,13 +8152,14 @@ export class CompetitionRoom extends DurableObject<CompetitionRoomEnv> {
       return roomFailure('invalidTournamentCheckpoint', 'tournament checkpoint is malformed')
     }
 
+    const queryState = structuredClone(serverState)
     let response: CompetitionEngineResponse
     try {
       response = await this.engine({
         serverActor: actorFor(caller?.role ?? 'organizer', request.callerUserId ?? current.organizer_user_id),
         trustedTimeMs: current.updated_trusted_time_ms,
         operation: { type: 'tournamentView' },
-        serverState,
+        serverState: structuredClone(queryState),
       })
     } catch {
       return roomFailure('engineProtocolError', 'tournament query failed')
@@ -8613,10 +8171,15 @@ export class CompetitionRoom extends DurableObject<CompetitionRoomEnv> {
       || raw.ok !== true || raw.operation !== 'tournamentView'
       || !isJsonObject(raw.public)
       || !isTournamentForCompetition(raw.public, current.competition_id)
-      || !sameJson(raw.public, serverState.tournament)
-      || !sameJson(raw.serverState, serverState)
+      || !sameJson(raw.public, queryState.tournament)
+      || !sameJson(raw.serverState, queryState)
       || containsPrivateRosterFields(raw.public)) {
       return roomFailure('invalidTournamentCheckpoint', 'tournament checkpoint is malformed')
+    }
+
+    const assessment = await this.assessTournament(queryState, current)
+    if (!assessment) {
+      return roomFailure('invalidTournamentCheckpoint', 'tournament assessment is malformed')
     }
 
     const publication: CompetitionRoomPublication | undefined = completion
@@ -8633,6 +8196,7 @@ export class CompetitionRoom extends DurableObject<CompetitionRoomEnv> {
         ok: true,
         operation: 'tournamentView',
         public: raw.public,
+        stageFacts: assessment.stages,
       },
       ...(publication ? { publication } : {}),
     })

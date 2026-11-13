@@ -610,6 +610,7 @@ async function wasmTournamentRoom(
       || request.operation.type === 'tournamentStartMatch'
       || request.operation.type === 'tournamentSubmitResult'
       || request.operation.type === 'tournamentView'
+      || request.operation.type === 'tournamentAssessCompletion'
       || request.operation.type === 'matchCreate'
       || request.operation.type === 'clockCreate'
       || request.operation.type === 'clockRuleGame'
@@ -5740,6 +5741,29 @@ test('v3 migration creates match rows and adds nullable audit identity', async (
   expect(rows).toEqual([{ match_id: 'legacy-match', revision: 0 }])
 })
 
+async function completionCandidateFromRust(
+  adapter: CompetitionEngineAdapter,
+  source: CompetitionServerState,
+  candidate: unknown,
+): Promise<boolean> {
+  const state = structuredClone(source)
+  if (!isJsonObject(state.tournament) || !Array.isArray(state.tournament.stages)
+    || !isJsonObject(candidate) || !isJsonObject(candidate.config)) return false
+  const stageId = candidate.config.stageId
+  const index = state.tournament.stages.findIndex(stage => isJsonObject(stage)
+    && isJsonObject(stage.config) && stage.config.stageId === stageId)
+  if (index < 0) return false
+  state.tournament.stages[index] = candidate
+  const response = await adapter({
+    serverActor: { type: 'organizer', playerId: 'organizer-1' },
+    trustedTimeMs: 0,
+    operation: { type: 'tournamentAssessCompletion' },
+    serverState: state,
+  })
+  return response.ok && isJsonObject(response.public) && isJsonObject(response.public.assessment)
+    && response.public.assessment.ready === true
+}
+
 test('ticket 16 accepts a finished single-elimination double loss with a completed Bronze match as an explicit vacancy', async () => {
   const setup = await e6c2aLockedMatch({ teamCount: 4, format: 'singleElimination',
     matchFormat: { type: 'firstToWins', value: 1 } })
@@ -5799,8 +5823,7 @@ test('ticket 16 accepts a finished single-elimination double loss with a complet
   const bronzeResult = bronze.result as JsonObject
   expect(ranks.get(bronzeResult.winnerId as string)).toBe(3)
   expect(ranks.get(bronzeResult.loserId as string)).toBe(4)
-  expect((setup.room as unknown as { isCompletionCandidateStage(stage: unknown): boolean })
-    .isCompletionCandidateStage(stage)).toBe(true)
+  expect(await completionCandidateFromRust(setup.adapter, state, stage)).toBe(true)
 })
 
 test('ticket 20 accepts a true final double loss after an earlier semifinal bye without inventing a bronze match', async () => {
@@ -5883,22 +5906,19 @@ test('ticket 20 accepts a true final double loss after an earlier semifinal bye 
   const standings = stage.standings as JsonObject[]
   expect(standings.find(standing => standing.teamId === bronzeByeTeam)?.rank).toBe(3)
   expect(standings.some(standing => standing.rank === 1 || standing.rank === 2)).toBe(false)
-  const isCompletionCandidate = (candidate: unknown) => (
-    (setup.room as unknown as { isCompletionCandidateStage(stage: unknown): boolean })
-      .isCompletionCandidateStage(candidate)
-  )
-  expect(isCompletionCandidate(stage)).toBe(true)
+  const isCompletionCandidate = (candidate: unknown) => completionCandidateFromRust(setup.adapter, state, candidate)
+  expect(await isCompletionCandidate(stage)).toBe(true)
 
   const pendingMatch = structuredClone(stage)
   const priorRound = (pendingMatch.rounds as JsonObject[])[0]!
   const firstMatch = (priorRound.matches as JsonObject[])[0]!
   firstMatch.status = 'pending'
   firstMatch.result = null
-  expect(isCompletionCandidate(pendingMatch)).toBe(false)
+  expect(await isCompletionCandidate(pendingMatch)).toBe(false)
 
   const unresolvedSchedule = structuredClone(stage)
   unresolvedSchedule.lastScheduleError = '待裁判處理'
-  expect(isCompletionCandidate(unresolvedSchedule)).toBe(false)
+  expect(await isCompletionCandidate(unresolvedSchedule)).toBe(false)
 })
 
 test('ticket 20 accepts closed double-elimination vacancy brackets as completion candidates', async () => {
@@ -5970,8 +5990,7 @@ test('ticket 20 accepts closed double-elimination vacancy brackets as completion
       && isJsonObject(value.config) && value.config.stageId === setup.stage.stageId)
     expect(terminalDoubleLossRecorded).toBe(true)
     expect(stage).toMatchObject({ status: 'finished', lastScheduleError: null })
-    expect((setup.room as unknown as { isCompletionCandidateStage(stage: unknown): boolean })
-      .isCompletionCandidateStage(stage)).toBe(true)
+    expect(await completionCandidateFromRust(setup.adapter, state, stage)).toBe(true)
   }
 })
 
@@ -6072,11 +6091,8 @@ test('ticket 20 accepts eight-team elimination vacancies and legitimate shared l
       expect(standings.some(standing => standing.rank === 1 && standing.dropped === false)).toBe(true)
       expect([...rankCounts.values()].some(count => count > 1)).toBe(true)
     }
-    const isCompletionCandidateStage = (candidate: unknown) => (
-      (setup.room as unknown as { isCompletionCandidateStage(stage: unknown): boolean })
-        .isCompletionCandidateStage(candidate)
-    )
-    expect(isCompletionCandidateStage(stage)).toBe(true)
+    const isCompletionCandidateStage = (candidate: unknown) => completionCandidateFromRust(setup.adapter, state, candidate)
+    expect(await isCompletionCandidateStage(stage)).toBe(true)
     if (format === 'doubleElimination') {
       const missingSettledLowerRank = structuredClone(stage)
       const fourthPlace = (missingSettledLowerRank.standings as JsonObject[]).find(standing => (
@@ -6084,7 +6100,7 @@ test('ticket 20 accepts eight-team elimination vacancies and legitimate shared l
       ))
       if (!fourthPlace) throw new Error('double-elimination fixture has no settled fourth-place row')
       fourthPlace.rank = null
-      expect(isCompletionCandidateStage(missingSettledLowerRank)).toBe(false)
+      expect(await isCompletionCandidateStage(missingSettledLowerRank)).toBe(false)
     }
     const malformed = structuredClone(stage)
     if (format === 'singleElimination') {
@@ -6101,7 +6117,7 @@ test('ticket 20 accepts eight-team elimination vacancies and legitimate shared l
       if (!misplacedSilver) throw new Error('double-elimination fixture has no lower finisher')
       misplacedSilver.rank = 2
     }
-    expect(isCompletionCandidateStage(malformed)).toBe(false)
+    expect(await isCompletionCandidateStage(malformed)).toBe(false)
   }
 })
 
@@ -6186,11 +6202,8 @@ test('ticket 20 does not promote a lower-bracket loser to silver after both winn
   ))).toBe(true)
   expect((stage.standings as JsonObject[]).some(standing => standing.rank === 2)).toBe(false)
   expect((stage.standings as JsonObject[]).find(standing => standing.teamId === lowerRoundFourLoser)?.rank).toBe(5)
-  const isCompletionCandidate = (candidate: unknown) => (
-    (setup.room as unknown as { isCompletionCandidateStage(stage: unknown): boolean })
-      .isCompletionCandidateStage(candidate)
-  )
-  expect(isCompletionCandidate(stage)).toBe(true)
+  const isCompletionCandidate = (candidate: unknown) => completionCandidateFromRust(setup.adapter, state, candidate)
+  expect(await isCompletionCandidate(stage)).toBe(true)
 
   const misplacedSilver = structuredClone(stage)
   const nonChampion = (misplacedSilver.standings as JsonObject[]).find(standing => (
@@ -6198,7 +6211,7 @@ test('ticket 20 does not promote a lower-bracket loser to silver after both winn
   ))
   if (!nonChampion) throw new Error('double-elimination fixture has no lower finisher')
   nonChampion.rank = 2
-  expect(isCompletionCandidate(misplacedSilver)).toBe(false)
+  expect(await isCompletionCandidate(misplacedSilver)).toBe(false)
 })
 
 test('ticket 20 preserves DE16 lower-bracket ranks through later and skipped rounds', async () => {
@@ -6290,11 +6303,8 @@ test('ticket 20 preserves DE16 lower-bracket ranks through later and skipped rou
   }
   expect(standings.find(standing => standing.teamId === fourthLowerLoser)?.rank).toBe(4)
   expect(standings.some(standing => standing.rank === 2)).toBe(false)
-  const isCompletionCandidate = (candidate: unknown) => (
-    (setup.room as unknown as { isCompletionCandidateStage(stage: unknown): boolean })
-      .isCompletionCandidateStage(candidate)
-  )
-  expect(isCompletionCandidate(stage)).toBe(true)
+  const isCompletionCandidate = (candidate: unknown) => completionCandidateFromRust(setup.adapter, state, candidate)
+  expect(await isCompletionCandidate(stage)).toBe(true)
 
   const missingSettledRank = structuredClone(stage)
   const fourthPlace = (missingSettledRank.standings as JsonObject[]).find(standing => (
@@ -6302,7 +6312,7 @@ test('ticket 20 preserves DE16 lower-bracket ranks through later and skipped rou
   ))
   if (!fourthPlace) throw new Error('16-team fixture has no settled fourth-place row')
   fourthPlace.rank = null
-  expect(isCompletionCandidate(missingSettledRank)).toBe(false)
+  expect(await isCompletionCandidate(missingSettledRank)).toBe(false)
 })
 
 test('ticket 20 preserves decided lower ranks after early and championless double-elimination exits', async () => {
@@ -6378,10 +6388,7 @@ test('ticket 20 preserves decided lower ranks after early and championless doubl
     expect(stage).toMatchObject({ status: 'finished', lastScheduleError: null })
     expect((stage.rounds as JsonObject[]).flatMap(round => round.matches as JsonValue[])
       .every(match => isJsonObject(match) && match.status === 'completed')).toBe(true)
-    const isCompletionCandidate = (candidate: unknown) => (
-      (setup.room as unknown as { isCompletionCandidateStage(stage: unknown): boolean })
-        .isCompletionCandidateStage(candidate)
-    )
+    const isCompletionCandidate = (candidate: unknown) => completionCandidateFromRust(setup.adapter, state, candidate)
     return { isCompletionCandidate, stage }
   }
 
@@ -6405,7 +6412,7 @@ test('ticket 20 preserves decided lower ranks after early and championless doubl
     const normalExit = (normal.stage.standings as JsonObject[]).find(standing => standing.teamId === loserId)
     expect(normalExit?.rank).toBe(7)
     expect(lowerExit?.rank).toBe(7)
-    expect(vacant.isCompletionCandidate(stage)).toBe(true)
+    expect(await vacant.isCompletionCandidate(stage)).toBe(true)
     if (scenario === 'noChampion') {
       expect(isJsonObject(stage.doubleState) && stage.doubleState.grandFinalWinner === null).toBe(true)
       expect((stage.rounds as JsonObject[]).some(round => (
@@ -6417,7 +6424,7 @@ test('ticket 20 preserves decided lower ranks after early and championless doubl
     const wrongRow = (wrongRank.standings as JsonObject[]).find(standing => standing.teamId === loserId)
     if (!wrongRow) throw new Error(`${scenario}: lower-bracket loser standing is missing`)
     wrongRow.rank = scenario === 'openingDoubleLoss' ? 6 : null
-    expect(vacant.isCompletionCandidate(wrongRank)).toBe(false)
+    expect(await vacant.isCompletionCandidate(wrongRank)).toBe(false)
   }
 })
 
@@ -6488,10 +6495,7 @@ test('ticket 20 preserves DE13 lower slots through fresh losers and empty layers
     if (!isJsonObject(stage) || !Array.isArray(stage.rounds) || !Array.isArray(stage.standings)) {
       throw new Error('completed 13-team stage is missing')
     }
-    const isCompletionCandidate = (candidate: unknown) => (
-      (setup.room as unknown as { isCompletionCandidateStage(stage: unknown): boolean })
-        .isCompletionCandidateStage(candidate)
-    )
+    const isCompletionCandidate = (candidate: unknown) => completionCandidateFromRust(setup.adapter, state, candidate)
     return { isCompletionCandidate, stage }
   }
 
@@ -6544,7 +6548,7 @@ test('ticket 20 preserves DE13 lower slots through fresh losers and empty layers
     .toEqual([9, 4, 6])
   expect([rank(vacant.stage, teamForSeed(6)), rank(vacant.stage, teamForSeed(2)), rank(vacant.stage, teamForSeed(3))])
     .toEqual([4, 4, 3])
-  expect(vacant.isCompletionCandidate(vacant.stage)).toBe(true)
+  expect(await vacant.isCompletionCandidate(vacant.stage)).toBe(true)
 
   const wrongRanks = structuredClone(vacant.stage)
   const teamTwo = (wrongRanks.standings as JsonObject[]).find(standing => standing.teamId === teamForSeed(2))
@@ -6552,7 +6556,7 @@ test('ticket 20 preserves DE13 lower slots through fresh losers and empty layers
   if (!teamTwo || !teamThree) throw new Error('13-team lower exits are missing')
   teamTwo.rank = 9
   teamThree.rank = 6
-  expect(vacant.isCompletionCandidate(wrongRanks)).toBe(false)
+  expect(await vacant.isCompletionCandidate(wrongRanks)).toBe(false)
 
   const emptyLowerLayers = await finish([2, 3, 4, 6, 8])
   const emptyConfig = emptyLowerLayers.stage.config
@@ -6595,13 +6599,13 @@ test('ticket 20 preserves DE13 lower slots through fresh losers and empty layers
   const emptyTeamTwo = (emptyLowerLayers.stage.standings as JsonObject[])
     .find(standing => standing.teamId === emptyTeamForSeed(2))
   expect(emptyTeamTwo?.rank).toBe(4)
-  expect(emptyLowerLayers.isCompletionCandidate(emptyLowerLayers.stage)).toBe(true)
+  expect(await emptyLowerLayers.isCompletionCandidate(emptyLowerLayers.stage)).toBe(true)
   const compressedRank = structuredClone(emptyLowerLayers.stage)
   const compressedTeamTwo = (compressedRank.standings as JsonObject[])
     .find(standing => standing.teamId === emptyTeamForSeed(2))
   if (!compressedTeamTwo) throw new Error('13-team fourth-place lower exit is missing')
   compressedTeamTwo.rank = 9
-  expect(emptyLowerLayers.isCompletionCandidate(compressedRank)).toBe(false)
+  expect(await emptyLowerLayers.isCompletionCandidate(compressedRank)).toBe(false)
 })
 
 test('ticket 20 accepts settled single-elimination vacancies and same-round lower-place ties', async () => {
@@ -6688,8 +6692,7 @@ test('ticket 20 accepts settled single-elimination vacancies and same-round lowe
     expect((stage.rounds as JsonObject[]).flatMap(round => round.matches as JsonValue[])
       .every(match => isJsonObject(match) && match.status === 'completed')).toBe(true)
     expect(doubleLossCount).toBe(scenario.kind === 'priorVacancyNormalFinal' ? 1 : 2)
-    expect((setup.room as unknown as { isCompletionCandidateStage(stage: unknown): boolean })
-      .isCompletionCandidateStage(stage)).toBe(true)
+    expect(await completionCandidateFromRust(setup.adapter, state, stage)).toBe(true)
 
     const ranks = (stage.standings as JsonObject[]).map(standing => standing.rank)
     if (scenario.kind === 'bothFinalsDoubleLoss') {
@@ -8340,7 +8343,7 @@ test('formal Rust/WASM elimination tiebreaks carry exact milliseconds and comple
     // 後續事件已推進 revision，舊 terminal 收據仍回原 revision，不能重建加賽或重送賽程結果。
     expect(await setup.room.ingestGameTerminal({ ...terminalRequest, trustedTimeMs: 10_001 }))
       .toMatchObject({ ok: true, value: { idempotent: true, matchRevision: 7 } })
-    expect(setup.calls).toHaveLength(operationsBeforeRetry)
+    expect(setup.calls.slice(operationsBeforeRetry).filter(call => call.operation.type !== 'tournamentAssessCompletion')).toHaveLength(0)
     expect(setup.sql.database.query('SELECT revision, server_state_json FROM competition_meta').get()).toEqual(finalMeta)
     expect(setup.sql.database.query(
       'SELECT game_number FROM competition_game_provision ORDER BY game_number',
@@ -9708,10 +9711,19 @@ test('real Rust/WASM double-elimination slot widths pass create and live project
     if (!response.ok || response.operation !== 'tournamentView') {
       throw new Error('Rust/WASM double-elimination view query failed')
     }
+    const assessment = await setup.adapter({
+      serverActor: { type: 'organizer', playerId: 'organizer-1' },
+      trustedTimeMs: ++trustedTimeMs,
+      operation: { type: 'tournamentAssessCompletion' },
+      serverState,
+    })
+    if (!assessment.ok || !isJsonObject(assessment.public)
+      || !isJsonObject(assessment.public.assessment)) throw new Error('assessment query failed')
     const parsed = parseCompetitionTournamentViewResponse({
       competitionId: 'competition-1',
       revision: 1,
-      projection: { ok: true, operation: 'tournamentView', public: response.public },
+      projection: { ok: true, operation: 'tournamentView', public: response.public,
+        stageFacts: assessment.public.assessment.stages },
     }, 'competition-1')
     return { raw: response.public as JsonObject, parsed }
   }
@@ -12211,9 +12223,9 @@ async function e6d1bReadCurrentTournament(
   expect(Object.keys(result.value).sort()).toEqual(result.value.publication
     ? ['competitionId', 'projection', 'publication', 'revision']
     : ['competitionId', 'projection', 'revision'])
-  expect(Object.keys(result.value.projection).sort()).toEqual(['ok', 'operation', 'public'])
+  expect(Object.keys(result.value.projection).sort()).toEqual(['ok', 'operation', 'public', 'stageFacts'])
   expect(result.value.projection.public).toStrictEqual(authoritativeState.tournament)
-  expect(setup.calls.slice(callStart).map(call => call.operation.type)).toEqual(['tournamentView'])
+  expect(setup.calls.slice(callStart).map(call => call.operation.type)).toEqual(['tournamentView', 'tournamentAssessCompletion'])
   const privateProjectionCheck = structuredClone(result)
   if (privateProjectionCheck.ok) delete privateProjectionCheck.value.publication
   expect(JSON.stringify(privateProjectionCheck)).not.toMatch(
@@ -12348,6 +12360,29 @@ async function e6d1bFinishScheduledTournament(
   }
   throw new Error(`formal ${setup.stage.format} tournament did not finish within 40 scheduled matches`)
 }
+
+test.serial('completion rejects a concurrent checkpoint change during Rust assessment', async () => {
+  const setup = await e6c2aLockedMatch({
+    format: 'roundRobin', matchFormat: { type: 'fixedGames', value: 1 },
+    personalDeck: true, automaticRoundProgression: true,
+  })
+  const methods = setup.room as unknown as { completeCompetitionIfReady(): Promise<void> }
+  methods.completeCompetitionIfReady = async () => {}
+  expect(await e6d1bSubmitWinner(setup, 'assessment-race-final')).toMatchObject({ ok: true })
+  let changed = false
+  const racingEngine: CompetitionEngineAdapter = async request => {
+    const response = await setup.adapter(request)
+    if (request.operation.type === 'tournamentAssessCompletion' && response.ok && !changed) {
+      changed = true
+      setup.sql.database.query('UPDATE competition_meta SET revision = revision + 1 WHERE singleton = 1').run()
+    }
+    return response
+  }
+  const room = new CompetitionRoomClass(stateFor(setup.sql, setup.alarm), setup.env, racingEngine)
+  await (room as unknown as { completeCompetitionIfReady(): Promise<void> }).completeCompetitionIfReady()
+  expect(changed).toBe(true)
+  expect(setup.sql.database.query('SELECT COUNT(*) AS count FROM competition_completion').get()).toEqual({ count: 0 })
+})
 
 test.serial('ticket 16 completes a uniquely ranked single-stage tournament and publishes immutable data on retry', async () => {
   const setup = await e6c2aLockedMatch({
@@ -13316,6 +13351,40 @@ test('E6d1b rejects extra, mismatched and private engine responses without expos
       code: defect === 'throw' ? 'engineProtocolError' : 'invalidTournamentCheckpoint',
     } })
     expect(JSON.stringify(result)).not.toContain('private engine sentinel')
+    expect(e6c2aSnapshot(setup)).toEqual(before)
+  }
+})
+
+test('tournament assessment rejects altered identity, coverage, projection and state at the DO boundary', async () => {
+  for (const defect of ['tournamentId', 'stageId', 'teamId', 'missingTeam', 'extraFact', 'projection', 'state', 'requestMutation'] as const) {
+    const setup = await e6c2aLockedMatch({ provision: false })
+    const corruptedEngine: CompetitionEngineAdapter = async request => {
+      const response = await setup.adapter(request)
+      if (request.operation.type !== 'tournamentAssessCompletion' || !response.ok) return response
+      const corrupted = structuredClone(response)
+      if (!isJsonObject(corrupted.public) || !isJsonObject(corrupted.public.assessment)
+        || !Array.isArray(corrupted.public.assessment.stages)) throw new Error('assessment fixture missing')
+      const assessment = corrupted.public.assessment
+      const stage = assessment.stages[0] as JsonObject
+      const placements = stage.placements as JsonObject[]
+      if (defect === 'tournamentId') assessment.tournamentId = 'foreign'
+      if (defect === 'stageId') stage.stageId = 'foreign'
+      if (defect === 'teamId') placements[0]!.teamId = 'foreign'
+      if (defect === 'missingTeam') placements.pop()
+      if (defect === 'extraFact') stage.privateRoster = 'secret'
+      if (defect === 'projection') (corrupted.public.tournament as JsonObject).tournamentId = 'foreign'
+      if (defect === 'state') corrupted.serverState.clock = { private: 'secret' }
+      if (defect === 'requestMutation') {
+        request.serverState.clock = { private: 'secret' }
+        corrupted.serverState = request.serverState
+      }
+      return corrupted
+    }
+    const room = new CompetitionRoomClass(stateFor(setup.sql, setup.alarm), setup.env, corruptedEngine)
+    const before = e6c2aSnapshot(setup)
+    const result = await room.readTournament(e6d1bReadRequest('organizer-1'))
+    expect(result).toMatchObject({ ok: false, error: { code: 'invalidTournamentCheckpoint' } })
+    expect(JSON.stringify(result)).not.toContain('secret')
     expect(e6c2aSnapshot(setup)).toEqual(before)
   }
 })
@@ -15646,6 +15715,21 @@ async function roundDeliveryModule(options: {
       if (!input.serverState.tournament) throw new Error('module tournament missing')
       return { ok: true, operation: 'tournamentView', public: input.serverState.tournament, serverState: input.serverState }
     }
+    if (input.operation.type === 'tournamentAssessCompletion') {
+      const tournament = input.serverState.tournament
+      if (!isJsonObject(tournament) || !Array.isArray(tournament.stages)) throw new Error('module tournament missing')
+      const stages = tournament.stages.map(stage => {
+        if (!isJsonObject(stage) || !isJsonObject(stage.config) || !Array.isArray(stage.standings)) throw new Error('module stage missing')
+        return { stageId: stage.config.stageId, settled: false, placements: stage.standings.map(row => {
+          if (!isJsonObject(row)) throw new Error('module standing missing')
+          return { teamId: row.teamId, placement: row.rank === null
+            ? { type: 'unresolved' } : { type: 'ranked', rank: row.rank } }
+        }), vacancies: [], explanations: [] }
+      })
+      return { ok: true, operation: 'tournamentAssessCompletion',
+        public: { tournament, assessment: { tournamentId: tournament.tournamentId, ready: false, stages } },
+        serverState: input.serverState }
+    }
     if (input.operation.type === 'matchView') {
       const row = sql.database.query('SELECT match_projection_json FROM competition_matches WHERE match_id = ?')
         .get(input.operation.matchId)
@@ -15819,7 +15903,7 @@ test(`round-release parent delivery module persists exact ${teamSize}v${teamSize
   expect(setup.releases).toStrictEqual(setup.manifest.rooms.map(entry => ({
     bindingRef: entry.bindingRef, commandId: decision,
   })))
-  expect(setup.engineCalls.every(type => ['tournamentView', 'matchView'].includes(type))).toBe(true)
+  expect(setup.engineCalls.every(type => ['tournamentView', 'tournamentAssessCompletion', 'matchView'].includes(type))).toBe(true)
   const before = e6c2aSnapshot(setup)
   await setup.at(400_000, () => setup.reopen().alarm())
   expect(setup.releases).toHaveLength(2)

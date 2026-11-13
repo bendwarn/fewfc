@@ -3,9 +3,10 @@ import { mockNuxtImport } from '@nuxt/test-utils/runtime'
 import { flushPromises } from '@vue/test-utils'
 import { afterEach, beforeEach, expect, it, vi } from 'vitest'
 import CompetitionTournamentView from '~/components/CompetitionTournamentView.vue'
+import { withFixtureExplanations, withTournamentStageFacts } from '../fixtures/tournament-assessment'
 
 const fetchMock = vi.hoisted(() => vi.fn())
-mockNuxtImport('$fetch', () => fetchMock)
+mockNuxtImport('$fetch', () => async (...args: unknown[]) => withTournamentStageFacts(await fetchMock(...args)))
 
 function signalAt(index: number): AbortSignal {
   const signal: unknown = fetchMock.mock.calls[index]?.[1]?.signal
@@ -921,7 +922,7 @@ it('displays an accessible champion vacancy for a finished true single-eliminati
     doubleState: null,
   }
   // 這是外部 GET 的 UI wire fixture，不是 Rust／native producer 或 canonical record。
-  const response: unknown = JSON.parse(JSON.stringify({
+  const response: unknown = withFixtureExplanations(JSON.parse(JSON.stringify({
     competitionId: 'competition a',
     revision: 12,
     projection: {
@@ -932,7 +933,7 @@ it('displays an accessible champion vacancy for a finished true single-eliminati
         stages: [vacantStage, stageFixture('doubleElimination', 'unresolved-de-stage')],
       },
     },
-  }))
+  })), 'vacant-final-stage', ['singleFinalDoubleLoss'])
   const { parseCompetitionTournamentViewResponse } = await import('~/lib/competition-tournament-view')
   const parsed = parseCompetitionTournamentViewResponse(response, 'competition a')
   expect(parsed.stages).toHaveLength(2)
@@ -991,7 +992,7 @@ it('displays an accessible champion vacancy for a finished true single-eliminati
     expect(finalStage.get('.rounds-section').text()).toContain('雙方判負（不推定勝者）')
     expect(finalStage.findAll('.standing-card').map(card => ({
       team: card.get('h5').text(),
-      rank: card.get('.rank-label').text(),
+      rank: card.find('.rank-label').exists() ? card.get('.rank-label').text() : '',
       facts: card.findAll('.standing-facts > div').map(fact => [fact.get('dt').text(), fact.get('dd').text()]),
     }))).toEqual([
       {
@@ -999,7 +1000,7 @@ it('displays an accessible champion vacancy for a finished true single-eliminati
         facts: [['賽事積分', '3'], ['勝／和／負', '1／0／1'], ['不同對手勝分', '0'], ['不同對手負分', '0'], ['已退賽', '否']],
       },
       {
-        team: 'team-c', rank: '排名未確定',
+        team: 'team-c', rank: '',
         facts: [['賽事積分', '3'], ['勝／和／負', '1／0／1'], ['不同對手勝分', '0'], ['不同對手負分', '0'], ['已退賽', '是']],
       },
       {
@@ -1007,7 +1008,7 @@ it('displays an accessible champion vacancy for a finished true single-eliminati
         facts: [['賽事積分', '0'], ['勝／和／負', '0／0／2'], ['不同對手勝分', '0'], ['不同對手負分', '0'], ['已退賽', '否']],
       },
       {
-        team: 'team-a', rank: '排名未確定',
+        team: 'team-a', rank: '',
         facts: [['賽事積分', '3'], ['勝／和／負', '1／0／1'], ['不同對手勝分', '0'], ['不同對手負分', '0'], ['已退賽', '是']],
       },
     ])
@@ -1085,13 +1086,13 @@ it('displays the authoritative single-elimination final vacancy when the bronze 
     }])),
     doubleState: null,
   }
-  const response: unknown = {
+  const response: unknown = withFixtureExplanations({
     competitionId: 'competition a',
     revision: 13,
     projection: { ok: true, operation: 'tournamentView', public: {
       tournamentId: 'competition a', stages: [priorVacancyStage],
     } },
-  }
+  }, 'prior-vacancy-stage', ['singleFinalDoubleLoss', 'singleBronzeByeAfterFinalDoubleLoss'])
   fetchMock.mockResolvedValueOnce(response)
   const wrapper = await mountSuspended(CompetitionTournamentView, { props: props() })
   try {
@@ -1170,7 +1171,7 @@ it('displays configured zero Team Main Time as unlimited through the valid tourn
     },
   }))
   const { parseCompetitionTournamentViewResponse, tournamentTimeLimitLabel } = await import('~/lib/competition-tournament-view')
-  const parsed = parseCompetitionTournamentViewResponse(response, 'competition a')
+  const parsed = parseCompetitionTournamentViewResponse(withTournamentStageFacts(response), 'competition a')
   expect(parsed.competitionId).toBe('competition a')
   expect(parsed.tournamentId).toBe('competition a')
   expect(parsed.revision).toBe(13)

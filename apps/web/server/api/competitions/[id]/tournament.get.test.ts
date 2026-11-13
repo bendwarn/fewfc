@@ -29,7 +29,9 @@ function tournament(format: 'singleElimination' | 'roundRobin' | 'doubleEliminat
     tournamentId: 'competition-1',
     stages: [{
       config: {
+        stageId: 'stage',
         format,
+        teams: [{ teamId: 'team-a', seed: 1 }, { teamId: 'team-b', seed: 2 }],
         matchFormat: { type: 'fixedGames', value: 1 },
         clockConfig: { mainTimeMs: 300_000, actionTimeMs: 30_000, outOfTurnChoiceTimeMs: 30_000 },
         swissRounds: format === 'swiss' ? 3 : null,
@@ -57,13 +59,18 @@ function tournament(format: 'singleElimination' | 'roundRobin' | 'doubleEliminat
   }
 }
 
+const stageFacts = [{ stageId: 'stage', settled: true,
+  placements: [{ teamId: 'team-a', placement: { type: 'ranked', rank: 1 } },
+    { teamId: 'team-b', placement: { type: 'ranked', rank: 2 } }],
+  vacancies: [], explanations: [] }]
+
 function success(publicValue: unknown, overrides: Record<string, unknown> = {}) {
   return {
     ok: true,
     value: {
       competitionId: 'competition-1',
       revision: 8,
-      projection: { ok: true, operation: 'tournamentView', public: publicValue },
+      projection: { ok: true, operation: 'tournamentView', public: publicValue, stageFacts },
       ...overrides,
     },
   }
@@ -131,7 +138,7 @@ test('authenticated GET trims path, uses canonical session actor, and returns th
   expect(body).toEqual({
     competitionId: 'competition-1',
     revision: 8,
-    projection: { ok: true, operation: 'tournamentView', public: current },
+    projection: { ok: true, operation: 'tournamentView', public: current, stageFacts },
   })
   expect(Object.keys(body as object).sort()).toEqual(['competitionId', 'projection', 'revision'])
   expect(sessionCalls).toEqual(['session-organizer'])
@@ -154,7 +161,7 @@ test('anonymous GET reaches the completion gate and returns only its published p
   const body: unknown = await response.json()
   expect(body).toEqual({
     competitionId: 'competition-1', revision: 8,
-    projection: { ok: true, operation: 'tournamentView', public: current }, publication,
+    projection: { ok: true, operation: 'tournamentView', public: current, stageFacts }, publication,
   })
   expect(sessionCalls).toEqual([''])
   expect(rpcRequests).toEqual([{ competitionId: 'competition-1', callerUserId: null }])
@@ -176,7 +183,7 @@ test('returns full current public DTOs for all four formats including completed 
     expect(body).toEqual({
       competitionId: 'competition-1',
       revision: 8,
-      projection: { ok: true, operation: 'tournamentView', public: current },
+      projection: { ok: true, operation: 'tournamentView', public: current, stageFacts },
     })
     expect(rpcRequests).toEqual([{ competitionId: 'competition-1', callerUserId: 'session-player' }])
     expect(rpcRequests).toHaveLength(1)

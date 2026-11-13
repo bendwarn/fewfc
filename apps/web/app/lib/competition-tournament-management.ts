@@ -1,5 +1,5 @@
 import type { StageConfig, SwissStandingPolicy, SwissTieBreaker, TournamentFormat } from '../../shared/competition'
-import { parseCompetitionTournamentViewResponse } from './competition-tournament-view'
+import { parseTournamentPublicSnapshot } from './competition-tournament-view'
 
 export interface TournamentManagementContext {
   competitionId: string
@@ -149,10 +149,9 @@ export function parseTournamentCreateAck(input: unknown, intent: TournamentCreat
       || value.revision !== intent.body.expectedRevision + 1 || typeof value.idempotent !== 'boolean') throw new TournamentCreateProtocolError()
     const projection = exact(value.projection, ['ok', 'operation', 'public'])
     if (!projection || projection.ok !== true || projection.operation !== 'tournamentCreate') throw new TournamentCreateProtocolError()
-    const parsed = parseCompetitionTournamentViewResponse({ competitionId: value.competitionId, revision: value.revision,
-      projection: { ok: true, operation: 'tournamentView', public: projection.public } }, intent.scope.competitionId)
-    const stage = parsed.stages[0]
-    if (parsed.stages.length !== 1 || !stage || !sameSettings(stage.config, intent.body.stage)) throw new TournamentCreateProtocolError()
+    const stages = parseTournamentPublicSnapshot(projection.public, intent.scope.competitionId)
+    const stage = stages[0]
+    if (stages.length !== 1 || !stage || !sameSettings(stage.config, intent.body.stage)) throw new TournamentCreateProtocolError()
     return { revision: value.revision, idempotent: value.idempotent }
   } catch { throw new TournamentCreateProtocolError() }
 }

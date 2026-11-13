@@ -53,6 +53,27 @@ function partialScheduleSuccess(): CompetitionEngineResponse {
   }
 }
 
+test('tournament assessment bridge keeps an exact read-only request and response', async () => {
+  const query: CompetitionRequest = { ...structuredClone(request), operation: { type: 'tournamentAssessCompletion' } }
+  const valid = { ok: true as const, operation: 'tournamentAssessCompletion' as const,
+    public: { tournament: query.serverState.tournament, assessment: { tournamentId: 'event-1', ready: false, stages: [] } },
+    serverState: structuredClone(query.serverState) }
+  expect(await callCompetitionEngine(query, async () => structuredClone(valid))).toEqual(valid)
+  const invalid = [
+    { ...valid, private: { secret: true } },
+    { ...valid, operation: 'tournamentView' },
+    { ...valid, serverState: { ...valid.serverState, clock: { changed: true } } },
+    { ...valid, unknown: true },
+  ]
+  for (const response of invalid) {
+    await expect(callCompetitionEngine(query, async () => response)).rejects.toThrow()
+  }
+  const extra = { ...query, operation: { type: 'tournamentAssessCompletion', extra: true } } as unknown as CompetitionRequest
+  let called = false
+  await expect(callCompetitionEngine(extra, async () => { called = true; return valid })).rejects.toThrow()
+  expect(called).toBe(false)
+})
+
 test('E6e1 clockView recognizes a minimal display and strips private checkpoints', () => {
   const display = {
     sampledAtMs: 110,

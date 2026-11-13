@@ -97,7 +97,9 @@ _Avoid_: fabricated Game win, opponent no-show
 **Tournament Placement Vacancy (名次空缺)**:
 An explicitly unawarded Tournament placement with no eligible Team, distinct
 from an unresolved placement still awaiting results or adjudication.
-_Avoid_: pending placement, shared placement, automatic promotion from a lower placement
+It describes a placement, not a Team's ranking status: a Team may definitively
+receive no placement after an elimination Stage has been resolved.
+_Avoid_: pending placement, unranked Team, shared placement, automatic promotion from a lower placement
 
 **Champion Vacancy (冠軍空缺)**:
 An elimination title left unawarded because its concluding path produces no

@@ -1816,6 +1816,74 @@ fn tournament_result_with_swiss_schedule_error_keeps_committed_state() {
     assert_eq!(restored["serverState"], submitted["serverState"]);
 }
 
+#[test]
+fn tournament_completion_assessment_bridge_is_read_only_exact_and_rejects_rank_drift() {
+    let created = tournament_view_create("singleElimination", 2);
+    let match_id = created["public"]["stages"][0]["rounds"][0]["matches"][0]["matchId"].clone();
+    let completed = request(
+        json!({"type": "tournamentSubmitResult", "stageId": "stage", "matchId": match_id,
+            "result": {"type": "doubleLoss"}}),
+        organizer(),
+        1,
+        created["serverState"].clone(),
+    );
+    assert_eq!(completed["ok"], true, "{completed}");
+    let state = completed["serverState"].clone();
+    let assessed = request(
+        json!({"type": "tournamentAssessCompletion"}),
+        player("reader"),
+        2,
+        state.clone(),
+    );
+    assert_eq!(assessed["ok"], true, "{assessed}");
+    assert_eq!(assessed["operation"], "tournamentAssessCompletion");
+    assert_eq!(assessed["serverState"], state);
+    assert_eq!(assessed["public"]["tournament"], state["tournament"]);
+    assert_eq!(
+        assessed["public"]["assessment"]["tournamentId"],
+        "current-event"
+    );
+    assert_eq!(assessed["public"]["assessment"]["ready"], true);
+    assert_eq!(
+        assessed["public"]["assessment"]["stages"][0]["stageId"],
+        "stage"
+    );
+    assert_eq!(
+        assessed["public"]["assessment"]["stages"][0]["placements"][0]["placement"],
+        json!({"type": "noPlacement"})
+    );
+    assert!(
+        assessed["public"]["assessment"]["stages"][0]["placements"][0]
+            .get("teamId")
+            .is_some()
+    );
+
+    let mut corrupt = state.clone();
+    corrupt["tournament"]["stages"][0]["standings"][0]["rank"] = json!(1);
+    let rejected = request(
+        json!({"type": "tournamentAssessCompletion"}),
+        player("reader"),
+        2,
+        corrupt.clone(),
+    );
+    assert_eq!(rejected["error"]["code"], "rankingCheckpointMismatch");
+    let historical = request(
+        json!({"type": "tournamentView"}),
+        player("reader"),
+        2,
+        corrupt,
+    );
+    assert_eq!(historical["ok"], true, "{historical}");
+    assert!(historical["public"]["stages"][0]["standings"][0]["rank"].is_null());
+    let unknown = request(
+        json!({"type": "tournamentAssessCompletion", "extra": true}),
+        player("reader"),
+        2,
+        state,
+    );
+    assert_eq!(unknown["error"]["code"], "invalidRequest");
+}
+
 fn tournament_view_create(format: &str, team_count: u32) -> Value {
     let elimination = matches!(format, "singleElimination" | "doubleElimination");
     request(

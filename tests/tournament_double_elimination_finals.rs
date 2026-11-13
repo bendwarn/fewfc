@@ -330,6 +330,7 @@ fn complete_double_elimination_with_vacant_upper_semifinals(
             RoundKind::GrandFinal | RoundKind::GrandFinalReset
         )));
     }
+    assert!(tournament.assess_completion().unwrap().ready);
     tournament
 }
 
@@ -420,6 +421,7 @@ fn complete_double_elimination_rank_scenario(
         tournament.stage(&stage_id).unwrap().status(),
         StageStatus::Finished
     );
+    assert!(tournament.assess_completion().unwrap().ready);
     tournament
 }
 
@@ -566,6 +568,11 @@ fn double_elimination_preserves_early_lower_ranks_with_or_without_a_champion() {
                 round.kind,
                 RoundKind::GrandFinal | RoundKind::GrandFinalReset
             )));
+            assert!(
+                vacant.assess_completion().unwrap().stages[0]
+                    .explanations
+                    .contains(&fewfc::tournament::PlacementExplanation::DoubleNoChampion)
+            );
         }
     }
 }
@@ -854,6 +861,17 @@ fn double_elimination_lower_final_double_loss_advances_only_the_winners_champion
     assert_eq!(ranks.get(&winners_champion), Some(&Some(1)));
     assert_eq!(ranks.get(&double_loss.participants[0]), Some(&None));
     assert_eq!(ranks.get(&double_loss.participants[1]), Some(&None));
+    let assessment = tournament.assess_completion().unwrap();
+    assert!(assessment.ready);
+    assert!(
+        assessment.stages[0]
+            .explanations
+            .iter()
+            .any(|fact| matches!(
+                fact,
+                fewfc::tournament::PlacementExplanation::DoubleWinnersChampionBye { .. }
+            ))
+    );
 
     let snapshot = serde_json::to_value(&tournament).unwrap();
     let mut restored: Tournament = serde_json::from_value(snapshot.clone()).unwrap();
@@ -1066,4 +1084,15 @@ fn double_elimination_surviving_lower_champion_wins_the_vacant_grand_final_posit
         round.kind,
         RoundKind::GrandFinal | RoundKind::GrandFinalReset
     )));
+    let assessment = tournament.assess_completion().unwrap();
+    assert!(assessment.ready);
+    assert!(
+        assessment.stages[0]
+            .explanations
+            .iter()
+            .any(|fact| matches!(
+                fact,
+                fewfc::tournament::PlacementExplanation::DoubleLosersChampionBye { .. }
+            ))
+    );
 }

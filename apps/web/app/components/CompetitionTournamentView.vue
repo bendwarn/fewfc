@@ -194,14 +194,8 @@
         <p v-if="stage.resolution" class="review-note" role="status">
           {{ tournamentStageResolutionLabel(stage.resolution) }}
         </p>
-        <p v-if="singleEliminationDoubleLossFinal(stage)" class="review-note" role="status">
-          決賽雙負，冠軍空缺
-        </p>
-        <p v-if="singleEliminationVacancySummary(stage)" class="review-note" role="status">
-          {{ singleEliminationVacancySummary(stage) }}
-        </p>
-        <p v-if="doubleEliminationVacancySummary(stage)" class="review-note" role="status">
-          {{ doubleEliminationVacancySummary(stage) }}
+        <p v-for="explanation in stage.assessment.explanations" :key="explanation.type === 'eliminationPlaceVacant' ? `${explanation.type}-${explanation.rank}` : explanation.type" class="review-note" role="status">
+          {{ placementExplanationLabel(explanation) }}
         </p>
         <p v-if="stage.correctionCount > 0" class="muted correction-note">
           有 {{ stage.correctionCount }} 筆賽果更正紀錄；更正理由與歷史內容不在此頁展開。
@@ -280,7 +274,7 @@
             <li v-for="standing in stage.standings" :key="standing.teamId" class="standing-card">
               <header class="standing-heading">
                 <h5 class="identifier">{{ standing.teamId }}</h5>
-                <span class="rank-label">{{ standing.rank === null ? '排名未確定' : `第 ${standing.rank} 名` }}</span>
+                <span v-if="standing.rank !== null || stage.assessment.placements.find(row => row.teamId === standing.teamId)?.placement.type !== 'noPlacement'" class="rank-label">{{ standing.rank === null ? '排名未確定' : `第 ${standing.rank} 名` }}</span>
               </header>
               <dl class="standing-facts">
                 <div><dt>賽事積分</dt><dd>{{ standing.matchPoints }}</dd></div>
@@ -392,10 +386,8 @@ import { computed, ref, watch, onMounted, onBeforeUnmount, nextTick, reactive } 
 import CompetitionParticipantGameEntry from './CompetitionParticipantGameEntry.vue'
 import {
   parseCompetitionTournamentViewResponse,
-  doubleEliminationVacancySummary,
   presentCompetitionTournamentViewError,
-  singleEliminationDoubleLossFinal,
-  singleEliminationVacancySummary,
+  placementExplanationLabel,
   swissTieBreakerLabel,
   tournamentFormatLabel,
   tournamentMatchResultLabel,

@@ -206,6 +206,7 @@ export interface CompetitionRoomTournamentReadValue {
     ok: true
     operation: 'tournamentView'
     public: JsonValue
+    stageFacts: import('./tournament-assessment').TournamentStageAssessment[]
   }
   publication?: CompetitionRoomPublication
 }

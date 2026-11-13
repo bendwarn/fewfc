@@ -18,6 +18,7 @@ function tournament(format: 'singleElimination' | 'roundRobin' | 'doubleEliminat
     tournamentId: competitionId,
     stages: [{
       config: {
+        stageId: 'stage',
         format,
         matchFormat: { type: 'fixedGames', value: 1 },
         clockConfig: { mainTimeMs: 300_000, actionTimeMs: 30_000, outOfTurnChoiceTimeMs: 30_000 },
@@ -51,13 +52,22 @@ function tournament(format: 'singleElimination' | 'roundRobin' | 'doubleEliminat
   }
 }
 
+const stageFacts = [{
+  stageId: 'stage', settled: true,
+  placements: [
+    { teamId: 'team-a', placement: { type: 'ranked' as const, rank: 1 } },
+    { teamId: 'team-b', placement: { type: 'ranked' as const, rank: 2 } },
+  ],
+  vacancies: [], explanations: [],
+}]
+
 function success(publicValue: unknown, overrides: Record<string, unknown> = {}) {
   return {
     ok: true,
     value: {
       competitionId,
       revision: 8,
-      projection: { ok: true, operation: 'tournamentView', public: publicValue },
+      projection: { ok: true, operation: 'tournamentView', public: publicValue, stageFacts },
       ...overrides,
     },
   }
@@ -111,9 +121,23 @@ test('projects the complete finished current public tournament for all four form
     expect(projected).toEqual({
       competitionId,
       revision: 8,
-      projection: { ok: true, operation: 'tournamentView', public: publicValue },
+      projection: { ok: true, operation: 'tournamentView', public: publicValue, stageFacts },
     })
     expect(projected.projection.public).toStrictEqual(publicValue)
+  }
+})
+
+test('rejects stage facts that do not cover the projected teams and explicit ranks', () => {
+  for (const badFacts of [
+    [],
+    [{ ...stageFacts[0], stageId: 'other' }],
+    [{ ...stageFacts[0], placements: stageFacts[0]!.placements.slice(0, 1) }],
+    [{ ...stageFacts[0], placements: [{ teamId: 'team-a', placement: { type: 'ranked', rank: 2 } }, stageFacts[0]!.placements[1]] }],
+    [{ ...stageFacts[0], explanations: [{ type: 'unknown' }] }],
+  ]) {
+    const result = success(tournament('roundRobin'))
+    const input = { ...result, value: { ...result.value, projection: { ...result.value.projection, stageFacts: badFacts } } }
+    expect(() => projectCompetitionTournamentReadResult(input, competitionId)).toThrow()
   }
 })
 

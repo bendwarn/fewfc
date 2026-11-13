@@ -1687,6 +1687,13 @@ fn single_elimination_retains_the_only_semifinal_loser_after_an_earlier_bye_and_
             .flat_map(|round| &round.matches)
             .all(|match_| match_.status == MatchStatus::Completed)
     );
+    let assessment = tournament.assess_completion().unwrap();
+    assert!(assessment.ready);
+    assert!(
+        assessment.stages[0].explanations.contains(
+            &fewfc::tournament::PlacementExplanation::SingleBronzeByeAfterFinalDoubleLoss
+        )
+    );
 }
 
 #[test]
@@ -1760,6 +1767,13 @@ fn single_elimination_semifinal_loser_keeps_bronze_slot_after_a_double_empty_bra
             "較早敗者不得因半決賽空位壓縮名次"
         );
     }
+    let assessment = tournament.assess_completion().unwrap();
+    assert!(assessment.ready);
+    assert!(
+        assessment.stages[0]
+            .explanations
+            .contains(&fewfc::tournament::PlacementExplanation::SingleBronzeByeAfterVacancy)
+    );
 }
 
 #[test]
@@ -1835,4 +1849,9 @@ fn single_elimination_semifinal_double_loss_awards_the_surviving_title_and_bronz
                 standing.team_id == *team_id && standing.dropped && standing.rank.is_none()
             }))
     );
+    let assessment = tournament.assess_completion().unwrap();
+    assert!(assessment.ready);
+    assert!(assessment.stages[0].explanations.contains(
+        &fewfc::tournament::PlacementExplanation::SingleSemifinalDoubleLossChampionAndBronzeBye
+    ));
 }

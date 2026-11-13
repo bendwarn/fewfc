@@ -46,6 +46,7 @@ export async function callCompetitionEngine(
 ): Promise<CompetitionEngineResponse> {
   const metadata = request.operation.type === 'clockCheckpointMetadata'
   const settings = request.operation.type === 'registrationResolveSettings'
+  const tournamentAssessment = request.operation.type === 'tournamentAssessCompletion'
   const qualifiedStage = isQualifiedStageOperation(request.operation)
   if (qualifiedStage && !isQualifiedStageRequest(request)) {
     throw new CompetitionBridgeProtocolError('competition engine qualified-stage request is invalid')
@@ -58,11 +59,16 @@ export async function callCompetitionEngine(
     || !isMetadataServerState(request.serverState))) {
     throw new CompetitionBridgeProtocolError('competition engine metadata request is invalid')
   }
-  const originalState = metadata || settings ? structuredClone(request.serverState) : null
+  if (tournamentAssessment && (!isJsonObject(request.operation)
+    || !isExactCompetitionJson(request.operation) || !hasDisplayKeys(request.operation, ['type'])
+    || !isExactCompetitionJson(request.serverState) || !isMetadataServerState(request.serverState))) {
+    throw new CompetitionBridgeProtocolError('competition engine tournament assessment request is invalid')
+  }
+  const originalState = metadata || settings || tournamentAssessment ? structuredClone(request.serverState) : null
   const qualifiedExpectation = qualifiedStage ? createQualifiedStageExpectation(request) : null
   const outbound = qualifiedStage
     ? structuredClone(request)
-    : metadata || settings ? structuredClone(request) : request
+    : metadata || settings || tournamentAssessment ? structuredClone(request) : request
   const raw = await wasmCall(outbound)
   if (qualifiedExpectation) return parseQualifiedStageCallResponse(raw, qualifiedExpectation)
   if (settings && (!isJsonObject(raw) || !isExactCompetitionJson(raw)
@@ -75,6 +81,12 @@ export async function callCompetitionEngine(
       || !isJsonObject(raw.error) || !hasDisplayKeys(raw.error, ['code', 'layer', 'message']))))) {
     throw new CompetitionBridgeProtocolError('competition engine metadata response is invalid')
   }
+  if (tournamentAssessment && (!isJsonObject(raw) || !isExactCompetitionJson(raw)
+    || (raw.ok === true && !hasDisplayKeys(raw, ['ok', 'operation', 'public', 'serverState']))
+    || (raw.ok === false && (!hasDisplayKeys(raw, ['ok', 'error'])
+      || !isJsonObject(raw.error) || !hasDisplayKeys(raw.error, ['code', 'layer', 'message']))))) {
+    throw new CompetitionBridgeProtocolError('competition engine tournament assessment response is invalid')
+  }
   const response = parseCompetitionEngineResponse(raw)
   if (settings && response.ok && (response.operation !== 'registrationResolveSettings'
     || !sameMetadataJson(response.serverState, originalState))) {
@@ -83,6 +95,10 @@ export async function callCompetitionEngine(
   if (metadata && response.ok && (response.operation !== 'clockCheckpointMetadata'
     || !sameMetadataJson(response.serverState, originalState))) {
     throw new CompetitionBridgeProtocolError('competition engine metadata changed checkpoint')
+  }
+  if (tournamentAssessment && response.ok && (response.operation !== 'tournamentAssessCompletion'
+    || !sameMetadataJson(response.serverState, originalState))) {
+    throw new CompetitionBridgeProtocolError('competition engine tournament assessment changed checkpoint')
   }
   return response
 }
@@ -274,7 +290,8 @@ export function parseCompetitionEngineResponse(value: unknown): CompetitionEngin
   }
   const serverState = parseServerState(value.serverState,
     operation === 'clockView' || operation === 'clockCheckpointMetadata'
-      || operation === 'registrationResolveSettings' || isQualifiedStageOperationName(operation))
+      || operation === 'registrationResolveSettings' || operation === 'tournamentAssessCompletion'
+      || isQualifiedStageOperationName(operation))
   const response: CompetitionEngineSuccess = {
     ok: true,
     operation,
@@ -608,6 +625,7 @@ function parseOperationName(value: unknown): CompetitionOperationName {
     'tournamentPreviewQualifiedStage',
     'tournamentCreateQualifiedStage',
     'tournamentView',
+    'tournamentAssessCompletion',
     'tournamentAdjudicateRankingTie',
     'tournamentStartMatch',
     'tournamentSubmitResult',

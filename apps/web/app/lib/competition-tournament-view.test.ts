@@ -1,16 +1,32 @@
 import { expect, test } from 'bun:test'
+import { withFixtureExplanations, withTournamentStageFacts } from '../../tests/fixtures/tournament-assessment'
 import {
-  parseCompetitionTournamentViewResponse,
-  doubleEliminationVacancySummary,
+  parseCompetitionTournamentViewResponse as parseWireResponse,
+  placementExplanationLabel,
   presentCompetitionTournamentViewError,
-  singleEliminationDoubleLossFinal,
-  singleEliminationVacancySummary,
   tournamentFormatLabel,
   tournamentMatchResultLabel,
   tournamentStageResolutionLabel,
   tournamentStageStatusLabel,
   tournamentTimeLimitLabel,
 } from './competition-tournament-view'
+
+function parseCompetitionTournamentViewResponse(input: unknown, competitionId: string) {
+  return parseWireResponse(withTournamentStageFacts(input), competitionId)
+}
+
+test('formats the explicit bronze double-loss explanation', () => {
+  expect(placementExplanationLabel({ type: 'singleBronzeDoubleLoss' })).toBe('季軍賽雙負，第三名與第四名空缺')
+})
+
+test('requires stage facts with matching team identities and ranks', () => {
+  const fixture = withTournamentStageFacts(response()) as unknown as {
+    projection: { stageFacts: Array<{ placements: Array<{ teamId: string }> }> }
+  }
+  expect(() => parseWireResponse(response(), 'competition-a')).toThrow()
+  fixture.projection.stageFacts[0]!.placements[0]!.teamId = 'foreign'
+  expect(() => parseWireResponse(fixture, 'competition-a')).toThrow()
+})
 
 function stageFixture(format: string, stageId: string) {
   return {
@@ -470,10 +486,11 @@ test('parses structural double-elimination vacancies and explains a lower-final 
       winnersChampion: 'team-a', losersChampion: null, grandFinalWinner: 'team-a',
     },
   })
-  const parsed = parseCompetitionTournamentViewResponse(input, 'competition-a')
+  const parsed = parseCompetitionTournamentViewResponse(withFixtureExplanations(input, stageId,
+    [{ type: 'doubleWinnersChampionBye', thirdPlaceDecided: false }]), 'competition-a')
   const doubleStage = parsed.stages[2]!
   expect(doubleStage).not.toHaveProperty('doubleState')
-  expect(doubleEliminationVacancySummary(doubleStage))
+  expect(doubleStage.assessment.explanations.map(placementExplanationLabel)[0])
     .toBe('勝部冠軍沿空位取得冠軍，亞軍與季軍空缺')
 
   const malformed = responseWithStageOverrides(2, {
@@ -523,8 +540,9 @@ test('explains when the lower-bracket champion takes the vacant grand-final posi
       winnersChampion: null, losersChampion: 'team-e', grandFinalWinner: 'team-e',
     },
   })
-  const parsed = parseCompetitionTournamentViewResponse(input, 'competition-a')
-  expect(doubleEliminationVacancySummary(parsed.stages[2]!))
+  const parsed = parseCompetitionTournamentViewResponse(withFixtureExplanations(input, stageId,
+    [{ type: 'doubleLosersChampionBye', thirdPlaceDecided: false }]), 'competition-a')
+  expect(parsed.stages[2]!.assessment.explanations.map(placementExplanationLabel)[0])
     .toBe('敗部冠軍沿總決賽空位取得冠軍，亞軍與季軍空缺')
   expect(parsed.stages[2]!.standings.some(standing => standing.rank === 2)).toBe(false)
 })
@@ -535,7 +553,7 @@ test('does not announce a vacancy for an ordinary finished double-elimination fi
     status: 'finished',
     doubleState: { ...stage.doubleState!, phase: 'finished', grandFinalWinner: 'team-a' },
   }), 'competition-a').stages[2]!
-  expect(doubleEliminationVacancySummary(finished)).toBeNull()
+  expect(finished.assessment.explanations).toEqual([])
 })
 
 test('explains a semifinal double loss with a surviving champion and bronze bye', () => {
@@ -548,7 +566,7 @@ test('explains a semifinal double loss with a surviving champion and bronze bye'
     opponentWinRateBasisPoints: null, opponentWinScore: '0', opponentLossScore: '0',
     dropped: index < 2, rank: index === 2 ? 1 : index === 3 ? 3 : null,
   }))
-  const parsed = parseCompetitionTournamentViewResponse(responseWithStageOverrides(0, {
+  const input = responseWithStageOverrides(0, {
     config: { ...source.config, teams: teams.map((teamId, index) => ({ teamId, seed: index + 1 })) },
     teams: Object.fromEntries(teams.map((teamId, index) => [teamId, {
       seed: index + 1,
@@ -568,8 +586,10 @@ test('explains a semifinal double loss with a surviving champion and bronze bye'
       ],
     }],
     standings,
-  }), 'competition-a')
-  expect(singleEliminationVacancySummary(parsed.stages[0]!))
+  })
+  const parsed = parseCompetitionTournamentViewResponse(withFixtureExplanations(input, source.config.stageId,
+    ['singleSemifinalDoubleLossChampionAndBronzeBye']), 'competition-a')
+  expect(parsed.stages[0]!.assessment.explanations.map(placementExplanationLabel)[0])
     .toBe('半決賽雙負後，唯一勝者輪空取得冠軍；正常敗者輪空取得季軍，亞軍空缺')
 })
 
@@ -584,7 +604,7 @@ test('recognizes a true final double loss while keeping the completed bronze res
     opponentWinRateBasisPoints: null, opponentWinScore: '0', opponentLossScore: '0',
     dropped: index < 2, rank: index === 2 ? 3 : index === 3 ? 4 : null,
   }))
-  const parsed = parseCompetitionTournamentViewResponse(responseWithStageOverrides(0, {
+  const input = responseWithStageOverrides(0, {
     config: { ...source.config, teams: teams.map((teamId, index) => ({ teamId, seed: index + 1 })) },
     teams: Object.fromEntries(teams.map((teamId, index) => [teamId, {
       seed: index + 1,
@@ -602,8 +622,11 @@ test('recognizes a true final double loss while keeping the completed bronze res
         cancellationReason: null, started: true },
     ] }],
     standings,
-  }), 'competition-a')
-  expect(singleEliminationDoubleLossFinal(parsed.stages[0]!)?.matchId).toBe('single-final-dl')
+  })
+  const parsed = parseCompetitionTournamentViewResponse(withFixtureExplanations(input, stageId,
+    ['singleFinalDoubleLoss']), 'competition-a')
+  expect(parsed.stages[0]!.rounds[0]!.matches[0]!.matchId).toBe('single-final-dl')
+  expect(parsed.stages[0]!.assessment.explanations.map(placementExplanationLabel)).toEqual(['決賽雙負，冠軍空缺'])
 })
 
 test('recognizes a true final double loss when the sole semifinal bronze candidate advanced by bye', () => {
@@ -626,7 +649,7 @@ test('recognizes a true final double loss when the sole semifinal bronze candida
     dropped: index === 0 || index === 1 || index === 3 || index === 7,
     rank: index === 2 ? 3 : index === 4 || index === 5 || index === 6 ? 5 : null,
   }))
-  const parsed = parseCompetitionTournamentViewResponse(responseWithStageOverrides(0, {
+  const input = responseWithStageOverrides(0, {
     config: { ...source.config, teams: teams.map((teamId, index) => ({ teamId, seed: index + 1 })) },
     teams: Object.fromEntries(teams.map((teamId, index) => [teamId, {
       seed: index + 1, dropped: false, hadBye: index === 3,
@@ -646,10 +669,12 @@ test('recognizes a true final double loss when the sole semifinal bronze candida
       { roundNumber: 3, kind: 'main', matches: [match(3, 1, [teams[3]!, teams[1]!], { type: 'doubleLoss' })] },
     ],
     standings,
-  }), 'competition-a')
+  })
+  const parsed = parseCompetitionTournamentViewResponse(withFixtureExplanations(input, stageId,
+    ['singleFinalDoubleLoss', 'singleBronzeByeAfterFinalDoubleLoss']), 'competition-a')
   const stage = parsed.stages[0]!
-  expect(singleEliminationDoubleLossFinal(stage)?.matchId).toBe(`${stageId}-r3-m1`)
-  expect(singleEliminationVacancySummary(stage))
+  expect(stage.rounds[2]!.matches[0]!.matchId).toBe(`${stageId}-r3-m1`)
+  expect(stage.assessment.explanations.map(placementExplanationLabel)[1])
     .toBe('決賽雙負後，唯一合格半決賽敗隊沿原季軍空位取得第三名；冠亞軍空缺')
   expect(stage.standings.find(standing => standing.teamId === teams[2])?.rank).toBe(3)
 })

@@ -921,6 +921,96 @@ pub struct Tournament {
     stages: Vec<Stage>,
 }
 
+/// 原始排名快照無法作為嚴格評估的來源。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum RankingCheckpointError {
+    StandingTeamsMismatch { stage_id: StageId },
+    RankMismatch { stage_id: StageId, team_id: TeamId },
+}
+
+/// 嚴格評估來源時發現的矛盾；未完成的階段不是錯誤。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum TournamentAssessmentError {
+    RankingCheckpoint(RankingCheckpointError),
+    InvalidFinishedStage { stage_id: StageId },
+}
+
+/// 對同一份權威快照計算的結果，不寫入快照或賽事事件。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TournamentAssessment {
+    pub tournament_id: String,
+    pub ready: bool,
+    pub stages: Vec<StageAssessment>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct StageAssessment {
+    pub stage_id: StageId,
+    pub settled: bool,
+    pub placements: Vec<TeamPlacementFact>,
+    pub vacancies: Vec<PlacementVacancyFact>,
+    pub explanations: Vec<PlacementExplanation>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TeamPlacementFact {
+    pub team_id: TeamId,
+    pub placement: TeamPlacement,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(
+    rename_all = "camelCase",
+    rename_all_fields = "camelCase",
+    tag = "type"
+)]
+pub enum TeamPlacement {
+    Ranked { rank: u32 },
+    NoPlacement,
+    Unresolved,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PlacementVacancyFact {
+    pub rank: u32,
+    pub reason: PlacementVacancyReason,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub enum PlacementVacancyReason {
+    NoQualifiedParticipants,
+    FinalDoubleLoss,
+    BronzeDoubleLoss,
+    EliminationDoubleLoss,
+    VacantFinalPath,
+}
+
+/// 保留位置空缺以外、用來說明已判定晉級路徑的事實。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(
+    rename_all = "camelCase",
+    rename_all_fields = "camelCase",
+    tag = "type"
+)]
+pub enum PlacementExplanation {
+    SingleFinalDoubleLoss,
+    SingleBronzeDoubleLoss,
+    SingleBronzeByeAfterFinalDoubleLoss,
+    SingleSemifinalDoubleLossChampionAndBronzeBye,
+    SingleBronzeByeAfterVacancy,
+    EliminationPlaceVacant { rank: u32 },
+    DoubleGrandFinalDoubleLoss { third_place_decided: bool },
+    DoubleResetDoubleLoss { third_place_decided: bool },
+    DoubleNoChampion,
+    DoubleWinnersChampionBye { third_place_decided: bool },
+    DoubleLosersChampionBye { third_place_decided: bool },
+}
+
 /// 短命 plan；來源 Stage 快照只作 apply 重核證據，不序列化或持久化。
 pub struct QualifiedStagePlan {
     tournament_id: String,
@@ -1139,6 +1229,96 @@ impl Tournament {
         let mut projection = self.clone();
         projection.refresh_rankings();
         projection
+    }
+
+    /// 驗證原始名次與同一份賽果的投影一致，並保留唯讀的歷史投影入口。
+    /// 此檢查本身不證明賽程已結清或賽事可以發布。
+    fn checked_ranking_projection(&self) -> Result<Self, RankingCheckpointError> {
+        let projection = self.ranking_projection();
+        for (source, projected) in self.stages.iter().zip(&projection.stages) {
+            let configured: BTreeSet<_> = source
+                .config
+                .teams
+                .iter()
+                .map(|team| &team.team_id)
+                .collect();
+            let stored: BTreeMap<_, _> = source
+                .standings
+                .iter()
+                .map(|row| (&row.team_id, row.rank))
+                .collect();
+            if stored.len() != source.standings.len()
+                || stored.len() != configured.len()
+                || stored.keys().any(|team_id| !configured.contains(team_id))
+            {
+                return Err(RankingCheckpointError::StandingTeamsMismatch {
+                    stage_id: source.config.stage_id.clone(),
+                });
+            }
+            for row in &projected.standings {
+                if stored.get(&row.team_id) != Some(&row.rank) {
+                    return Err(RankingCheckpointError::RankMismatch {
+                        stage_id: source.config.stage_id.clone(),
+                        team_id: row.team_id.clone(),
+                    });
+                }
+            }
+        }
+        Ok(projection)
+    }
+
+    /// 評估現有階段的結清與名次；公告計畫、重播及發布授權由呼叫端另行驗證。
+    pub fn assess_completion(&self) -> Result<TournamentAssessment, TournamentAssessmentError> {
+        self.assess_completion_with_projection()
+            .map(|(assessment, _)| assessment)
+    }
+
+    pub(crate) fn assess_completion_with_projection(
+        &self,
+    ) -> Result<(TournamentAssessment, Self), TournamentAssessmentError> {
+        let projection = self
+            .checked_ranking_projection()
+            .map_err(TournamentAssessmentError::RankingCheckpoint)?;
+        let mut stages = Vec::with_capacity(self.stages.len());
+        for (source, stage) in self.stages.iter().zip(&projection.stages) {
+            let finished = stage.status == StageStatus::Finished;
+            if finished && !source.has_valid_finished_schedule() {
+                return Err(TournamentAssessmentError::InvalidFinishedStage {
+                    stage_id: source.config.stage_id.clone(),
+                });
+            }
+            let settled = finished && stage.unresolved_ranking_tie_groups().is_empty();
+            let placements = source
+                .standings
+                .iter()
+                .map(|row| TeamPlacementFact {
+                    team_id: row.team_id.clone(),
+                    placement: match row.rank {
+                        Some(rank) => TeamPlacement::Ranked { rank },
+                        None if settled => TeamPlacement::NoPlacement,
+                        None => TeamPlacement::Unresolved,
+                    },
+                })
+                .collect();
+            let (vacancies, explanations) = if settled {
+                stage.placement_explanations()
+            } else {
+                (vec![], vec![])
+            };
+            stages.push(StageAssessment {
+                stage_id: stage.config.stage_id.clone(),
+                settled,
+                placements,
+                vacancies,
+                explanations,
+            });
+        }
+        let assessment = TournamentAssessment {
+            tournament_id: self.tournament_id.clone(),
+            ready: !stages.is_empty() && stages.iter().all(|stage| stage.settled),
+            stages,
+        };
+        Ok((assessment, projection))
     }
 
     fn refresh_rankings(&mut self) {
@@ -1625,6 +1805,302 @@ impl<'de> Deserialize<'de> for Tournament {
 }
 
 impl Stage {
+    /// 由原賽程器重播已關閉輪次，確保終局並非只靠狀態欄或缺漏的輪次偽造。
+    fn has_valid_finished_schedule(&self) -> bool {
+        if self.validate_snapshot().is_err()
+            || self.status != StageStatus::Finished
+            || self.last_schedule_error.is_some()
+            || self.rounds.iter().any(|round| {
+                round.matches.is_empty()
+                    || round.matches.iter().any(|match_| {
+                        !is_closed(match_)
+                            || (match_.status == MatchStatus::Cancelled
+                                && match_
+                                    .cancellation_reason
+                                    .as_deref()
+                                    .is_none_or(|reason| reason.trim().is_empty()))
+                    })
+            })
+        {
+            return false;
+        }
+        if self.resolution.is_some() {
+            return true;
+        }
+
+        let Ok(mut replay) = Self::new(self.config.clone()) else {
+            return false;
+        };
+        if self.config.format == TournamentFormat::RoundRobin {
+            // 循環賽可先完成後輪；固定配對不依賽果生成，故直接驗證全部原配對。
+            return self.rounds.len() == replay.rounds.len()
+                && self
+                    .rounds
+                    .iter()
+                    .zip(&replay.rounds)
+                    .all(|(actual, expected)| same_scheduled_round(actual, expected));
+        }
+
+        // 快照不保存退賽時間；只在可由交手紀錄支持的輪次套用退賽，
+        // 並要求之後實際產生的全部配對及終局與來源一致。
+        let mut drop_after_round = BTreeMap::new();
+        for (team_id, entry) in &self.teams {
+            if !entry.dropped {
+                continue;
+            }
+            let last_appearance = self.rounds.iter().rposition(|round| {
+                round
+                    .matches
+                    .iter()
+                    .any(|match_| match_.participants.contains(team_id))
+            });
+            let Some(round_index) = last_appearance else {
+                return false;
+            };
+            drop_after_round.insert(team_id.clone(), round_index);
+        }
+        for (index, actual) in self.rounds.iter().enumerate() {
+            let Some(expected) = replay.rounds.get(index) else {
+                return false;
+            };
+            if !same_scheduled_round(actual, expected) {
+                return false;
+            }
+            let expected_matches = expected.matches.clone();
+            for (actual_match, expected_match) in actual.matches.iter().zip(expected_matches) {
+                if expected_match.status == MatchStatus::Completed {
+                    if actual_match.status != MatchStatus::Completed
+                        || actual_match.result != expected_match.result
+                    {
+                        return false;
+                    }
+                } else if actual_match.status != MatchStatus::Completed
+                    || actual_match.result.as_ref().is_none_or(|result| {
+                        replay
+                            .apply_result(&expected_match.match_id, result.clone())
+                            .is_err()
+                    })
+                {
+                    return false;
+                }
+            }
+            for (team_id, round_index) in &drop_after_round {
+                if *round_index == index {
+                    let Some(entry) = replay.teams.get_mut(team_id) else {
+                        return false;
+                    };
+                    entry.dropped = true;
+                }
+            }
+            if replay.progress().is_err() {
+                return false;
+            }
+        }
+        replay.status == StageStatus::Finished
+            && replay.rounds.len() == self.rounds.len()
+            && (self.config.format != TournamentFormat::DoubleElimination
+                || replay.double_state == self.double_state)
+    }
+
+    fn placement_explanations(&self) -> (Vec<PlacementVacancyFact>, Vec<PlacementExplanation>) {
+        let mut vacancies = Vec::new();
+        let mut explanations = Vec::new();
+        let has_rank = |rank| self.standings.iter().any(|row| row.rank == Some(rank));
+        let mut add_vacancy = |rank, reason| {
+            if !has_rank(rank)
+                && !vacancies
+                    .iter()
+                    .any(|fact: &PlacementVacancyFact| fact.rank == rank)
+            {
+                vacancies.push(PlacementVacancyFact { rank, reason });
+                true
+            } else {
+                false
+            }
+        };
+        if matches!(self.resolution, Some(StageResolution::Cancelled { .. })) {
+            add_vacancy(1, PlacementVacancyReason::NoQualifiedParticipants);
+            return (vacancies, explanations);
+        }
+        let has_double_loss = !self.double_loss_exits().is_empty();
+        match self.config.format {
+            TournamentFormat::SingleElimination if has_double_loss => {
+                let bronze_double_loss =
+                    self.rounds
+                        .iter()
+                        .flat_map(|round| &round.matches)
+                        .any(|match_| {
+                            match_.purpose == MatchPurpose::Bronze
+                                && match_
+                                    .result
+                                    .as_ref()
+                                    .is_some_and(MatchResult::is_double_loss)
+                        });
+                if bronze_double_loss {
+                    add_vacancy(3, PlacementVacancyReason::BronzeDoubleLoss);
+                    add_vacancy(4, PlacementVacancyReason::BronzeDoubleLoss);
+                    explanations.push(PlacementExplanation::SingleBronzeDoubleLoss);
+                }
+                let last = self.rounds.last();
+                let true_final = last.is_some_and(|round| {
+                    round.round_number == self.config.teams.len().next_power_of_two().ilog2()
+                        && round.matches.iter().any(|match_| {
+                            match_.purpose == MatchPurpose::Standard
+                                && match_.participants.len() == 2
+                                && match_
+                                    .result
+                                    .as_ref()
+                                    .is_some_and(MatchResult::is_double_loss)
+                        })
+                });
+                if true_final {
+                    add_vacancy(1, PlacementVacancyReason::FinalDoubleLoss);
+                    add_vacancy(2, PlacementVacancyReason::FinalDoubleLoss);
+                    explanations.push(PlacementExplanation::SingleFinalDoubleLoss);
+                } else if !has_rank(1) {
+                    add_vacancy(1, PlacementVacancyReason::VacantFinalPath);
+                }
+                if !has_rank(2) {
+                    add_vacancy(2, PlacementVacancyReason::VacantFinalPath);
+                }
+                if self.single_elimination_semifinal_bye_loser().is_some() && !has_rank(2) {
+                    if add_vacancy(4, PlacementVacancyReason::EliminationDoubleLoss) {
+                        explanations.push(PlacementExplanation::EliminationPlaceVacant { rank: 4 });
+                    }
+                    if true_final {
+                        explanations
+                            .push(PlacementExplanation::SingleBronzeByeAfterFinalDoubleLoss);
+                    } else {
+                        let semifinal_number =
+                            self.config.teams.len().next_power_of_two().ilog2() - 1;
+                        let semifinal = self
+                            .rounds
+                            .iter()
+                            .find(|round| round.round_number == semifinal_number);
+                        let one_winner_after_double_loss = semifinal.is_some_and(|round| {
+                            completed_winner_slots(round)
+                                .ok()
+                                .is_some_and(|slots| slot_team_count(&slots) == 1)
+                                && round.matches.iter().any(|match_| {
+                                    match_
+                                        .result
+                                        .as_ref()
+                                        .is_some_and(MatchResult::is_double_loss)
+                                })
+                        });
+                        explanations.push(if one_winner_after_double_loss {
+                            PlacementExplanation::SingleSemifinalDoubleLossChampionAndBronzeBye
+                        } else {
+                            PlacementExplanation::SingleBronzeByeAfterVacancy
+                        });
+                    }
+                }
+            }
+            TournamentFormat::DoubleElimination if has_double_loss => {
+                if self.has_double_elimination_final_double_loss() {
+                    add_vacancy(1, PlacementVacancyReason::FinalDoubleLoss);
+                    add_vacancy(2, PlacementVacancyReason::FinalDoubleLoss);
+                    let third_place_decided = has_rank(3);
+                    explanations.push(
+                        if self
+                            .rounds
+                            .last()
+                            .is_some_and(|round| round.kind == RoundKind::GrandFinalReset)
+                        {
+                            PlacementExplanation::DoubleResetDoubleLoss {
+                                third_place_decided,
+                            }
+                        } else {
+                            PlacementExplanation::DoubleGrandFinalDoubleLoss {
+                                third_place_decided,
+                            }
+                        },
+                    );
+                } else if let Some(champion) = self.double_elimination_vacant_grand_final_champion()
+                {
+                    add_vacancy(2, PlacementVacancyReason::VacantFinalPath);
+                    let third_place_decided = has_rank(3);
+                    if !third_place_decided && self.config.teams.len() >= 3 {
+                        add_vacancy(3, PlacementVacancyReason::VacantFinalPath);
+                    }
+                    let winners_champion = self
+                        .double_state
+                        .as_ref()
+                        .and_then(|state| state.winners_champion.as_ref());
+                    explanations.push(if winners_champion == Some(&champion) {
+                        PlacementExplanation::DoubleWinnersChampionBye {
+                            third_place_decided,
+                        }
+                    } else {
+                        PlacementExplanation::DoubleLosersChampionBye {
+                            third_place_decided,
+                        }
+                    });
+                } else if self.is_double_elimination_finished_without_champion() {
+                    add_vacancy(1, PlacementVacancyReason::VacantFinalPath);
+                    add_vacancy(2, PlacementVacancyReason::VacantFinalPath);
+                    explanations.push(PlacementExplanation::DoubleNoChampion);
+                }
+            }
+            _ => {}
+        }
+        if has_double_loss {
+            let mut exit_ranks = BTreeSet::new();
+            for (index, round) in self.rounds.iter().enumerate() {
+                let has_double_loss_exit = round.matches.iter().any(|match_| {
+                    match_.purpose == MatchPurpose::Standard
+                        && match_
+                            .result
+                            .as_ref()
+                            .is_some_and(MatchResult::is_double_loss)
+                });
+                if !has_double_loss_exit {
+                    continue;
+                }
+                let rank = match self.config.format {
+                    TournamentFormat::SingleElimination => self
+                        .config
+                        .teams
+                        .len()
+                        .next_power_of_two()
+                        .ilog2()
+                        .checked_sub(round.round_number)
+                        .and_then(|depth| 1_u32.checked_shl(depth))
+                        .and_then(|slots| slots.checked_add(1)),
+                    TournamentFormat::DoubleElimination if round.kind == RoundKind::Losers => {
+                        self.double_elimination_lower_rank_at_round(index)
+                    }
+                    _ => None,
+                };
+                if let Some(rank) = rank {
+                    exit_ranks.insert(rank);
+                }
+            }
+            for rank in exit_ranks {
+                if add_vacancy(rank, PlacementVacancyReason::EliminationDoubleLoss) {
+                    explanations.push(PlacementExplanation::EliminationPlaceVacant { rank });
+                }
+            }
+            // 獎牌與第四名各有獨立原位置；若雙負使整條路徑消失，
+            // 即使未生成季軍賽或敗部決賽，這些位置仍不會由較早敗者遞補。
+            if matches!(
+                self.config.format,
+                TournamentFormat::SingleElimination | TournamentFormat::DoubleElimination
+            ) && self.teams.values().all(|team| !team.dropped)
+            {
+                for rank in [3_u32, 4] {
+                    if usize::try_from(rank).is_ok_and(|rank| rank <= self.config.teams.len())
+                        && add_vacancy(rank, PlacementVacancyReason::EliminationDoubleLoss)
+                    {
+                        explanations.push(PlacementExplanation::EliminationPlaceVacant { rank });
+                    }
+                }
+            }
+        }
+        vacancies.sort_by_key(|fact| fact.rank);
+        (vacancies, explanations)
+    }
+
     fn new(config: StageConfig) -> Result<Self, ScheduleError> {
         validate_config(&config)?;
         Self::new_with_validated_config(config)
@@ -3708,6 +4184,13 @@ impl Stage {
                         .is_some_and(|result| result.loser() == Some(team_id))
                 })
         })?;
+        self.double_elimination_lower_rank_at_round(exit_round_index)
+    }
+
+    fn double_elimination_lower_rank_at_round(&self, exit_round_index: usize) -> Option<u32> {
+        if self.rounds.get(exit_round_index)?.kind != RoundKind::Losers {
+            return None;
+        }
         let mut winners_depth = 0usize;
         let mut lower_depth = 0usize;
         for round in &self.rounds[..=exit_round_index] {
@@ -4389,6 +4872,22 @@ fn is_closed(match_: &ScheduledMatch) -> bool {
         match_.status,
         MatchStatus::Completed | MatchStatus::Cancelled
     )
+}
+
+fn same_scheduled_round(actual: &Round, expected: &Round) -> bool {
+    actual.round_number == expected.round_number
+        && actual.kind == expected.kind
+        && actual.matches.len() == expected.matches.len()
+        && actual
+            .matches
+            .iter()
+            .zip(&expected.matches)
+            .all(|(actual, expected)| {
+                actual.sequence == expected.sequence
+                    && actual.kind == expected.kind
+                    && actual.purpose == expected.purpose
+                    && actual.participants == expected.participants
+            })
 }
 
 fn validate_match_result(

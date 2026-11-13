@@ -7,10 +7,15 @@ import { afterEach, beforeEach, expect, it, vi } from 'vitest'
 import type { StageConfig } from '../../shared/competition'
 import { usePlayerSession } from '~/composables/usePlayerSession'
 import CompetitionRoundPublication from '~/components/CompetitionRoundPublication.vue'
-import { parseCompetitionTournamentViewResponse } from '~/lib/competition-tournament-view'
+import { parseCompetitionTournamentViewResponse as parseWireResponse } from '~/lib/competition-tournament-view'
+import { withTournamentStageFacts } from '../fixtures/tournament-assessment'
+
+function parseCompetitionTournamentViewResponse(input: unknown, competitionId: string) {
+  return parseWireResponse(withTournamentStageFacts(input), competitionId)
+}
 
 const { fetchMock, getSessionMock } = vi.hoisted(() => ({ fetchMock: vi.fn(), getSessionMock: vi.fn() }))
-mockNuxtImport('$fetch', () => fetchMock)
+mockNuxtImport('$fetch', () => async (...args: unknown[]) => withTournamentStageFacts(await fetchMock(...args)))
 vi.mock('~/lib/auth-client', () => ({ authClient: { getSession: getSessionMock } }))
 
 const teamIds: [string, string] = ['b45abe94-a252-4e3d-bff2-7d26c6e2fabc', '535ec115-7bf4-4bbf-b0d3-c6e0ee76c8b7']
@@ -24,7 +29,10 @@ function stage(): StageConfig {
 }
 function publicSnapshot(competitionId = 'competition-a') {
   const config = stage()
-  return { tournamentId: competitionId, stages: [{ config, status: 'active', resolution: null, rankingTieDecisions: [], rounds: [], standings: [], corrections: [],
+  return { tournamentId: competitionId, stages: [{ config, status: 'active', resolution: null, rankingTieDecisions: [], rounds: [], standings: config.teams.map(team => ({
+    teamId: team.teamId, matchPoints: '0', wins: 0, draws: 0, losses: 0, gameWins: 0, gameLosses: 0,
+    netGameWins: 0, opponentWinRateBasisPoints: null, opponentWinScore: '0', opponentLossScore: '0', dropped: false, rank: null,
+  })), corrections: [],
     lastScheduleError: null, scheduleGeneration: 0, supersededRounds: [],
     teams: Object.fromEntries(config.teams.map(team => [team.teamId, { seed: team.seed, dropped: false, hadBye: false }])), doubleState: null }] }
 }
