@@ -1,4 +1,4 @@
-import { parseTournamentStageAssessments, type PlacementExplanation, type TournamentStageAssessment } from '../../shared/tournament-assessment'
+import { parseTournamentStageAssessments, type PlacementExplanation, type TournamentStageAssessment } from '#shared/tournament-assessment'
 
 export type TournamentFormatView = 'singleElimination' | 'roundRobin' | 'doubleElimination' | 'swiss'
 export type TournamentRoundKindView = 'main' | 'winners' | 'losers' | 'grandFinal' | 'grandFinalReset'
