@@ -36,9 +36,9 @@ created.
 
 ## Consequences
 
-A single audit owner maintains the ignored `tmp/` inventory and reviews it with
-the primary implementer in batches, surfacing ambiguous claims and classification
-conflicts before continuing. The complete inventory precedes test deletion,
+A single audit owner maintains the `refactor/rule-test-inventory.md` inventory
+and reviews it with the primary implementer in batches, surfacing ambiguous
+claims and classification conflicts before continuing. The complete inventory precedes test deletion,
 although confirmed product defects may be fixed earlier. Repository review
 applies the semantic evidence checklist in `docs/rule.md`; CI does not infer
 interaction quality from test names or case counts.

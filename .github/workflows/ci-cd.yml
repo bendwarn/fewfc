@@ -48,7 +48,7 @@ jobs:
           bun-version: 1.4.2
       - uses: pnpm/action-setup@v6
         with:
-          version: 12.3.4
+          package_json_file: apps/web/package.json
           cache: true
           cache_dependency_path: apps/web/pnpm-lock.yaml
           run_install: |
@@ -60,6 +60,7 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - run: pnpm exec playwright install --with-deps chromium
       - run: bun run test:storybook
+      - run: bun run test:storybook:layout
       - run: bun run build:storybook
       - run: bun run test:e2e
       - run: bun run test:unit
@@ -125,7 +126,7 @@ jobs:
           bun-version: 1.4.2
       - uses: pnpm/action-setup@v6
         with:
-          version: 12.3.4
+          package_json_file: apps/web/package.json
           cache: true
           cache_dependency_path: apps/web/pnpm-lock.yaml
           run_install: |
@@ -177,7 +178,7 @@ jobs:
           bun-version: 1.4.2
       - uses: pnpm/action-setup@v6
         with:
-          version: 12.3.4
+          package_json_file: apps/web/package.json
           cache: true
           cache_dependency_path: apps/web/pnpm-lock.yaml
           run_install: |
