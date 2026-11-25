@@ -100,7 +100,7 @@ export function tournamentPreview() {
   }
 }
 
-export type TournamentCompletionScenario = 'pending' | 'singleFinal' | 'singleBronze' | 'singleSemifinal' | 'doubleFinal' | 'doubleReset' | 'zeroAndOne' | 'laterActive'
+export type TournamentCompletionScenario = 'pending' | 'rankingTie' | 'singleFinal' | 'singleBronze' | 'singleSemifinal' | 'doubleFinal' | 'doubleReset' | 'zeroAndOne' | 'laterActive'
 
 /** 展示層固定 facts；淘汰路徑由 Rust 測試另行驗證。 */
 export function tournamentCompletionPreview(scenario: TournamentCompletionScenario) {
@@ -111,6 +111,22 @@ export function tournamentCompletionPreview(scenario: TournamentCompletionScenar
     cancellationReason: null, started: result.type !== 'bye' && result.type !== 'noShow',
   })
   const win = (winnerId: string, loserId: string) => ({ type: 'win', winnerId, loserId, winnerGames: 1, loserGames: 0 })
+  if (scenario === 'rankingTie') {
+    const preview = tournamentPreview()
+    const stage = stageFixture('roundRobin', 'round-robin-stage')
+    return {
+      ...preview,
+      projection: { ...preview.projection, public: { ...preview.projection.public, stages: [{
+        ...stage,
+        config: { ...stage.config, matchFormat: { type: 'fixedGames', value: 1 } },
+        status: 'finished',
+        rounds: [{ roundNumber: 1, kind: 'main', matches: [
+          match(stage.config.stageId, 1, 1, 'main', ['team-a', 'team-b'], { type: 'draw', firstGames: 0, secondGames: 0 }),
+        ] }],
+        standings: stage.standings.map(row => ({ ...row, matchPoints: '1', draws: 1 })),
+      }] } },
+    }
+  }
   const pending: any = stageFixture('singleElimination', 'pending-stage')
   const pendingFact = { stageId: 'pending-stage', settled: false, placements: [
     { teamId: 'team-a', placement: { type: 'unresolved' } },

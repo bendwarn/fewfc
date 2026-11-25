@@ -3,6 +3,15 @@
 日期：2026-11-13  
 範圍：評估深化 Tournament 完賽與名次空缺判定時，現有 Rust 賽程 module 能否承接 Durable Object（DO）的語意檢查、哪些發布防線必須保留，以及 UI 如何區分「已確定空缺」與「尚未解決」。本文記錄研究、三種 interface 比較與已選定方案；使用者已於 2026-11-13 確認 Q1–Q4，採用方案 A 作為後續深化方向。本次確認設計方向，未修改產品程式或新增 issue／ADR。
 
+## 完成紀錄（2026-11-26）
+
+- 方案 A 已落地。`Tournament::assess_completion()` 驗證原始名次與賽程終局，提供階段結清、隊伍名次已定／未決及具體空缺事實。循環賽已取消的交手須有前輪雙負來源，賽後更正保留的原雙負也可作為證據。[Rust 實作](../../../src/tournament.rs) · [完賽契約測試](../../../tests/tournament_assessment.rs)
+- `tournamentAssessCompletion` 將評估與投影一併回傳，歷史 `tournamentView` 投影仍可獨立讀取。DO 核對原始 checkpoint 與 facts 覆蓋，並在凍結公開牌組和重播前驗證公告階段、重播來源及寫入時的競賽狀態。[WASM 契約測試](../../../tests/competition_web_api.rs) · [DO 發布測試](../../../apps/web/worker/durable-objects/competition-room.test.ts)
+- 公開賽程依 Rust facts 顯示空缺原因。確定未取得名次者留白，待賽果或正式同分裁決者顯示「排名未確定」。Storybook 涵蓋單敗與雙敗空缺、重置賽、保留季軍、零隊取消、一隊直接勝出及後續階段進行中的畫面。[Storybook 情境](../../../apps/web/stories/components/CompetitionTournamentView.stories.ts) · [瀏覽器驗收](../../../apps/web/tests/storybook/tournament-completion.spec.ts)
+- `cargo test --locked` 通過 800 項。以當前 Rust 原始碼重建 WASM 後，Worker、DO 與賽程解析測試共通過 459 項。HTTP 整合測試通過 15 項，Nuxt 元件測試通過 17 項，型別檢查通過。Storybook 通過 22 項瀏覽器檢查，並檢視 1440 px、390 px 的淺色與深色畫面。
+
+以下是 2026-11-13 選定方案時的研究基線與驗收準則。
+
 ## 結論摘要
 
 **事實：** Rust 已有排名重算、已完成階段勝者解析、取消／無交手勝者表示，以及 `rankings_resolved()`；但 `rankings_resolved()` 不是完賽證據。它複製 Tournament、重算 standings，然後只確認至少有一階段、每階段 `Finished`，且循環／瑞士沒有未裁決的正式同分群組。淘汰階段的合法空缺、每個 rank 空洞與原始 checkpoint 的名次一致性，不是這個布林值所證明的內容。[`src/tournament.rs:1126`](/Users/bendwarn/Documents/fewfc/src/tournament.rs:1126)

@@ -228,6 +228,64 @@ fn round_robin(count: u32) -> Tournament {
     .unwrap()
 }
 
+#[test]
+fn assessment_rejects_a_cancelled_round_robin_match_without_an_earlier_double_loss() {
+    let tournament = finish(round_robin(2), None, false);
+    let mut snapshot = serde_json::to_value(&tournament).unwrap();
+    let scheduled = &mut snapshot["stages"][0]["rounds"][0]["matches"][0];
+    scheduled["status"] = serde_json::json!("cancelled");
+    scheduled["result"] = serde_json::Value::Null;
+    scheduled["started"] = serde_json::json!(false);
+    scheduled["cancellationReason"] = serde_json::json!("交手取消");
+    let mut malformed: Tournament = serde_json::from_value(snapshot).unwrap();
+    let stage_id = StageId("stage".into());
+    malformed
+        .adjudicate_ranking_tie(
+            &stage_id,
+            vec![TeamId("team-1".into()), TeamId("team-2".into())],
+            RankingDecisionActor::Organizer {
+                user_id: "organizer".into(),
+            },
+            "公開裁決".into(),
+        )
+        .unwrap();
+    assert_eq!(
+        malformed.assess_completion(),
+        Err(TournamentAssessmentError::InvalidFinishedStage { stage_id })
+    );
+}
+
+#[test]
+fn assessment_accepts_round_robin_cancellations_preserved_after_a_post_completion_correction() {
+    let mut tournament = round_robin(4);
+    let stage_id = StageId("stage".into());
+    let first = tournament.stages()[0].rounds()[0].matches[0].clone();
+    tournament
+        .submit_result(&stage_id, &first.match_id, MatchResult::DoubleLoss)
+        .unwrap();
+    let mut tournament = finish(tournament, None, false);
+    let cancelled_count = |tournament: &Tournament| {
+        tournament.stages()[0].rounds()[1..]
+            .iter()
+            .flat_map(|round| &round.matches)
+            .filter(|scheduled| scheduled.status == MatchStatus::Cancelled)
+            .count()
+    };
+    assert_eq!(cancelled_count(&tournament), 4);
+    assert!(tournament.assess_completion().is_ok());
+
+    tournament
+        .correct_result(
+            &stage_id,
+            &first.match_id,
+            MatchResult::win(first.participants[0].clone(), first.participants[1].clone()),
+            "賽後更正交手結果".into(),
+        )
+        .unwrap();
+    assert_eq!(cancelled_count(&tournament), 4);
+    assert!(tournament.assess_completion().is_ok());
+}
+
 fn qualified_template(stage_id: &str, ranks: &[u32]) -> QualifiedStageTemplate {
     QualifiedStageTemplate {
         stage_id: StageId(stage_id.into()),

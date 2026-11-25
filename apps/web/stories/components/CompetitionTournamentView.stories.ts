@@ -31,6 +31,7 @@ export const ContextLoading: Story = {}
 function tournamentStory(scenario: TournamentCompletionScenario, dark = false): Story {
   const expected = {
     pending: '賽果：尚無賽果',
+    rankingTie: '同分順序待裁決',
     singleFinal: '決賽雙負，冠軍空缺',
     singleBronze: '季軍賽雙負，第三名與第四名空缺',
     singleSemifinal: '半決賽雙負後，唯一勝者輪空取得冠軍；正常敗者輪空取得季軍，亞軍空缺',
@@ -74,6 +75,7 @@ function tournamentStory(scenario: TournamentCompletionScenario, dark = false): 
 }
 
 export const Pending = tournamentStory('pending')
+export const RankingTie = tournamentStory('rankingTie')
 export const SingleFinalVacancy = tournamentStory('singleFinal')
 export const SingleBronzeVacancy = tournamentStory('singleBronze')
 export const SingleSemifinalVacancy = tournamentStory('singleSemifinal')

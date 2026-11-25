@@ -2,6 +2,7 @@ import { expect, test } from '@playwright/test'
 
 const scenarios = [
   ['pending', '賽果：尚無賽果'],
+  ['ranking-tie', '同分順序待裁決'],
   ['single-final-vacancy', '決賽雙負，冠軍空缺'],
   ['single-bronze-vacancy', '季軍賽雙負，第三名與第四名空缺'],
   ['single-semifinal-vacancy', '半決賽雙負後，唯一勝者輪空取得冠軍；正常敗者輪空取得季軍，亞軍空缺'],
@@ -26,9 +27,14 @@ for (const viewport of [{ width: 1440, height: 900 }, { width: 390, height: 844 
         await expect(stage.locator('.standing-card').filter({ has: page.getByRole('heading', { name: 'team-a', exact: true }) }).locator('.rank-label')).toHaveCount(0)
         await expect(stage.getByText('第 3 名', { exact: true })).toBeVisible()
       }
-      if (story === 'settled-then-active') {
+      if (story === 'settled-then-active' || story === 'ranking-tie') {
         await expect(page.getByText('排名未確定', { exact: true })).toHaveCount(2)
         await expect(page.getByText('本場賽事已完成', { exact: true })).toHaveCount(0)
+      }
+      if (story === 'ranking-tie') {
+        const tie = page.getByRole('region', { name: '同分順序待裁決' })
+        await expect(tie.getByLabel('公開裁決理由')).toBeVisible()
+        await expect(tie.getByRole('button', { name: '公開保存同分順序' })).toBeDisabled()
       }
       if (story === 'single-bronze-vacancy') {
         const stage = page.locator('article.stage-card').first()
@@ -38,9 +44,10 @@ for (const viewport of [{ width: 1440, height: 900 }, { width: 390, height: 844 
       if (story === 'single-semifinal-vacancy') {
         await expect(page.getByText('第 4 名因雙負空缺', { exact: true })).toBeVisible()
       }
-      if (['single-final-vacancy', 'single-bronze-vacancy', 'single-final-vacancy-dark', 'double-reset-vacancy-dark'].includes(story)) {
-        await page.screenshot({ path: testInfo.outputPath(`${story}-${viewport.width}.png`), fullPage: true })
+      if (story === 'zero-and-one-team') {
+        await expect(page.getByText('唯一合格隊伍直接成為階段勝者，未建立交手或遊戲。')).toBeVisible()
       }
+      await page.screenshot({ path: testInfo.outputPath(`${story}-${viewport.width}.png`), fullPage: true })
     })
   }
 }

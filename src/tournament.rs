@@ -1832,13 +1832,7 @@ impl Stage {
             return false;
         };
         if self.config.format == TournamentFormat::RoundRobin {
-            // 循環賽可先完成後輪；固定配對不依賽果生成，故直接驗證全部原配對。
-            return self.rounds.len() == replay.rounds.len()
-                && self
-                    .rounds
-                    .iter()
-                    .zip(&replay.rounds)
-                    .all(|(actual, expected)| same_scheduled_round(actual, expected));
+            return self.has_valid_finished_round_robin(&replay.rounds);
         }
 
         // 快照不保存退賽時間；只在可由交手紀錄支持的輪次套用退賽，
@@ -1900,6 +1894,44 @@ impl Stage {
             && replay.rounds.len() == self.rounds.len()
             && (self.config.format != TournamentFormat::DoubleElimination
                 || replay.double_state == self.double_state)
+    }
+
+    fn has_valid_finished_round_robin(&self, scheduled_rounds: &[Round]) -> bool {
+        if self.rounds.len() != scheduled_rounds.len() {
+            return false;
+        }
+        // 賽後更正可保留已取消交手，因此也承認更正紀錄中的原雙負。
+        let corrected_double_losses: BTreeSet<_> = self
+            .corrections
+            .iter()
+            .filter(|correction| correction.previous_result.is_double_loss())
+            .map(|correction| &correction.match_id)
+            .collect();
+        let mut earlier_exits = BTreeSet::new();
+        for (actual, expected) in self.rounds.iter().zip(scheduled_rounds) {
+            // 循環賽可先完成後輪；固定配對只須比對排程，取消則必須有前輪退出事實。
+            if !same_scheduled_round(actual, expected)
+                || actual.matches.iter().any(|scheduled| {
+                    scheduled.status == MatchStatus::Cancelled
+                        && (scheduled.started
+                            || scheduled.participants.len() != 2
+                            || !scheduled
+                                .participants
+                                .iter()
+                                .any(|team_id| earlier_exits.contains(team_id)))
+                })
+            {
+                return false;
+            }
+            for scheduled in &actual.matches {
+                if scheduled.result.as_ref().is_some_and(|result| {
+                    result.is_double_loss() || corrected_double_losses.contains(&scheduled.match_id)
+                }) {
+                    earlier_exits.extend(&scheduled.participants);
+                }
+            }
+        }
+        true
     }
 
     fn placement_explanations(&self) -> (Vec<PlacementVacancyFact>, Vec<PlacementExplanation>) {
