@@ -3409,20 +3409,25 @@ fn pass_action_with_no_cards_consumes_the_turn_action_and_enters_turn_draw() {
         },
     );
 
+    let events = handle_command(
+        &state,
+        Command::PassAction {
+            player: PlayerId::new("p1"),
+            reason: PassActionReason::NoCardsInHand,
+        },
+    )
+    .unwrap();
     assert_event_semantics_eq!(
-        handle_command(
-            &state,
-            Command::PassAction {
-                player: PlayerId::new("p1"),
-                reason: PassActionReason::NoCardsInHand,
-            },
-        )
-        .unwrap(),
+        events.as_slice(),
         vec![GameEvent::ActionPassed {
             player: PlayerId::new("p1"),
             reason: PassActionReason::NoCardsInHand,
         }]
     );
+    for event in &events {
+        apply_event(&mut state, event);
+    }
+    assert_eq!(state.phase, Phase::TurnDraw);
 }
 
 #[test]
@@ -6807,6 +6812,8 @@ fn chaos_requests_two_next_player_hand_cards_and_returns_them_to_deck_top() {
         ]
     );
 
+    let state_before_invalid_answers = record.state().clone();
+    let event_count_before_invalid_answers = record.events().len();
     assert_eq!(
         answer_record_choice(
             &mut record,
@@ -6827,6 +6834,9 @@ fn chaos_requests_two_next_player_hand_cards_and_returns_them_to_deck_top() {
         ),
         Err(GameError::Validation(ValidationError::InvalidChoiceAnswer))
     );
+
+    assert_eq!(record.state(), &state_before_invalid_answers);
+    assert_eq!(record.events().len(), event_count_before_invalid_answers);
 
     assert_event_semantics_eq!(
         answer_record_choice(
@@ -7830,6 +7840,11 @@ fn defense_attack_matrix_preserves_formation_lifecycle_while_preventing_damage()
         interaction.state().covered_passive(&p1).unwrap().cards,
         defense_cards
     );
+    assert_eq!(
+        interaction.state().hand(&p1),
+        Some([card(1), card(6)].as_slice())
+    );
+    assert_eq!(interaction.state().phase, Phase::TurnDraw);
     advance_record_to_next_main_after_turn_draw(&mut interaction, card(10));
     assert_eq!(interaction.state().current_player(), Some(&p2));
 
@@ -8419,76 +8434,64 @@ fn metal_environment_barrier_matrix_keeps_commitment_and_cards_when_its_shield_i
     assert_eq!(baseline.replay().unwrap(), baseline.state().clone());
     assert_eq!(baseline.verify_replay().unwrap(), baseline.state().clone());
 
-    // 修飾：P2 的合法 Sacred Beast 是共用 Metal Environment 的唯一來源。P1 接著
-    // 仍在下一次行動中使用相同且實體上合法的 Barrier 卡牌。
-    let mut interaction = GameRecord::start(setup, {
-        let opening = vec![
-            card(1),
-            card(2),
-            card(7),
-            card(4), // P1：第一次行動，接著在回合抽牌後使用 Barrier
-            card(6),
-            card(11),
-            card(16),
-            card(21),
-            card(26), // P2：West White Tiger
-            card(31),
-            card(8),
-            card(9), // P1 回合抽牌；保留 Metal 31
-            card(10),
-            card(12),
-            card(13), // P2 回合抽牌
-        ];
-        let mut cards = opening.clone();
-        cards.extend(
-            (1..=20)
-                .map(card)
-                .filter(|candidate| !opening.contains(candidate)),
-        );
-        cards
-    })
-    .unwrap();
-    interaction.advance_automatic().unwrap();
-    interaction
-        .handle(Command::PerformFormation {
-            player: p1.clone(),
-            formation_id: "metal-strike".to_string(),
-            cards: vec![card(1)],
-            declared_targets: Vec::new(),
-        })
-        .unwrap();
-    advance_record_to_next_main_after_turn_draw(&mut interaction, card(8));
-    let sacred_beast = interaction
-        .handle(Command::PerformFormation {
-            player: p2.clone(),
-            formation_id: "west-white-tiger".to_string(),
-            cards: vec![card(6), card(11), card(16), card(21), card(26)],
-            declared_targets: Vec::new(),
-        })
-        .unwrap();
-    assert!(sacred_beast.iter().any(|event| matches!(
-        event,
-        GameEvent::AttackResolved {
-            elemental_context_update: Some(AttackResolutionEffects { environment_transfers, .. }),
-            ..
-        } if environment_transfers == &vec![fewfc::domain::EnvironmentTransferDelta {
-            player: p2.clone(),
-            formation_id: "west-white-tiger".to_string(),
-            from: None,
-            to: Element::Metal,
-        }]
-    )));
-    assert_eq!(interaction.state().environment, Some(Element::Metal));
-    interaction.advance_automatic().unwrap();
-    answer_record_choice(
-        &mut interaction,
-        p2.clone(),
-        ChoiceAnswer::Cards {
-            cards: vec![card(10)],
-        },
+    // P3 的 Sacred Beast 命中 P2。P1 先前合法建立的 Shield 可保留到下一次
+    // Barrier，讓 Metal Environment 的互動能驗證既有護盾。
+    let p3 = PlayerId::new("p3");
+    let p4 = PlayerId::new("p4");
+    let mut team_setup = GameSetup::team_mode(
+        TeamId::new("team:a"),
+        vec![p1.clone(), p3.clone()],
+        TeamId::new("team:b"),
+        vec![p2.clone(), p4.clone()],
+        200,
     )
-    .unwrap();
+    .with_cards(setup.card_defs, setup.card_instances)
+    .with_rule_modules(setup.enabled_rule_modules);
+    team_setup.base_draw = 4;
+    team_setup
+        .card_instances
+        .extend([card_instance(28, "water"), card_instance(29, "fire")]);
+    team_setup
+        .card_instances
+        .extend((32..=45).map(|id| card_instance(id, "metal")));
+    let mut deck = [
+        12, 17, 1, 9, // P1: Barrier
+        5, 8, 10, 13, 14, // P2: Earth Strike
+        6, 11, 16, 21, 26, // P3: West White Tiger
+        18, 19, 20, 28, 29, // P4: Fire Strike
+        3, 2, 7, 31, 4, // P1: 棄掉第一張牌後可再次使用 Barrier
+    ]
+    .map(card)
+    .to_vec();
+    let remainder = team_setup
+        .card_instances
+        .iter()
+        .map(|instance| instance.instance)
+        .filter(|card| !deck.contains(card))
+        .collect::<Vec<_>>();
+    deck.extend(remainder);
+    let mut interaction = GameRecord::start(team_setup, deck).unwrap();
     interaction.advance_automatic().unwrap();
+    for (player, formation_id, card_ids) in [
+        (&p1, "barrier", &[12, 17, 1, 9][..]),
+        (&p2, "earth-strike", &[5][..]),
+        (&p3, "west-white-tiger", &[6, 11, 16, 21, 26][..]),
+        (&p4, "fire-strike", &[19][..]),
+    ] {
+        interaction
+            .handle(Command::PerformFormation {
+                player: player.clone(),
+                formation_id: formation_id.to_string(),
+                cards: card_ids.iter().copied().map(card).collect(),
+                declared_targets: Vec::new(),
+            })
+            .unwrap();
+        advance_record_to_next_main_discarding_first_turn_draw_card(&mut interaction, player);
+    }
+    assert_eq!(interaction.state().current_player(), Some(&p1));
+    assert_eq!(interaction.state().environment, Some(Element::Metal));
+    let existing_shield = interaction.state().shield(&p1).unwrap();
+    assert!(existing_shield > 0);
 
     // 互動：Metal Environment 讓 Barrier 的護盾效果不適用，但不能撤銷已接受的
     // 命令、陣形提交或棄牌。
@@ -8524,7 +8527,8 @@ fn metal_environment_barrier_matrix_keeps_commitment_and_cards_when_its_shield_i
         event,
         GameEvent::ShieldChanged { player, .. } if player == &p1
     )));
-    assert_eq!(interaction.state().shield(&p1), Some(0));
+    assert_eq!(interaction.state().shield(&p1), Some(existing_shield));
+    assert_eq!(interaction.state().phase, Phase::TurnDraw);
     assert_eq!(interaction.state().environment, Some(Element::Metal));
     assert_eq!(
         interaction

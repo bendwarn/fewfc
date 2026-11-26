@@ -111,9 +111,14 @@ impl PouchPreparationScenario {
         assert_eq!(self.record.state().status, GameStatus::InProgress);
         for (index, player) in self.turn_order.iter().enumerate() {
             assert!(self.record.state().pouch_for(player).is_some());
+            let (opening_hand, remaining_deck) = if index == 0 { (4, 55) } else { (5, 54) };
             assert_eq!(
                 self.record.state().hand(player).unwrap().len(),
-                if index == 0 { 4 } else { 5 }
+                opening_hand
+            );
+            assert_eq!(
+                self.record.state().deck_for(player).unwrap().len(),
+                remaining_deck
             );
         }
         assert_eq!(self.record.replay().unwrap(), self.record.state().clone());
@@ -127,11 +132,36 @@ impl PouchPreparationScenario {
 struct PouchWatchFireScenario {
     record: GameRecord,
     p1_watch_pouch: CardInstanceId,
-    p2_golden_pouch: CardInstanceId,
+    p2_pouch: CardInstanceId,
 }
 
 impl PouchWatchFireScenario {
     fn new() -> Self {
+        Self::with_opening(
+            [
+                &[
+                    (Element::Wood, None),
+                    (Element::Wood, None),
+                    (Element::Metal, None),
+                    (Element::Metal, None),
+                    (Element::Fire, None),
+                ],
+                &[
+                    (Element::Metal, None),
+                    (Element::Wood, Some(1)),
+                    (Element::Fire, Some(2)),
+                    (Element::Earth, Some(3)),
+                    (Element::Metal, None),
+                ],
+            ],
+            (Element::Metal, None),
+        )
+    }
+
+    fn with_opening(
+        opening: [&[(Element, Option<u32>)]; 2],
+        (p2_element, p2_level): (Element, Option<u32>),
+    ) -> Self {
         let rules = OfficialRules::new();
         let p1 = PlayerId::new("p1");
         let p2 = PlayerId::new("p2");
@@ -160,11 +190,11 @@ impl PouchWatchFireScenario {
                 card: p1_watch_pouch,
             })
             .unwrap();
-        let p2_golden_pouch = card_with(&record, &p2, Element::Metal, None);
+        let p2_pouch = card_with(&record, &p2, p2_element, p2_level);
         record
             .handle(Command::ChooseInitialPouch {
                 player: p2.clone(),
-                card: p2_golden_pouch,
+                card: p2_pouch,
             })
             .unwrap();
 
@@ -176,26 +206,10 @@ impl PouchWatchFireScenario {
                 unreachable!("Pouch preparation only shuffles Player Decks");
             };
             let mut remaining = request.current_order;
-            let desired = if player == p1 {
-                vec![
-                    (Element::Wood, None),
-                    (Element::Wood, None),
-                    (Element::Metal, None),
-                    (Element::Metal, None),
-                    (Element::Fire, None),
-                ]
-            } else {
-                vec![
-                    (Element::Metal, None),
-                    (Element::Wood, Some(1)),
-                    (Element::Fire, Some(2)),
-                    (Element::Earth, Some(3)),
-                    (Element::Metal, None),
-                ]
-            };
+            let desired = opening[usize::from(player == p2)];
             let mut ordered = desired
-                .into_iter()
-                .map(|(element, level)| take_card(record.state(), &mut remaining, element, level))
+                .iter()
+                .map(|&(element, level)| take_card(record.state(), &mut remaining, element, level))
                 .collect::<Vec<_>>();
             ordered.extend(remaining);
             record
@@ -211,11 +225,21 @@ impl PouchWatchFireScenario {
         Self {
             record,
             p1_watch_pouch,
-            p2_golden_pouch,
+            p2_pouch,
         }
     }
 
     fn establish_watch_fire_and_advance_to_p2(&mut self) -> Vec<GameEvent> {
+        let p1 = PlayerId::new("p1");
+        let p2 = PlayerId::new("p2");
+        let events = self.trigger_watch_fire();
+        self.perform_metal_strike(&p1);
+        self.finish_turn(&p1);
+        assert_eq!(self.record.state().current_player(), Some(&p2));
+        events
+    }
+
+    fn trigger_watch_fire(&mut self) -> Vec<GameEvent> {
         let p1 = PlayerId::new("p1");
         let p2 = PlayerId::new("p2");
         let watch_events = self
@@ -244,9 +268,6 @@ impl PouchWatchFireScenario {
                 && status.kind == "PouchWatchFire"
         ));
 
-        self.perform_metal_strike(&p1);
-        self.finish_turn(&p1);
-        assert_eq!(self.record.state().current_player(), Some(&p2));
         watch_events
     }
 
@@ -272,8 +293,8 @@ impl PouchWatchFireScenario {
                 GameEvent::StatusAdded { status },
                 GameEvent::PouchConsumed { card: consumed, .. },
             ] if player == &p2
-                && *card == self.p2_golden_pouch
-                && *consumed == self.p2_golden_pouch
+                && *card == self.p2_pouch
+                && *consumed == self.p2_pouch
                 && status.owner == fewfc::domain::StatusOwner::Player(p2.clone())
                 && status.kind == "PouchGoldenCicada"
         ));
@@ -1266,6 +1287,170 @@ fn pouch_watch_fire_matrix_golden_cicada_restores_damage_without_consuming_watch
     scenario.assert_replay_and_public_lifecycle(true, true);
     scenario.finish_turn(&p2);
     scenario.assert_replay_and_public_lifecycle(false, false);
+}
+
+#[test]
+fn pouch_watch_fire_matrix_preserves_the_shield_that_would_absorb_the_attack() {
+    let p1 = PlayerId::new("p1");
+    let p2 = PlayerId::new("p2");
+    for watch_fire in [false, true] {
+        let mut scenario = PouchWatchFireScenario::with_opening(
+            [
+                &[
+                    (Element::Wood, Some(1)),
+                    (Element::Wood, Some(2)),
+                    (Element::Metal, Some(1)),
+                    (Element::Fire, Some(2)),
+                ],
+                &[(Element::Metal, Some(2))],
+            ],
+            (Element::Metal, Some(1)),
+        );
+        if watch_fire {
+            scenario.trigger_watch_fire();
+        }
+        let barrier_cards = scenario.record.state().hand(&p1).unwrap().to_vec();
+        scenario
+            .record
+            .handle(Command::PerformFormation {
+                player: p1.clone(),
+                formation_id: "barrier".to_string(),
+                cards: barrier_cards.clone(),
+                declared_targets: Vec::new(),
+            })
+            .unwrap();
+        assert_eq!(scenario.record.state().shield(&p1), Some(24));
+        scenario.finish_turn(&p1);
+
+        let attack_card = card_with_level_in_hand(&scenario.record, &p2, Element::Metal, 2);
+        let hp_before = scenario.record.state().hp.clone();
+        let events = scenario.perform_metal_strike(&p2);
+        let expected_shield = (!watch_fire).then(|| fewfc::domain::ShieldChangeDelta {
+            player: p1.clone(),
+            old_value: 24,
+            delta: -6,
+            new_value: 18,
+        });
+        assert!(
+            matches!(
+                events.as_slice(),
+                [
+                    GameEvent::FormationCommitted { player, formation_id, cards, .. },
+                    GameEvent::AttackResolved { attacker, target, point_breakdown, hp_changes, shield_change, .. },
+                    GameEvent::FormationCardsDiscarded { player: discarder, formation_id: discarded_formation, cards: discarded_cards },
+                ] if player == &p2 && formation_id == "metal-strike" && cards == &[attack_card]
+                    && attacker == &p2 && target == &p1 && point_breakdown.final_amount == 6
+                    && hp_changes.is_empty() && shield_change == &expected_shield
+                    && discarder == &p2 && discarded_formation == formation_id && discarded_cards == cards
+            ),
+            "{events:#?}"
+        );
+        assert_eq!(
+            scenario.record.state().shield(&p1),
+            Some(if watch_fire { 24 } else { 18 })
+        );
+        assert_eq!(scenario.record.state().hp, hp_before);
+        assert!(
+            scenario
+                .record
+                .state()
+                .discard_for(&p2)
+                .unwrap()
+                .contains(&attack_card)
+        );
+        assert!(barrier_cards.iter().all(|card| {
+            scenario
+                .record
+                .state()
+                .discard_for(&p1)
+                .unwrap()
+                .contains(card)
+        }));
+        scenario.assert_replay_and_public_lifecycle(watch_fire, false);
+    }
+}
+
+#[test]
+fn pouch_watch_fire_matrix_keeps_void_meridian_environment_clear() {
+    let p1 = PlayerId::new("p1");
+    let p2 = PlayerId::new("p2");
+    for watch_fire in [false, true] {
+        let mut scenario = PouchWatchFireScenario::with_opening(
+            [
+                &[(Element::Metal, Some(1))],
+                &[
+                    (Element::Metal, Some(1)),
+                    (Element::Wood, Some(2)),
+                    (Element::Fire, Some(2)),
+                    (Element::Earth, Some(2)),
+                ],
+            ],
+            (Element::Fire, Some(5)),
+        );
+        if watch_fire {
+            scenario.establish_watch_fire_and_advance_to_p2();
+        } else {
+            scenario.perform_metal_strike(&p1);
+            scenario.finish_turn(&p1);
+        }
+        let retreat_cost = card_with_level_in_hand(&scenario.record, &p2, Element::Metal, 1);
+        scenario
+            .record
+            .handle(Command::TriggerSecretStrategy {
+                player: p2.clone(),
+                decision: fewfc::domain::SecretStrategyDecision::Environment {
+                    source_card: scenario.p2_pouch,
+                    operation:
+                        fewfc::domain::SecretStrategyEnvironmentOperation::TransferByDiscard {
+                            card: retreat_cost,
+                        },
+                },
+            })
+            .unwrap();
+        assert_eq!(scenario.record.state().environment, Some(Element::Metal));
+        let hp_before = scenario.record.state().hp.clone();
+        let meridian_cards = [Element::Wood, Element::Fire, Element::Earth]
+            .map(|element| card_with_level_in_hand(&scenario.record, &p2, element, 2))
+            .to_vec();
+        let events = scenario
+            .record
+            .handle(Command::PerformFormation {
+                player: p2.clone(),
+                formation_id: "void-meridian-severing".to_string(),
+                cards: meridian_cards.clone(),
+                declared_targets: Vec::new(),
+            })
+            .unwrap();
+        let effective_loss = if watch_fire { 0 } else { 20 };
+        assert!(
+            matches!(
+                events.as_slice(),
+                [
+                    GameEvent::FormationCommitted { player, formation_id, cards, .. },
+                    GameEvent::EnvironmentCleared { player: clearer, formation_id: cause, environment: Element::Metal, hp_changes },
+                    GameEvent::FormationCardsDiscarded { player: discarder, formation_id: discarded_formation, cards: discarded_cards },
+                ] if player == &p2 && formation_id == "void-meridian-severing" && cards == &meridian_cards
+                    && clearer == &p2 && cause == formation_id
+                    && hp_changes.len() == hp_before.len()
+                    && hp_changes.iter().zip(&hp_before).all(|(change, before)|
+                        change.team() == &before.team && change.old_hp() == before.hp
+                            && change.delta() == -20 && change.new_hp() == before.hp - effective_loss)
+                    && discarder == &p2 && discarded_formation == formation_id && discarded_cards == cards
+            ),
+            "{events:#?}"
+        );
+        assert_eq!(scenario.record.state().environment, None);
+        for (after, before) in scenario.record.state().hp.iter().zip(&hp_before) {
+            assert_eq!(
+                (after.team.clone(), after.hp),
+                (before.team.clone(), before.hp - effective_loss)
+            );
+        }
+        let discard = scenario.record.state().discard_for(&p2).unwrap();
+        assert!(meridian_cards.iter().all(|card| discard.contains(card)));
+        assert!(discard.contains(&retreat_cost) && discard.contains(&scenario.p2_pouch));
+        scenario.assert_replay_and_public_lifecycle(watch_fire, false);
+    }
 }
 
 #[test]

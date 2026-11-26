@@ -1,19 +1,23 @@
 use fewfc::application::{
     AutomaticReason, EventSource, GameRecord, advance_automatic, apply_event, handle_command,
-    resolve_trusted_randomness,
 };
 use fewfc::domain::{
-    CONFLUENCE_GENERATION_MODULE_ID, CardInstanceId, ChoiceAnswer, Command, CounterEffect,
-    DARK_GLIMMER_MODULE_ID, ECHO_MODULE_ID, Element, FIVE_DIRECTIONS_LEGEND_MODULE_ID,
-    FormationAreaState, FormationInArea, FormationSuppression, GameError, GameEvent, GameSetup,
-    GameState, HERO_SCHOOLS_MODULE_ID, JIANGHU_MODULE_ID, JianghuState, JianghuStateKind,
-    PERSONAL_DECK_MODULE_ID, PassiveFlipOutcome, PassiveNoEffectGround, PassiveTriggerTiming,
-    PendingResolution, Phase, PlayerId, PlayerSpirit, PreparedProfessionAbility, RuleModuleId,
-    SPIRIT_MODULE_ID, STAR_MODULE_ID, ScheduledEcho, SpiritKind, StarKind, StatusDuration,
-    StatusEffect, StatusOwner, TeamId, TeamStar, TimedEffectReduction, TrustedRandomnessAnswer,
-    ValidationError,
+    AttackOutcome, CONFLUENCE_GENERATION_MODULE_ID, CardInstanceId, CardMoveDelta, CardZone,
+    ChoiceAnswer, Command, CounterEffect, DARK_GLIMMER_MODULE_ID, DeckPlacement, ECHO_MODULE_ID,
+    Element, EnvironmentTransferDelta, FIVE_DIRECTIONS_LEGEND_MODULE_ID, FormationAreaState,
+    FormationInArea, FormationNoEffectReason, FormationSuppression, GameError, GameEvent,
+    GameSetup, GameState, HERO_SCHOOLS_MODULE_ID, JIANGHU_MODULE_ID, JianghuState,
+    JianghuStateKind, MelodyExecutionOrigin, PERSONAL_DECK_MODULE_ID, PassiveFlipOutcome,
+    PassiveNoEffectGround, PassiveTriggerTiming, PendingChoiceKind, PendingResolution, Phase,
+    PlayerId, PlayerSpirit, PreparedProfessionAbility, RandomnessDeck, RandomnessOperation,
+    RingingMetalSelection, RuleModuleId, SPIRIT_MODULE_ID, STAR_MODULE_ID, ScheduledEcho,
+    ScheduledPlantEarth, SpiritKind, StarKind, StatusDuration, StatusEffect, StatusOwner, TeamId,
+    TeamStar, TimedEffectReduction, TrustedRandomnessAnswer, ValidationError,
 };
-use fewfc::public_view::{PublicPendingChoice, Viewer, state_for};
+use fewfc::public_view::{
+    PublicCardRefs, PublicGameEvent, PublicPendingChoice, PublicPendingChoicePresentation, Viewer,
+    events_for, state_for,
+};
 use fewfc::rules::{OfficialRules, PlayableAction};
 
 fn dependencies() -> Vec<RuleModuleId> {
@@ -32,9 +36,18 @@ fn card(id: u64) -> CardInstanceId {
 }
 
 fn configured_setup() -> GameSetup {
+    configured_setup_with_modules(&[])
+}
+
+fn configured_setup_with_modules(extra_modules: &[&str]) -> GameSetup {
     let rules = OfficialRules::new();
     let mut modules = dependencies();
     modules.push(RuleModuleId::new(ECHO_MODULE_ID));
+    modules.extend(
+        extra_modules
+            .iter()
+            .map(|module| RuleModuleId::new(*module)),
+    );
     rules
         .configure_game(
             GameSetup::two_player(PlayerId::new("p1"), PlayerId::new("p2"), 30).players,
@@ -125,6 +138,28 @@ fn echo_is_default_on_and_requires_all_advanced_modules() {
             ValidationError::MissingRuleModuleDependencies { .. }
         ))
     ));
+}
+
+#[test]
+fn melody_and_base_formation_offer_separate_declarations_for_the_same_cards() {
+    let setup = configured_setup();
+    let rules = OfficialRules::new();
+    let deck = rules.official_deck_order(&setup).unwrap();
+    let mut record = GameRecord::start(setup, deck).unwrap();
+    record.advance_automatic().unwrap();
+
+    let player = PlayerId::new("p1");
+    let selected = [card(1), card(2)];
+    let actions = record.playable_actions(&player, &selected).unwrap();
+    for formation_id in ["weapon", "echo:ringing-metal"] {
+        assert!(
+            actions.iter().any(|action| matches!(
+                action, PlayableAction::PerformFormation(candidate)
+                    if candidate.formation_id == formation_id && candidate.cards == selected
+            )),
+            "{formation_id} missing from {actions:#?}"
+        );
+    }
 }
 
 #[test]
@@ -343,47 +378,145 @@ fn echo_falling_wood_recovers_even_when_its_team_is_poisoned() {
 
 #[test]
 fn only_echo_split_earth_suppresses_a_sacred_beast() {
-    for (origin, suppresses) in [
-        (fewfc::domain::MelodyExecutionOrigin::FormationUse, false),
-        (fewfc::domain::MelodyExecutionOrigin::PlantedEarth, false),
-        (fewfc::domain::MelodyExecutionOrigin::Echo, true),
+    let player = PlayerId::new("p1");
+    let target = PlayerId::new("p2");
+    let beast = "west-white-tiger";
+    for origin in [
+        MelodyExecutionOrigin::FormationUse,
+        MelodyExecutionOrigin::PlantedEarth,
+        MelodyExecutionOrigin::Echo,
     ] {
-        let mut state = configured_state();
-        let beast_cards = (1..=90)
-            .map(card)
-            .filter(|card| state.card_element(*card) == Some(Element::Metal))
-            .take(5)
-            .collect::<Vec<_>>();
-        assert_eq!(beast_cards.len(), 5);
-        state.hands[0].cards = beast_cards.clone();
-        state.formation_suppressions.push(FormationSuppression {
-            source: PlayerId::new("p2"),
-            target: PlayerId::new("p1"),
-            formation_id: "west-white-tiger".to_string(),
-            expires_on_turn_number: state.turn_number,
-            origin,
-        });
+        let opening = match origin {
+            MelodyExecutionOrigin::FormationUse | MelodyExecutionOrigin::Echo => [73, 74],
+            MelodyExecutionOrigin::PlantedEarth => [27, 85],
+        };
+        // 需要等到第 4 回合的案例，以第 1 張牌發動金擊再從抽牌留住第 6 張，
+        // 讓白虎出手時仍然備齊五張金牌。
+        let mut prefix = opening.to_vec();
+        prefix.extend([75, 19, 1, 2, 3, 4, 5, 7, 8, 9, 10, 6]);
+        let mut record = start_ordered_echo_record(configured_setup(), &prefix);
+        match origin {
+            MelodyExecutionOrigin::FormationUse => {
+                perform_record_formation(&mut record, &player, "echo:split-earth", &opening);
+                select_record_formation(&mut record, &player, beast);
+                answer_record_choice(&mut record, player.clone(), ChoiceAnswer::Decline).unwrap();
+            }
+            MelodyExecutionOrigin::Echo => {
+                perform_record_formation(&mut record, &player, "echo:split-earth", &opening);
+                select_record_formation(&mut record, &player, "weapon");
+                answer_record_choice(
+                    &mut record,
+                    player.clone(),
+                    ChoiceAnswer::Cards {
+                        cards: vec![card(75)],
+                    },
+                )
+                .unwrap();
+            }
+            MelodyExecutionOrigin::PlantedEarth => {
+                perform_record_formation(&mut record, &player, "echo:plant-earth", &opening);
+            }
+        }
+        finish_record_turn(&mut record);
 
-        let events = handle_command(
-            &state,
-            Command::PerformFormation {
-                player: PlayerId::new("p1"),
-                formation_id: "west-white-tiger".to_string(),
-                cards: beast_cards,
-                declared_targets: Vec::new(),
-            },
-        )
-        .unwrap();
+        let (beast_cards, target_turn) = if origin == MelodyExecutionOrigin::FormationUse {
+            ([1, 2, 3, 4, 5], 2)
+        } else {
+            perform_record_formation(&mut record, &target, "metal-strike", &[1]);
+            finish_record_turn(&mut record);
+            if origin == MelodyExecutionOrigin::PlantedEarth {
+                assert_eq!(
+                    record.state().pending_resolution,
+                    Some(PendingResolution::MelodyPlantEarthMelody {
+                        origin: MelodyExecutionOrigin::PlantedEarth,
+                    })
+                );
+                select_record_formation(&mut record, &player, "echo:split-earth");
+            }
+            assert_eq!(
+                record.state().pending_resolution,
+                Some(PendingResolution::MelodySplitEarthFormation { origin })
+            );
+            select_record_formation(&mut record, &player, beast);
+            record.advance_automatic().unwrap();
+            perform_record_formation(&mut record, &player, "wood-strike", &[19]);
+            finish_record_turn(&mut record);
+            ([2, 3, 4, 5, 6], 4)
+        };
+
+        let state = record.state();
+        assert_eq!(state.turn_number, target_turn);
         assert_eq!(
+            state.formation_suppressions,
+            [FormationSuppression {
+                source: player.clone(),
+                target: target.clone(),
+                formation_id: beast.to_string(),
+                expires_on_turn_number: target_turn,
+                origin,
+            }]
+        );
+        let old_hp = state.hp.clone();
+        let old_environment = state.environment;
+        let events = perform_record_formation(&mut record, &target, beast, &beast_cards);
+        let state = record.state();
+        let expected_outcome = if origin == MelodyExecutionOrigin::Echo {
+            AttackOutcome::DamagePrevented
+        } else {
+            AttackOutcome::Resolved
+        };
+        // 白虎仍會轉移環境，包含傷害受回響壓制的情況。
+        let transfer = EnvironmentTransferDelta {
+            player: target.clone(),
+            formation_id: beast.to_string(),
+            from: old_environment,
+            to: Element::Metal,
+        };
+        assert!(
             events.iter().any(|event| matches!(
                 event,
-                GameEvent::FormationEffectIgnored { formation_id, .. }
-                    if formation_id == "west-white-tiger"
+                GameEvent::AttackResolved {
+                    attacker,
+                    formation_id,
+                    hp_changes,
+                    elemental_context_update: Some(effects),
+                    ..
+                } if attacker == &target && formation_id == beast
+                    && effects.outcome == expected_outcome
+                    && effects.environment_transfers.as_slice() == std::slice::from_ref(&transfer)
+                    && hp_changes.iter().any(|entry| entry.change.effective_delta() < 0)
+                        == (expected_outcome == AttackOutcome::Resolved)
             )),
-            suppresses,
-            "{origin:?} Split Earth suppression must {}affect Sacred Beast",
-            if suppresses { "" } else { "not " },
+            "{origin:?}: {events:#?}"
         );
+        assert_eq!(state.environment, Some(Element::Metal), "{origin:?}");
+        assert!(events.contains(&GameEvent::FormationCardsDiscarded {
+            player: target.clone(),
+            formation_id: beast.to_string(),
+            cards: beast_cards.map(card).to_vec(),
+        }));
+        assert!(state.discard.ends_with(&beast_cards.map(card)));
+        if origin == MelodyExecutionOrigin::Echo {
+            assert!(events.contains(&GameEvent::FormationEffectIgnored {
+                player: target.clone(),
+                formation_id: beast.to_string(),
+                reason: FormationNoEffectReason::SuppressedBySplitEarth {
+                    source: player.clone()
+                },
+            }));
+            assert_eq!(state.hp, old_hp);
+        } else {
+            assert!(
+                !events
+                    .iter()
+                    .any(|event| matches!(event, GameEvent::FormationEffectIgnored { .. })),
+                "{origin:?}"
+            );
+            assert!(state.hp[0].hp < old_hp[0].hp, "{origin:?}");
+        }
+        assert_eq!(state.phase, Phase::TurnDraw);
+        assert_eq!(record.replay().unwrap(), *state);
+        assert_eq!(record.verify_replay().unwrap(), *state);
     }
 }
 
@@ -478,366 +611,673 @@ fn planted_earth_war_fire_choice_reuses_its_hp_plan_for_bloom() {
 
 #[test]
 fn flow_layers_stack_but_only_one_can_trigger_during_a_turn_draw() {
-    let mut state = configured_state();
-    state.flow_layers_by_player.insert(PlayerId::new("p1"), 2);
-    state.phase = Phase::TurnDraw;
-    state.hands[0].cards = vec![card(1)];
-    state.deck = (2..=18).map(card).collect();
+    let player = PlayerId::new("p1");
+    let opponent = PlayerId::new("p2");
+    let mut record = start_ordered_echo_record(
+        configured_setup(),
+        &[37, 38, 1, 39, 55, 56, 57, 58, 59, 3, 40, 2, 19],
+    );
+    perform_record_formation(&mut record, &player, "echo:flowing-water", &[37, 38]);
+    answer_record_choice(
+        &mut record,
+        player.clone(),
+        ChoiceAnswer::Cards {
+            cards: vec![card(1)],
+        },
+    )
+    .unwrap();
+    finish_record_turn(&mut record);
+    assert!(!record.state().flow_layers_by_player.contains_key(&player));
 
-    let events = advance_automatic(&state).unwrap();
+    perform_record_formation(&mut record, &opponent, "fire-strike", &[55]);
+    let echoed = finish_record_turn(&mut record);
+    assert!(echoed.contains(&GameEvent::FlowStateChanged {
+        player: player.clone(),
+        old_layers: 0,
+        new_layers: 1,
+    }));
+    assert!(echoed.contains(&GameEvent::EchoResolutionCompleted {
+        player: player.clone(),
+        melody_id: "echo:flowing-water".to_string(),
+        due_turn_number: 3,
+    }));
+
+    let stacked = perform_record_formation(&mut record, &player, "echo:flowing-water", &[39, 40]);
+    assert!(stacked.contains(&GameEvent::FlowStateChanged {
+        player: player.clone(),
+        old_layers: 1,
+        new_layers: 2,
+    }));
+    answer_record_choice(
+        &mut record,
+        player.clone(),
+        ChoiceAnswer::Cards {
+            cards: vec![card(2)],
+        },
+    )
+    .unwrap();
+    // 只留一張手牌，容量足以容納兩層的抽牌加成，因此不會由手牌上限代替觸發限制。
+    assert_eq!(record.state().hand(&player).unwrap(), [card(19)]);
+    assert!(record.state().base_draw + 2 <= record.state().hand_limit - 1);
+
+    let drawn = record.advance_automatic().unwrap();
+    let triggers = drawn
+        .iter()
+        .filter(|event| matches!(event, GameEvent::FlowStateTriggered { .. }))
+        .collect::<Vec<_>>();
     assert_eq!(
-        events
-            .iter()
-            .filter(|event| matches!(event, GameEvent::FlowStateTriggered { .. }))
-            .count(),
-        1
+        triggers,
+        [&GameEvent::FlowStateTriggered {
+            player: player.clone(),
+            old_layers: 2,
+            new_layers: 1,
+            old_draw_bonus: 0,
+            new_draw_bonus: 1,
+        }]
     );
-    let mut projected = state.clone();
-    apply_all(&mut projected, &events);
-    assert_eq!(
-        projected.flow_layers_by_player.get(&PlayerId::new("p1")),
-        Some(&1)
-    );
-    assert_eq!(
-        projected
-            .turn_draw_bonus_by_player
-            .get(&PlayerId::new("p1")),
-        Some(&1)
-    );
+    let state = record.state();
+    assert_eq!(state.turn_draw_pool.len(), state.base_draw + 2);
+    assert_eq!(state.flow_layers_by_player.get(&player), Some(&1));
+    assert_eq!(state.turn_draw_bonus_by_player.get(&player), Some(&1));
+    assert!(!state.turn_draw_bonus_by_player.contains_key(&opponent));
+    assert_eq!(record.replay().unwrap(), *state);
+    assert_eq!(record.verify_replay().unwrap(), *state);
 }
 
 #[test]
 fn split_earth_selects_a_catalog_formation_and_only_its_next_use_is_ineffective() {
-    let mut state = configured_state();
-    state.hands[0].cards = vec![card(73), card(74), card(75)];
-    state.hands[1].cards = vec![card(1), card(2)];
-
-    let performed = handle_command(
-        &state,
-        Command::PerformFormation {
-            player: PlayerId::new("p1"),
-            formation_id: "echo:split-earth".to_string(),
-            cards: vec![card(73), card(74)],
-            declared_targets: Vec::new(),
-        },
-    )
-    .unwrap();
-    assert!(performed
-        .iter()
-        .any(|event| matches!(event, GameEvent::HandInspected { target, .. } if target == &PlayerId::new("p2"))));
-    apply_all(&mut state, &performed);
-
-    let selected = answer_choice(
-        &state,
-        PlayerId::new("p1"),
-        ChoiceAnswer::Formation {
-            formation_id: "weapon".to_string(),
-        },
-    )
-    .unwrap();
-    assert!(selected.iter().any(|event| matches!(
+    let player = PlayerId::new("p1");
+    let target = PlayerId::new("p2");
+    let setup = configured_setup();
+    let mut catalog = OfficialRules::new()
+        .formation_names(&setup)
+        .unwrap()
+        .into_keys()
+        .collect::<Vec<_>>();
+    catalog.sort();
+    let mut record = start_ordered_echo_record(setup, &[73, 74, 75, 19, 1, 2, 3, 4, 5]);
+    let performed = perform_record_formation(&mut record, &player, "echo:split-earth", &[73, 74]);
+    assert!(performed.contains(&GameEvent::HandInspected {
+        viewer: player.clone(),
+        target: target.clone(),
+        cards: [1, 2, 3, 4, 5].map(card).to_vec(),
+    }));
+    assert!(performed.iter().any(|event| matches!(
         event,
-        GameEvent::FormationSuppressionSet { suppression }
-            if suppression.target == PlayerId::new("p2")
-                && suppression.formation_id == "weapon"
-                && suppression.expires_on_turn_number == 2
+        GameEvent::ChoiceRequested {
+            choice,
+            resolution: PendingResolution::MelodySplitEarthFormation { origin: MelodyExecutionOrigin::FormationUse },
+        } if choice.player == player && choice.kind == (PendingChoiceKind::Formation {
+            formations: catalog.clone(),
+            can_decline: false,
+        })
     )));
-    assert!(
-        selected
-            .iter()
-            .any(|event| matches!(event, GameEvent::ChoiceRequested { .. }))
+
+    let selected = select_record_formation(&mut record, &player, "weapon");
+    let suppression = FormationSuppression {
+        source: player.clone(),
+        target: target.clone(),
+        formation_id: "weapon".to_string(),
+        expires_on_turn_number: 2,
+        origin: MelodyExecutionOrigin::FormationUse,
+    };
+    assert!(selected.contains(&GameEvent::FormationSuppressionSet {
+        suppression: suppression.clone()
+    }));
+    assert_eq!(record.state().formation_suppressions, [suppression]);
+    assert_eq!(
+        record.state().pending_resolution,
+        Some(PendingResolution::MelodyCost {
+            melody_id: "echo:split-earth".to_string(),
+            origin: MelodyExecutionOrigin::FormationUse,
+        })
     );
-    apply_all(&mut state, &selected);
+    answer_record_choice(&mut record, player.clone(), ChoiceAnswer::Decline).unwrap();
+    finish_record_turn(&mut record);
 
-    let declined = answer_choice(&state, PlayerId::new("p1"), ChoiceAnswer::Decline).unwrap();
-    apply_all(&mut state, &declined);
-
-    state.current_turn_index = 1;
-    state.turn_number = 2;
-    state.phase = Phase::ActiveEffects;
-    let old_hp = state.hp[0].hp;
-    let suppressed = handle_command(
-        &state,
-        Command::PerformFormation {
-            player: PlayerId::new("p2"),
-            formation_id: "weapon".to_string(),
-            cards: vec![card(1), card(2)],
-            declared_targets: Vec::new(),
+    let old_hp = record.state().hp.clone();
+    let suppressed = perform_record_formation(&mut record, &target, "weapon", &[1, 2]);
+    assert!(suppressed.iter().any(|event| matches!(
+        event,
+        GameEvent::FormationCommitted { player, formation_id, cards, .. }
+            if player == &target && formation_id == "weapon" && cards == &[card(1), card(2)]
+    )));
+    assert!(suppressed.contains(&GameEvent::FormationEffectIgnored {
+        player: target.clone(),
+        formation_id: "weapon".to_string(),
+        reason: FormationNoEffectReason::SuppressedBySplitEarth {
+            source: player.clone()
         },
-    )
-    .unwrap();
-    assert!(
-        suppressed
-            .iter()
-            .any(|event| matches!(event, GameEvent::FormationEffectIgnored { .. }))
-    );
-    let mut projected = state.clone();
-    apply_all(&mut projected, &suppressed);
-    assert_eq!(projected.hp[0].hp, old_hp);
-    assert_eq!(projected.phase, Phase::TurnDraw);
+    }));
+    assert!(suppressed.contains(&GameEvent::FormationCardsDiscarded {
+        player: target.clone(),
+        formation_id: "weapon".to_string(),
+        cards: [1, 2].map(card).to_vec(),
+    }));
+    let state = record.state();
+    assert_eq!(state.hp, old_hp);
+    assert_eq!(state.phase, Phase::TurnDraw);
+    assert_eq!(state.hand(&target).unwrap(), [3, 4, 5].map(card));
+    assert!(state.discard.ends_with(&[card(1), card(2)]));
+    assert!(state.formation_area(&target).unwrap().formation.is_none());
+
+    let expired = finish_record_turn(&mut record);
+    assert!(expired.contains(&GameEvent::FormationSuppressionExpired {
+        target: target.clone(),
+        formation_id: "weapon".to_string(),
+        expired_on_turn_number: 2,
+    }));
+    assert!(record.state().formation_suppressions.is_empty());
+    perform_record_formation(&mut record, &player, "wood-strike", &[19]);
+    finish_record_turn(&mut record);
+    assert_eq!(record.state().turn_number, 4);
+
+    let old_hp = record.state().hp[0].hp;
+    let later = perform_record_formation(&mut record, &target, "weapon", &[3, 4]);
+    assert!(later.iter().any(|event| matches!(
+        event,
+        GameEvent::AttackResolved { attacker, formation_id, hp_changes, .. }
+            if attacker == &target && formation_id == "weapon" && hp_changes.iter().any(|change| change.change.effective_delta() < 0)
+    )));
+    assert!(record.state().hp[0].hp < old_hp);
+    assert_eq!(record.replay().unwrap(), *record.state());
+    assert_eq!(record.verify_replay().unwrap(), *record.state());
 }
 
 #[test]
 fn an_ineffective_melody_neither_runs_its_main_effect_nor_offers_echo() {
-    let mut state = configured_state();
-    state.hp[0].hp = 170;
-    state.hands[0].cards = vec![card(19), card(20), card(21)];
-    state.formation_suppressions.push(FormationSuppression {
-        source: PlayerId::new("p2"),
-        target: PlayerId::new("p1"),
-        formation_id: "echo:falling-wood".to_string(),
-        expires_on_turn_number: 1,
-        origin: fewfc::domain::MelodyExecutionOrigin::FormationUse,
-    });
+    let player = PlayerId::new("p1");
+    let target = PlayerId::new("p2");
+    for (selected_formation, suppressed) in [("weapon", false), ("echo:falling-wood", true)] {
+        let mut record =
+            start_ordered_echo_record(configured_setup(), &[1, 73, 74, 75, 19, 20, 21, 2, 5]);
+        // 先以一般攻擊扣除生命值，讓後續枯木的回復有實際效果。
+        perform_record_formation(&mut record, &player, "metal-strike", &[1]);
+        finish_record_turn(&mut record);
+        perform_record_formation(&mut record, &target, "metal-strike", &[2]);
+        finish_record_turn(&mut record);
 
-    let events = handle_command(
-        &state,
-        Command::PerformFormation {
-            player: PlayerId::new("p1"),
-            formation_id: "echo:falling-wood".to_string(),
-            cards: vec![card(19), card(20)],
-            declared_targets: Vec::new(),
-        },
-    )
-    .unwrap();
-    assert!(
-        events
-            .iter()
-            .any(|event| matches!(event, GameEvent::FormationEffectIgnored { .. }))
-    );
-    assert!(
-        !events
-            .iter()
-            .any(|event| matches!(event, GameEvent::HpChanged { .. }))
-    );
-    assert!(
-        !events
-            .iter()
-            .any(|event| matches!(event, GameEvent::ChoiceRequested { .. }))
-    );
+        perform_record_formation(&mut record, &player, "echo:split-earth", &[73, 74]);
+        select_record_formation(&mut record, &player, selected_formation);
+        answer_record_choice(&mut record, player.clone(), ChoiceAnswer::Decline).unwrap();
+        finish_record_turn(&mut record);
+
+        let old_hp = record.state().hp.clone();
+        let events = perform_record_formation(&mut record, &target, "echo:falling-wood", &[19, 20]);
+        assert!(events.iter().any(|event| matches!(
+            event,
+            GameEvent::FormationCommitted { player, formation_id, cards, .. }
+                if player == &target && formation_id == "echo:falling-wood" && cards == &[card(19), card(20)]
+        )));
+        if suppressed {
+            assert!(events.contains(&GameEvent::FormationEffectIgnored {
+                player: target.clone(),
+                formation_id: "echo:falling-wood".to_string(),
+                reason: FormationNoEffectReason::SuppressedBySplitEarth {
+                    source: player.clone()
+                },
+            }));
+            assert!(!events.iter().any(|event| matches!(
+                event,
+                GameEvent::HpChanged { .. } | GameEvent::ChoiceRequested { .. }
+            )));
+            assert_eq!(record.state().hp, old_hp);
+            assert!(record.state().pending_choice.is_none());
+        } else {
+            assert!(events.iter().any(|event| matches!(
+                event,
+                GameEvent::HpChanged { change } if change.effective_delta() > 0
+            )));
+            assert!(record.state().hp[1].hp > old_hp[1].hp);
+            assert_eq!(
+                record.state().pending_resolution,
+                Some(PendingResolution::MelodyCost {
+                    melody_id: "echo:falling-wood".to_string(),
+                    origin: MelodyExecutionOrigin::FormationUse,
+                })
+            );
+            answer_record_choice(&mut record, target.clone(), ChoiceAnswer::Decline).unwrap();
+        }
+
+        let state = record.state();
+        assert!(state.hand(&target).unwrap().contains(&card(21)));
+        assert!(state.discard.ends_with(&[card(19), card(20)]));
+        assert!(state.formation_area(&target).unwrap().formation.is_none());
+        assert_eq!(state.phase, Phase::TurnDraw);
+        assert_eq!(record.replay().unwrap(), *state);
+        assert_eq!(record.verify_replay().unwrap(), *state);
+    }
 }
 
 #[test]
 fn ringing_metal_reveals_then_shuffles_the_remainder_before_placing_it_on_top() {
-    let mut state = configured_state();
-    state.hands[0].cards = vec![card(1), card(2), card(19)];
-    state.deck = vec![card(3), card(4), card(5)];
+    let player = PlayerId::new("p1");
+    let opponent = PlayerId::new("p2");
+    let opening_deck = [1, 2, 19, 18, 10, 11, 12, 13, 14, 3, 4, 5];
+    let mut record =
+        GameRecord::start(configured_setup(), opening_deck.map(card).to_vec()).unwrap();
+    record.advance_automatic().unwrap();
+    let opponent_hand = record.state().hand(&opponent).unwrap().to_vec();
 
-    let performed = handle_command(
-        &state,
-        Command::PerformFormation {
-            player: PlayerId::new("p1"),
-            formation_id: "echo:ringing-metal".to_string(),
-            cards: vec![card(1), card(2)],
-            declared_targets: Vec::new(),
-        },
-    )
-    .unwrap();
-    apply_all(&mut state, &performed);
-    assert!(matches!(
-        state_for(&state, Viewer::Observer).pending_choice,
-        Some(PublicPendingChoice::Hidden { .. })
-    ));
-    assert!(matches!(
-        state_for(&state, Viewer::Player(PlayerId::new("p1"))).pending_choice,
-        Some(PublicPendingChoice::Visible { .. })
-    ));
+    let performed = perform_record_formation(&mut record, &player, "echo:ringing-metal", &[1, 2]);
+    assert!(performed.iter().any(|event| matches!(
+        event,
+        GameEvent::FormationCommitted { player: performer, formation_id, cards, state: FormationAreaState::FaceUpResolving, .. }
+            if performer == &player && formation_id == "echo:ringing-metal" && cards == &[card(1), card(2)]
+    )));
+    let search = record.state().pending_choice.as_ref().unwrap();
+    assert_eq!(
+        record.state().pending_resolution,
+        Some(PendingResolution::MelodyRingingMetalDeckCard {
+            origin: MelodyExecutionOrigin::FormationUse,
+        })
+    );
+    assert_eq!(
+        search.kind,
+        PendingChoiceKind::Card {
+            cards: vec![card(3), card(4), card(5)],
+            minimum: 1,
+            maximum: 1,
+            can_decline: false,
+        }
+    );
+    for viewer in [Viewer::Observer, Viewer::Player(opponent.clone())] {
+        assert_eq!(
+            state_for(record.state(), viewer).pending_choice,
+            Some(PublicPendingChoice::Hidden {
+                player: player.clone(),
+                reason: PublicPendingChoicePresentation::EchoRingingMetalDeckCard,
+            })
+        );
+    }
+    assert_eq!(
+        state_for(record.state(), Viewer::Player(player.clone())).pending_choice,
+        Some(PublicPendingChoice::Visible {
+            choice_id: search.choice_id,
+            player: player.clone(),
+            reason: PublicPendingChoicePresentation::EchoRingingMetalDeckCard,
+            choice: search.kind.clone(),
+        })
+    );
 
-    let selected = answer_choice(
-        &state,
-        PlayerId::new("p1"),
+    let selected = answer_record_choice(
+        &mut record,
+        player.clone(),
         ChoiceAnswer::Cards {
             cards: vec![card(4)],
         },
     )
     .unwrap();
-    apply_all(&mut state, &selected);
+    let reveal = RingingMetalSelection {
+        player: player.clone(),
+        card: card(4),
+        deck: RandomnessDeck::Shared,
+    };
+    let revealed = GameEvent::RingingMetalCardRevealed {
+        selection: reveal.clone(),
+    };
+    assert!(selected.contains(&revealed));
+    assert!(events_for(&selected, Viewer::Observer).contains(&PublicGameEvent::Public(revealed)));
+    let shuffle = record.state().pending_randomness.as_ref().unwrap();
     assert_eq!(
-        state
-            .pending_randomness
-            .as_ref()
-            .map(|request| request.current_order.clone()),
-        Some(vec![card(3), card(5)])
+        shuffle.operation,
+        RandomnessOperation::DeckShuffle {
+            deck: RandomnessDeck::Shared
+        }
+    );
+    assert_eq!(shuffle.current_order, [card(3), card(5)]);
+    assert_eq!(record.state().deck, [card(3), card(5)]);
+
+    let shuffled = resolve_record_shuffle(&mut record, vec![card(5), card(3)]);
+    assert!(shuffled.contains(&GameEvent::RingingMetalCompleted { selection: reveal }));
+    assert_eq!(record.state().deck, [card(4), card(5), card(3)]);
+    assert_eq!(
+        record.state().pending_resolution,
+        Some(PendingResolution::MelodyCost {
+            melody_id: "echo:ringing-metal".to_string(),
+            origin: MelodyExecutionOrigin::FormationUse,
+        })
+    );
+    assert_eq!(
+        record.state().pending_choice.as_ref().unwrap().kind,
+        PendingChoiceKind::Card {
+            cards: vec![card(18)],
+            minimum: 1,
+            maximum: 1,
+            can_decline: true,
+        }
     );
 
-    let request = state.pending_randomness.clone().unwrap();
-    let shuffled = resolve_trusted_randomness(
-        &state,
-        &TrustedRandomnessAnswer {
-            request_id: request.request_id,
-            shuffled_order: vec![card(5), card(3)],
-        },
-    )
-    .unwrap();
-    apply_all(&mut state, &shuffled);
-    assert_eq!(state.deck, vec![card(4), card(5), card(3)]);
-    assert!(
-        shuffled
-            .iter()
-            .any(|event| matches!(event, GameEvent::RingingMetalCompleted { .. }))
-    );
-    assert!(
-        shuffled
-            .iter()
-            .any(|event| matches!(event, GameEvent::ChoiceRequested { .. }))
-    );
+    let declined =
+        answer_record_choice(&mut record, player.clone(), ChoiceAnswer::Decline).unwrap();
+    assert!(declined.contains(&GameEvent::EchoDeclined {
+        player: player.clone(),
+        melody_id: "echo:ringing-metal".to_string(),
+    }));
+    let state = record.state();
+    assert_eq!(state.phase, Phase::TurnDraw);
+    assert_eq!(state.hand(&player).unwrap(), &[card(19), card(18)]);
+    assert_eq!(state.hand(&opponent).unwrap(), opponent_hand);
+    assert_eq!(state.discard, [card(1), card(2)]);
+    assert_eq!(record.replay().unwrap(), *state);
+    assert_eq!(record.verify_replay().unwrap(), *state);
 }
 
 #[test]
 fn ringing_metal_empty_deck_recycles_before_an_independent_post_search_shuffle() {
-    let mut state = configured_state();
-    state.hands[0].cards = vec![card(1), card(2), card(19)];
-    state.deck.clear();
-    // 隨機性請求等待期間，陣形卡牌仍留在陣形區，因此只有可回收的棄牌必須
-    // 滿足要求的抽牌數量。
-    state.discard = vec![card(3), card(4), card(5), card(6)];
+    let player = PlayerId::new("p1");
+    let opponent = PlayerId::new("p2");
+    // 開局發九張牌，兩個回合的正常抽牌共取走剩下五張。
+    let opening_deck = [1, 2, 3, 4, 10, 11, 12, 13, 14, 5, 15, 16, 6, 17];
+    let mut record =
+        GameRecord::start(configured_setup(), opening_deck.map(card).to_vec()).unwrap();
+    record.advance_automatic().unwrap();
+    perform_record_formation(&mut record, &player, "weapon", &[3, 4]);
+    choose_first_turn_draw_discard(&mut record);
+    record.advance_automatic().unwrap();
+    perform_record_formation(&mut record, &opponent, "metal-strike", &[10]);
+    choose_first_turn_draw_discard(&mut record);
+    record.advance_automatic().unwrap();
+    assert!(record.state().deck.is_empty());
+    let original_discard = [3, 4, 5, 10, 6].map(card);
+    assert_eq!(record.state().discard, original_discard);
 
-    let performed = handle_command(
-        &state,
-        Command::PerformFormation {
-            player: PlayerId::new("p1"),
-            formation_id: "echo:ringing-metal".to_string(),
-            cards: vec![card(1), card(2)],
-            declared_targets: Vec::new(),
-        },
-    )
-    .unwrap();
-    apply_all(&mut state, &performed);
-    let recycle = state.pending_randomness.clone().unwrap();
+    perform_record_formation(&mut record, &player, "echo:ringing-metal", &[1, 2]);
+    let recycle = record.state().pending_randomness.as_ref().unwrap();
+    let recycle_id = recycle.request_id.clone();
     assert_eq!(
-        recycle.current_order,
-        vec![card(3), card(4), card(5), card(6)]
+        recycle.operation,
+        RandomnessOperation::DiscardShuffle {
+            pile: RandomnessDeck::Shared,
+            placement: DeckPlacement::Bottom,
+        }
+    );
+    assert_eq!(recycle.current_order, original_discard);
+    assert_eq!(
+        record.state().pending_resolution,
+        Some(PendingResolution::MelodyRingingMetalRecycleDiscard {
+            origin: MelodyExecutionOrigin::FormationUse,
+        })
+    );
+    assert!(record.state().pending_choice.is_none());
+    assert_eq!(
+        record
+            .state()
+            .formation_area(&player)
+            .unwrap()
+            .formation
+            .as_ref()
+            .unwrap()
+            .cards,
+        [card(1), card(2)]
     );
 
-    let recycled = resolve_trusted_randomness(
-        &state,
-        &TrustedRandomnessAnswer {
-            request_id: recycle.request_id,
-            shuffled_order: vec![card(4), card(3), card(5), card(6)],
-        },
-    )
-    .unwrap();
-    apply_all(&mut state, &recycled);
-    assert!(state.discard.is_empty());
-    assert!(state.pending_choice.is_some());
+    let recycled_order = [4, 3, 5, 6, 10].map(card).to_vec();
+    resolve_record_shuffle(&mut record, recycled_order.clone());
+    assert!(record.state().discard.is_empty());
+    assert_eq!(record.state().deck, recycled_order);
+    assert_eq!(
+        record.state().pending_choice.as_ref().unwrap().kind,
+        PendingChoiceKind::Card {
+            cards: recycled_order,
+            minimum: 1,
+            maximum: 1,
+            can_decline: false,
+        }
+    );
 
-    let selected = answer_choice(
-        &state,
-        PlayerId::new("p1"),
+    answer_record_choice(
+        &mut record,
+        player.clone(),
         ChoiceAnswer::Cards {
             cards: vec![card(4)],
         },
     )
     .unwrap();
-    apply_all(&mut state, &selected);
-    let post_search = state.pending_randomness.as_ref().unwrap();
-    assert!(matches!(
-        state.pending_resolution,
-        Some(PendingResolution::MelodyRingingMetalPostSearch { .. })
-    ));
-    assert_eq!(post_search.current_order, vec![card(3), card(5), card(6)]);
+    let post_search = record.state().pending_randomness.as_ref().unwrap();
+    assert_ne!(post_search.request_id, recycle_id);
+    assert_eq!(
+        post_search.operation,
+        RandomnessOperation::DeckShuffle {
+            deck: RandomnessDeck::Shared
+        }
+    );
+    assert_eq!(post_search.current_order, [3, 5, 6, 10].map(card));
+    assert_eq!(
+        record.state().pending_resolution,
+        Some(PendingResolution::MelodyRingingMetalPostSearch {
+            origin: MelodyExecutionOrigin::FormationUse,
+        })
+    );
+
+    resolve_record_shuffle(&mut record, [10, 6, 5, 3].map(card).to_vec());
+    answer_record_choice(&mut record, player, ChoiceAnswer::Decline).unwrap();
+    let state = record.state();
+    assert_eq!(state.deck, [4, 10, 6, 5, 3].map(card));
+    assert_eq!(state.discard, [card(1), card(2)]);
+    assert_eq!(state.phase, Phase::TurnDraw);
+    assert_eq!(record.replay().unwrap(), *state);
+    assert_eq!(record.verify_replay().unwrap(), *state);
+}
+
+#[test]
+fn ringing_metal_with_empty_piles_requests_an_empty_shuffle_before_any_card_choice() {
+    // 九張牌在開局全數發完，搜尋時牌堆與棄牌堆都尚未有可取用的牌。
+    let mut record = GameRecord::start(configured_setup(), (1..=9).map(card).collect()).unwrap();
+    record.advance_automatic().unwrap();
+    assert!(record.state().deck.is_empty() && record.state().discard.is_empty());
+
+    let player = PlayerId::new("p1");
+    let cards = vec![card(1), card(2)];
+    let events = record
+        .handle(Command::PerformFormation {
+            player: player.clone(),
+            formation_id: "echo:ringing-metal".to_string(),
+            cards: cards.clone(),
+            declared_targets: Vec::new(),
+        })
+        .unwrap();
+    assert!(
+        matches!(
+            events.as_slice(),
+            [
+                GameEvent::FormationCommitted { player: performer, formation_id, cards: committed, state: FormationAreaState::FaceUpResolving, .. },
+                GameEvent::RandomnessRequested {
+                    request,
+                    resolution: PendingResolution::MelodyRingingMetalRecycleDiscard { origin: fewfc::domain::MelodyExecutionOrigin::FormationUse },
+                },
+            ] if performer == &player && formation_id == "echo:ringing-metal" && committed == &cards
+                && request.operation == (fewfc::domain::RandomnessOperation::DiscardShuffle {
+                    pile: fewfc::domain::RandomnessDeck::Shared,
+                    placement: fewfc::domain::DeckPlacement::Bottom,
+                })
+                && request.current_order.is_empty()
+        ),
+        "{events:#?}"
+    );
+    let state = record.state();
+    assert_eq!(state.phase, Phase::Action);
+    assert!(state.pending_choice.is_none());
+    assert!(state.deck.is_empty() && state.discard.is_empty());
+    assert_eq!(
+        state
+            .formation_area(&player)
+            .unwrap()
+            .formation
+            .as_ref()
+            .unwrap()
+            .cards,
+        cards
+    );
+    assert_eq!(record.replay().unwrap(), *state);
+    assert_eq!(record.verify_replay().unwrap(), *state);
 }
 
 #[test]
 fn ringing_metal_uses_the_performing_players_personal_deck() {
-    let mut state = configured_state();
-    state
-        .enabled_rule_modules
-        .push(RuleModuleId::new(PERSONAL_DECK_MODULE_ID));
-    state.hands[0].cards = vec![card(1), card(2), card(19)];
-    state.deck = vec![card(70)];
-    state.player_decks[0].cards = vec![card(3), card(4)];
+    let setup = configured_setup_with_modules(&[PERSONAL_DECK_MODULE_ID]);
+    let deck = OfficialRules::new().official_deck_order(&setup).unwrap();
+    let mut record = GameRecord::start(setup, deck).unwrap();
+    record.advance_automatic().unwrap();
+    let player = PlayerId::new("p1");
+    let opponent = PlayerId::new("p2");
+    let starting_deck = record.state().deck_for(&player).unwrap().to_vec();
+    let opponent_deck = record.state().deck_for(&opponent).unwrap().to_vec();
+    let opponent_hand = record.state().hand(&opponent).unwrap().to_vec();
+    assert!(!opponent_deck.is_empty());
+    assert!(record.state().deck.is_empty());
 
-    let performed = handle_command(
-        &state,
-        Command::PerformFormation {
-            player: PlayerId::new("p1"),
-            formation_id: "echo:ringing-metal".to_string(),
-            cards: vec![card(1), card(2)],
-            declared_targets: Vec::new(),
-        },
-    )
-    .unwrap();
-    apply_all(&mut state, &performed);
-    let choice = state.pending_choice.as_ref().unwrap();
-    assert!(matches!(
-        &choice.kind,
-        fewfc::domain::PendingChoiceKind::Card { cards, .. }
-            if cards == &vec![card(3), card(4)]
-    ));
+    perform_record_formation(&mut record, &player, "echo:ringing-metal", &[1, 2]);
+    assert_eq!(
+        record.state().pending_choice.as_ref().unwrap().kind,
+        PendingChoiceKind::Card {
+            cards: starting_deck.clone(),
+            minimum: 1,
+            maximum: 1,
+            can_decline: false,
+        }
+    );
 
-    let selected = answer_choice(
-        &state,
-        PlayerId::new("p1"),
+    let (&searched_card, remainder) = starting_deck.split_first().unwrap();
+    let selected = answer_record_choice(
+        &mut record,
+        player.clone(),
         ChoiceAnswer::Cards {
-            cards: vec![card(3)],
+            cards: vec![searched_card],
         },
     )
     .unwrap();
-    apply_all(&mut state, &selected);
-    assert!(matches!(
-        state
-            .pending_randomness
-            .as_ref()
-            .map(|request| request.operation.destination_deck()),
-        Some(fewfc::domain::RandomnessDeck::Player(player))
-            if player == &PlayerId::new("p1")
-    ));
-    assert_eq!(state.deck, vec![card(70)]);
+    let selection = RingingMetalSelection {
+        player: player.clone(),
+        card: searched_card,
+        deck: RandomnessDeck::Player(player.clone()),
+    };
+    assert!(selected.contains(&GameEvent::RingingMetalCardRevealed {
+        selection: selection.clone()
+    }));
+    let shuffle = record.state().pending_randomness.as_ref().unwrap();
+    assert_eq!(
+        shuffle.operation,
+        RandomnessOperation::DeckShuffle {
+            deck: RandomnessDeck::Player(player.clone()),
+        }
+    );
+    assert_eq!(shuffle.current_order, remainder);
+
+    let shuffled_remainder = remainder.iter().rev().copied().collect::<Vec<_>>();
+    let shuffled = resolve_record_shuffle(&mut record, shuffled_remainder.clone());
+    assert!(shuffled.contains(&GameEvent::RingingMetalCompleted { selection }));
+    answer_record_choice(&mut record, player.clone(), ChoiceAnswer::Decline).unwrap();
+
+    let state = record.state();
+    let final_deck = state.deck_for(&player).unwrap();
+    assert_eq!(final_deck[0], searched_card);
+    assert_eq!(&final_deck[1..], shuffled_remainder);
+    assert_eq!(state.deck_for(&opponent).unwrap(), opponent_deck);
+    assert_eq!(state.hand(&opponent).unwrap(), opponent_hand);
+    assert!(state.deck.is_empty());
+    assert!(state.discard.is_empty());
+    assert_eq!(state.player_discards[0].cards, [card(1), card(2)]);
+    assert!(state.player_discards[1].cards.is_empty());
+    assert_eq!(state.phase, Phase::TurnDraw);
+    assert_eq!(record.replay().unwrap(), *state);
+    assert_eq!(record.verify_replay().unwrap(), *state);
 }
 
 #[test]
 fn split_earth_echo_resolves_a_fresh_choice_without_scheduling_again() {
-    let mut state = configured_state();
-    state.phase = Phase::TurnStart;
-    state.hands[1].cards = vec![card(1), card(2)];
-    state.scheduled_echoes.push(ScheduledEcho {
-        player: PlayerId::new("p1"),
+    let player = PlayerId::new("p1");
+    let target = PlayerId::new("p2");
+    let mut record =
+        start_ordered_echo_record(configured_setup(), &[73, 74, 75, 19, 1, 2, 3, 4, 5]);
+    let original_hand = record.state().hand(&target).unwrap().to_vec();
+    perform_record_formation(&mut record, &player, "echo:split-earth", &[73, 74]);
+    select_record_formation(&mut record, &player, "fire-strike");
+    let paid = answer_record_choice(
+        &mut record,
+        player.clone(),
+        ChoiceAnswer::Cards {
+            cards: vec![card(75)],
+        },
+    )
+    .unwrap();
+    let schedule = ScheduledEcho {
+        player: player.clone(),
         melody_id: "echo:split-earth".to_string(),
-        due_turn_number: 1,
-    });
+        due_turn_number: 3,
+    };
+    assert!(paid.contains(&GameEvent::EchoCostPaid {
+        player: player.clone(),
+        melody_id: "echo:split-earth".to_string(),
+        card_move: CardMoveDelta {
+            card: card(75),
+            from: CardZone::Hand(player.clone()),
+            to: CardZone::Discard
+        },
+    }));
+    assert!(paid.contains(&GameEvent::EchoScheduled {
+        schedule: schedule.clone()
+    }));
+    finish_record_turn(&mut record);
 
-    let started = advance_automatic(&state).unwrap();
-    assert!(
-        started
-            .iter()
-            .any(|event| matches!(event, GameEvent::EchoResolutionStarted { .. }))
-    );
-    assert!(
-        started
-            .iter()
-            .any(|event| matches!(event, GameEvent::ChoiceRequested { .. }))
-    );
+    perform_record_formation(&mut record, &target, "weapon", &[1, 2]);
+    let started = finish_record_turn(&mut record);
+    let fresh_hand = record.state().hand(&target).unwrap().to_vec();
+    assert_ne!(fresh_hand, original_hand);
+    assert!(started.contains(&GameEvent::EchoResolutionStarted { schedule }));
+    assert!(started.contains(&GameEvent::HandInspected {
+        viewer: player.clone(),
+        target: target.clone(),
+        cards: fresh_hand,
+    }));
+    assert!(started.iter().any(|event| matches!(
+        event,
+        GameEvent::ChoiceRequested {
+            choice,
+            resolution: PendingResolution::MelodySplitEarthFormation { origin: MelodyExecutionOrigin::Echo },
+        } if choice.player == player && matches!(&choice.kind,
+            PendingChoiceKind::Formation { formations, can_decline: false } if formations.iter().any(|id| id == "weapon")
+        )
+    )));
     assert!(
         !started
             .iter()
             .any(|event| matches!(event, GameEvent::TurnStarted { .. }))
     );
-    apply_all(&mut state, &started);
+    assert_eq!(record.state().phase, Phase::TurnStart);
 
-    let answered = answer_choice(
-        &state,
-        PlayerId::new("p1"),
-        ChoiceAnswer::Formation {
+    let answered = select_record_formation(&mut record, &player, "weapon");
+    assert!(answered.contains(&GameEvent::FormationSuppressionSet {
+        suppression: FormationSuppression {
+            source: player.clone(),
+            target,
             formation_id: "weapon".to_string(),
+            expires_on_turn_number: 4,
+            origin: MelodyExecutionOrigin::Echo,
         },
-    )
-    .unwrap();
-    assert!(
-        answered
-            .iter()
-            .any(|event| matches!(event, GameEvent::EchoResolutionCompleted { .. }))
-    );
-    assert!(
-        !answered
-            .iter()
-            .any(|event| matches!(event, GameEvent::EchoScheduled { .. }))
-    );
-    assert!(
-        !answered
-            .iter()
-            .any(|event| matches!(event, GameEvent::ChoiceRequested { .. }))
-    );
+    }));
+    assert!(answered.contains(&GameEvent::EchoResolutionCompleted {
+        player: player.clone(),
+        melody_id: "echo:split-earth".to_string(),
+        due_turn_number: 3,
+    }));
+    assert!(!answered.iter().any(|event| matches!(
+        event,
+        GameEvent::EchoScheduled { .. } | GameEvent::ChoiceRequested { .. }
+    )));
+    assert!(record.state().scheduled_echoes.is_empty());
+    assert!(record.state().active_echo_resolution.is_none());
+    assert!(record.state().pending_choice.is_none());
+    assert!(record.state().pending_resolution.is_none());
+
+    let resumed = record.advance_automatic().unwrap();
+    assert!(resumed.contains(&GameEvent::TurnStarted {
+        player,
+        turn_number: 3
+    }));
+    assert_eq!(record.state().phase, Phase::ActiveEffects);
+    assert_eq!(record.replay().unwrap(), *record.state());
+    assert_eq!(record.verify_replay().unwrap(), *record.state());
 }
 
 #[test]
@@ -899,38 +1339,68 @@ fn pure_fire_composite_reduction_round_trips_through_recorded_decisions() {
 
 #[test]
 fn split_earth_uses_the_next_player_in_four_player_turn_order() {
-    let rules = OfficialRules::new();
+    let player = PlayerId::new("p1");
+    let next = PlayerId::new("p2");
+    let previous = PlayerId::new("p4");
     let mut modules = dependencies();
     modules.push(RuleModuleId::new(ECHO_MODULE_ID));
     let shape = GameSetup::team_mode(
         TeamId::new("a"),
-        vec![PlayerId::new("p1"), PlayerId::new("p3")],
+        vec![player.clone(), PlayerId::new("p3")],
         TeamId::new("b"),
-        vec![PlayerId::new("p2"), PlayerId::new("p4")],
+        vec![next.clone(), previous.clone()],
         30,
     );
-    let setup = rules
+    let setup = OfficialRules::new()
         .configure_game(shape.players, shape.turn_order, modules)
         .unwrap();
-    let mut state = GameState::from_setup(&setup);
-    state.phase = Phase::ActiveEffects;
-    state.hands[0].cards = vec![card(73), card(74)];
-    state.hands[1].cards = vec![card(1)];
+    let mut record = start_ordered_echo_record(setup, &[73, 74]);
+    let inspected = record.state().hand(&next).unwrap().to_vec();
+    assert_ne!(record.state().hand(&previous).unwrap(), inspected);
 
-    let events = handle_command(
-        &state,
-        Command::PerformFormation {
-            player: PlayerId::new("p1"),
-            formation_id: "echo:split-earth".to_string(),
-            cards: vec![card(73), card(74)],
-            declared_targets: Vec::new(),
+    let events = perform_record_formation(&mut record, &player, "echo:split-earth", &[73, 74]);
+    let inspections = events
+        .iter()
+        .filter(|event| matches!(event, GameEvent::HandInspected { .. }))
+        .collect::<Vec<_>>();
+    assert_eq!(
+        inspections,
+        [&GameEvent::HandInspected {
+            viewer: player.clone(),
+            target: next.clone(),
+            cards: inspected.clone(),
+        }]
+    );
+    let owner_view = events_for(&events, Viewer::Player(player.clone()));
+    let previous_view = events_for(&events, Viewer::Player(previous));
+    assert!(owner_view.contains(&PublicGameEvent::HandInspected {
+        viewer: player.clone(),
+        target: next.clone(),
+        cards: PublicCardRefs::Known(inspected.clone()),
+    }));
+    assert!(previous_view.contains(&PublicGameEvent::HandInspected {
+        viewer: player.clone(),
+        target: next.clone(),
+        cards: PublicCardRefs::Hidden {
+            count: inspected.len()
         },
-    )
-    .unwrap();
-    assert!(events.iter().any(|event| matches!(
-        event,
-        GameEvent::HandInspected { target, .. } if target == &PlayerId::new("p2")
-    )));
+    }));
+
+    let chosen = select_record_formation(&mut record, &player, "weapon");
+    assert!(chosen.contains(&GameEvent::FormationSuppressionSet {
+        suppression: FormationSuppression {
+            source: player.clone(),
+            target: next.clone(),
+            formation_id: "weapon".to_string(),
+            expires_on_turn_number: 2,
+            origin: MelodyExecutionOrigin::FormationUse,
+        },
+    }));
+    answer_record_choice(&mut record, player, ChoiceAnswer::Decline).unwrap();
+    finish_record_turn(&mut record);
+    assert_eq!(record.state().current_player(), Some(&next));
+    assert_eq!(record.replay().unwrap(), *record.state());
+    assert_eq!(record.verify_replay().unwrap(), *record.state());
 }
 
 #[test]
@@ -1005,43 +1475,48 @@ fn pure_fire_and_plant_earth_require_the_published_mixed_level_seven_patterns() 
 
 #[test]
 fn pure_fire_is_a_successful_no_change_effect_and_schedules_free_echo() {
-    let mut state = configured_state();
-    state.hands[0].cards = vec![card(45), card(67)];
+    let player = PlayerId::new("p1");
+    let opponent = PlayerId::new("p2");
+    let mut record = start_ordered_echo_record(configured_setup(), &[45, 67, 1, 2, 3, 4, 5, 6, 7]);
+    let hp = record.state().hp.clone();
 
-    let performed = handle_command(
-        &state,
-        Command::PerformFormation {
-            player: PlayerId::new("p1"),
-            formation_id: "echo:pure-fire".to_string(),
-            cards: vec![card(45), card(67)],
-            declared_targets: Vec::new(),
-        },
-    )
-    .unwrap();
-    apply_all(&mut state, &performed);
-
-    let answered = answer_choice(
-        &state,
-        PlayerId::new("p1"),
+    perform_record_formation(&mut record, &player, "echo:pure-fire", &[45, 67]);
+    let answered = answer_record_choice(
+        &mut record,
+        player.clone(),
         ChoiceAnswer::Player {
-            player: PlayerId::new("p2"),
+            player: opponent.clone(),
         },
     )
     .unwrap();
-    assert!(matches!(
-        answered.as_slice(),
-        [
-            GameEvent::ChoiceMade { .. },
-            GameEvent::TimedEffectsReduced { reductions, .. },
-            GameEvent::EchoScheduled { .. },
-            ..
-        ] if reductions.is_empty()
-    ));
+    let expected_echo = ScheduledEcho {
+        player: player.clone(),
+        melody_id: "echo:pure-fire".to_string(),
+        due_turn_number: 3,
+    };
     assert!(
-        !answered
-            .iter()
-            .any(|event| matches!(event, GameEvent::EchoCostPaid { .. }))
+        matches!(
+            answered.as_slice(),
+            [
+                GameEvent::ChoiceMade { .. },
+                GameEvent::TimedEffectsReduced { source, target, reductions },
+                GameEvent::EchoScheduled { schedule },
+                GameEvent::FormationCardsDiscarded { player: discarded_by, formation_id, cards },
+            ] if source == &player && target == &opponent && reductions.is_empty()
+                && schedule == &expected_echo && discarded_by == &player
+                && formation_id == "echo:pure-fire" && cards == &[card(45), card(67)]
+        ),
+        "{answered:#?}"
     );
+    let state = record.state();
+    assert_eq!(state.hp, hp);
+    assert_eq!(state.scheduled_echoes, [expected_echo]);
+    assert_eq!(state.hand(&player).unwrap(), [card(1), card(2)]);
+    assert_eq!(state.discard, [card(45), card(67)]);
+    assert!(state.pending_choice.is_none());
+    assert_eq!(state.phase, Phase::TurnDraw);
+    assert_eq!(record.replay().unwrap(), *state);
+    assert_eq!(record.verify_replay().unwrap(), *state);
 }
 
 #[test]
@@ -1298,45 +1773,90 @@ fn pure_fire_atomically_reduces_eligible_effects_and_preserves_hidden_passive_un
 
 #[test]
 fn pure_fire_echo_chooses_a_fresh_target_and_does_not_schedule_again() {
-    let mut state = configured_state();
-    state.scheduled_echoes.push(ScheduledEcho {
-        player: PlayerId::new("p1"),
-        melody_id: "echo:pure-fire".to_string(),
-        due_turn_number: 3,
-    });
-    state.flow_layers_by_player.insert(PlayerId::new("p2"), 1);
-    state.turn_number = 3;
-    state.current_turn_index = 0;
-    state.phase = Phase::TurnStart;
-
-    let started = advance_automatic(&state).unwrap();
-    apply_all(&mut state, &started);
-    let answered = answer_choice(
-        &state,
-        PlayerId::new("p1"),
+    let player = PlayerId::new("p1");
+    let opponent = PlayerId::new("p2");
+    let mut record =
+        start_ordered_echo_record(configured_setup(), &[45, 67, 1, 2, 37, 38, 3, 4, 5]);
+    perform_record_formation(&mut record, &player, "echo:pure-fire", &[45, 67]);
+    answer_record_choice(
+        &mut record,
+        player.clone(),
         ChoiceAnswer::Player {
-            player: PlayerId::new("p2"),
+            player: player.clone(),
         },
     )
     .unwrap();
-    assert!(answered.iter().any(|event| matches!(
-        event,
-        GameEvent::TimedEffectsReduced {
-            target,
-            reductions,
-            ..
-        } if target == &PlayerId::new("p2") && reductions.len() == 1
-    )));
-    assert!(
-        answered
-            .iter()
-            .any(|event| matches!(event, GameEvent::EchoResolutionCompleted { .. }))
+    finish_record_turn(&mut record);
+
+    perform_record_formation(&mut record, &opponent, "echo:flowing-water", &[37, 38]);
+    answer_record_choice(&mut record, opponent.clone(), ChoiceAnswer::Decline).unwrap();
+    // 剩餘手牌讓本次抽牌沒有加抽的空間，流水保留到淨火回響。
+    let started = finish_record_turn(&mut record);
+    assert_eq!(
+        record.state().flow_layers_by_player.get(&opponent),
+        Some(&1)
     );
+    assert!(started.contains(&GameEvent::EchoResolutionStarted {
+        schedule: ScheduledEcho {
+            player: player.clone(),
+            melody_id: "echo:pure-fire".to_string(),
+            due_turn_number: 3
+        },
+    }));
     assert!(
-        !answered
+        !started
             .iter()
-            .any(|event| matches!(event, GameEvent::EchoScheduled { .. }))
+            .any(|event| matches!(event, GameEvent::TurnStarted { .. }))
     );
+    assert_eq!(
+        record.state().pending_resolution,
+        Some(PendingResolution::MelodyPureFireTarget {
+            origin: MelodyExecutionOrigin::Echo,
+        })
+    );
+    let hp = record.state().hp.clone();
+    let hands = record.state().hands.clone();
+    let discard = record.state().discard.clone();
+
+    let answered = answer_record_choice(
+        &mut record,
+        player.clone(),
+        ChoiceAnswer::Player {
+            player: opponent.clone(),
+        },
+    )
+    .unwrap();
+    assert!(
+        matches!(
+            answered.as_slice(),
+            [
+                GameEvent::ChoiceMade { .. },
+                GameEvent::TimedEffectsReduced { source, target, reductions },
+                GameEvent::EchoResolutionCompleted { player: performer, melody_id, due_turn_number: 3 },
+            ] if source == &player && target == &opponent && performer == &player && melody_id == "echo:pure-fire"
+                && reductions == &[TimedEffectReduction::FlowState { player: opponent.clone(), old_layers: 1, new_layers: 0 }]
+        ),
+        "{answered:#?}"
+    );
+    let state = record.state();
+    assert!(!state.flow_layers_by_player.contains_key(&opponent));
+    assert!(state.pending_choice.is_none());
+    assert!(state.active_echo_resolution.is_none());
+    assert!(state.scheduled_echoes.is_empty());
+    assert_eq!(state.hands, hands);
+    assert_eq!(state.discard, discard);
+    assert_eq!(state.hp, hp);
+    assert!(
+        record
+            .advance_automatic()
+            .unwrap()
+            .contains(&GameEvent::TurnStarted {
+                player,
+                turn_number: 3
+            })
+    );
+    assert_eq!(record.replay().unwrap(), *record.state());
+    assert_eq!(record.verify_replay().unwrap(), *record.state());
 }
 
 #[test]
@@ -1376,160 +1896,196 @@ fn lethal_turn_start_melody_completes_its_resolution_without_entering_main() {
 
 #[test]
 fn plant_earth_accepts_all_five_basic_melodies_and_finishes_nested_choices() {
-    for melody_id in [
+    let melodies = [
         "echo:ringing-metal",
         "echo:falling-wood",
         "echo:flowing-water",
         "echo:war-fire",
         "echo:split-earth",
-    ] {
-        let mut state = configured_state();
-        state
-            .scheduled_plant_earth
-            .push(fewfc::domain::ScheduledPlantEarth {
-                player: PlayerId::new("p1"),
-                due_turn_number: 3,
-            });
-        state.turn_number = 3;
-        state.current_turn_index = 0;
-        state.phase = Phase::TurnStart;
-        state.deck = vec![card(1), card(2)];
-        state.hands[1].cards = vec![card(3)];
+    ];
+    let player = PlayerId::new("p1");
+    let opponent = PlayerId::new("p2");
+    for melody_id in melodies {
+        let mut record =
+            start_ordered_echo_record(configured_setup(), &[27, 85, 19, 20, 1, 2, 3, 4, 5]);
+        perform_record_formation(&mut record, &player, "echo:plant-earth", &[27, 85]);
+        finish_record_turn(&mut record);
+        perform_record_formation(&mut record, &opponent, "metal-strike", &[1]);
+        finish_record_turn(&mut record);
 
-        let started = advance_automatic(&state).unwrap();
-        apply_all(&mut state, &started);
-        let selected = answer_choice(
-            &state,
-            PlayerId::new("p1"),
-            ChoiceAnswer::Formation {
-                formation_id: melody_id.to_string(),
-            },
-        )
-        .unwrap();
-        apply_all(&mut state, &selected);
+        assert_eq!(
+            record.state().pending_choice.as_ref().unwrap().kind,
+            PendingChoiceKind::Formation {
+                formations: melodies.map(str::to_string).to_vec(),
+                can_decline: false,
+            }
+        );
+        let old_hp = record.state().hp.clone();
+        let old_discard = record.state().discard.clone();
+        let mut events = select_record_formation(&mut record, &player, melody_id);
 
         match melody_id {
             "echo:ringing-metal" => {
-                let selected_card = answer_choice(
-                    &state,
-                    PlayerId::new("p1"),
-                    ChoiceAnswer::Cards {
-                        cards: vec![card(1)],
+                assert_eq!(
+                    record.state().pending_resolution,
+                    Some(PendingResolution::MelodyRingingMetalDeckCard {
+                        origin: MelodyExecutionOrigin::PlantedEarth,
+                    })
+                );
+                let top = record.state().deck[0];
+                events.extend(
+                    answer_record_choice(
+                        &mut record,
+                        player.clone(),
+                        ChoiceAnswer::Cards { cards: vec![top] },
+                    )
+                    .unwrap(),
+                );
+                assert_eq!(
+                    record.state().pending_resolution,
+                    Some(PendingResolution::MelodyRingingMetalPostSearch {
+                        origin: MelodyExecutionOrigin::PlantedEarth,
+                    })
+                );
+                let remainder = record
+                    .state()
+                    .deck
+                    .iter()
+                    .rev()
+                    .copied()
+                    .collect::<Vec<_>>();
+                events.extend(resolve_record_shuffle(&mut record, remainder.clone()));
+                assert_eq!(record.state().deck[0], top);
+                assert_eq!(&record.state().deck[1..], remainder);
+                assert!(events.contains(&GameEvent::RingingMetalCompleted {
+                    selection: RingingMetalSelection {
+                        player: player.clone(),
+                        card: top,
+                        deck: RandomnessDeck::Shared
                     },
-                )
-                .unwrap();
-                apply_all(&mut state, &selected_card);
-                let request = state
-                    .pending_randomness
-                    .clone()
-                    .expect("Ringing Metal must shuffle the remaining deck");
-                let shuffled = resolve_trusted_randomness(
-                    &state,
-                    &TrustedRandomnessAnswer {
-                        request_id: request.request_id,
-                        shuffled_order: request.current_order,
-                    },
-                )
-                .unwrap();
-                apply_all(&mut state, &shuffled);
+                }));
             }
+            "echo:falling-wood" => assert!(record.state().hp[0].hp > old_hp[0].hp),
+            "echo:flowing-water" => assert!(events.contains(&GameEvent::FlowStateChanged {
+                player: player.clone(),
+                old_layers: 0,
+                new_layers: 1,
+            })),
+            "echo:war-fire" => assert_eq!(record.state().hp[1].hp, old_hp[1].hp - 15),
             "echo:split-earth" => {
-                let nested = answer_choice(
-                    &state,
-                    PlayerId::new("p1"),
-                    ChoiceAnswer::Formation {
+                assert_eq!(
+                    record.state().pending_resolution,
+                    Some(PendingResolution::MelodySplitEarthFormation {
+                        origin: MelodyExecutionOrigin::PlantedEarth,
+                    })
+                );
+                events.extend(select_record_formation(&mut record, &player, "weapon"));
+                assert!(events.contains(&GameEvent::FormationSuppressionSet {
+                    suppression: FormationSuppression {
+                        source: player.clone(),
+                        target: opponent.clone(),
                         formation_id: "weapon".to_string(),
+                        expires_on_turn_number: 4,
+                        origin: MelodyExecutionOrigin::PlantedEarth
                     },
-                )
-                .unwrap();
-                apply_all(&mut state, &nested);
+                }));
             }
-            _ => {}
+            _ => unreachable!(),
         }
 
-        assert!(
-            state.active_plant_earth_resolution.is_none(),
-            "{melody_id} must complete Plant Earth"
-        );
-        assert!(
-            state.scheduled_echoes.is_empty(),
-            "{melody_id} must not schedule Echo"
-        );
+        assert!(events.contains(&GameEvent::PlantEarthResolutionCompleted {
+            player: player.clone(),
+            due_turn_number: 3,
+            melody_id: melody_id.to_string(),
+        }));
+        assert!(!events.iter().any(|event| matches!(
+            event,
+            GameEvent::EchoScheduled { .. }
+                | GameEvent::EchoCostPaid { .. }
+                | GameEvent::FormationCommitted { .. }
+        )));
+        let state = record.state();
+        assert!(state.active_plant_earth_resolution.is_none());
+        assert!(state.scheduled_plant_earth.is_empty());
+        assert!(state.scheduled_echoes.is_empty());
+        assert!(state.pending_resolution.is_none());
+        assert_eq!(state.discard, old_discard);
+        assert_eq!(record.replay().unwrap(), *state);
+        assert_eq!(record.verify_replay().unwrap(), *state);
     }
 }
 
 #[test]
 fn plant_earth_schedules_a_fresh_turn_start_melody_without_echo() {
-    let mut state = configured_state();
-    state.hp[0].hp = 170;
-    state.hands[0].cards = vec![card(27), card(85)];
+    let player = PlayerId::new("p1");
+    let opponent = PlayerId::new("p2");
+    let mut record =
+        start_ordered_echo_record(configured_setup(), &[27, 85, 19, 20, 1, 2, 3, 4, 5]);
+    let schedule = ScheduledPlantEarth {
+        player: player.clone(),
+        due_turn_number: 3,
+    };
 
-    let performed = handle_command(
-        &state,
-        Command::PerformFormation {
-            player: PlayerId::new("p1"),
-            formation_id: "echo:plant-earth".to_string(),
-            cards: vec![card(27), card(85)],
-            declared_targets: Vec::new(),
-        },
-    )
-    .unwrap();
-    assert!(
-        performed
-            .iter()
-            .any(|event| matches!(event, GameEvent::PlantEarthScheduled { .. }))
-    );
+    let performed = perform_record_formation(&mut record, &player, "echo:plant-earth", &[27, 85]);
+    assert!(performed.contains(&GameEvent::PlantEarthScheduled {
+        schedule: schedule.clone()
+    }));
     assert!(
         !performed
             .iter()
             .any(|event| matches!(event, GameEvent::ChoiceRequested { .. }))
     );
-    apply_all(&mut state, &performed);
+    assert_eq!(record.state().scheduled_plant_earth, [schedule.clone()]);
+    assert_eq!(record.state().discard, [card(27), card(85)]);
+    assert_eq!(record.state().phase, Phase::TurnDraw);
+    finish_record_turn(&mut record);
 
-    state.turn_number = 3;
-    state.current_turn_index = 0;
-    state.phase = Phase::TurnStart;
-    let started = advance_automatic(&state).unwrap();
-    assert!(
-        started
-            .iter()
-            .any(|event| matches!(event, GameEvent::PlantEarthResolutionStarted { .. }))
-    );
+    perform_record_formation(&mut record, &opponent, "metal-strike", &[1]);
+    let started = finish_record_turn(&mut record);
+    assert!(started.contains(&GameEvent::PlantEarthResolutionStarted { schedule }));
     assert!(
         !started
             .iter()
             .any(|event| matches!(event, GameEvent::TurnStarted { .. }))
     );
-    apply_all(&mut state, &started);
+    assert_eq!(record.state().phase, Phase::TurnStart);
+    assert_eq!(
+        record.state().pending_resolution,
+        Some(PendingResolution::MelodyPlantEarthMelody {
+            origin: MelodyExecutionOrigin::PlantedEarth,
+        })
+    );
+    let hp = record.state().hp.clone();
 
-    let selected = answer_choice(
-        &state,
-        PlayerId::new("p1"),
-        ChoiceAnswer::Formation {
-            formation_id: "echo:falling-wood".to_string(),
-        },
-    )
-    .unwrap();
+    let selected = select_record_formation(&mut record, &player, "echo:falling-wood");
     assert!(
-        selected
-            .iter()
-            .any(|event| matches!(event, GameEvent::HpChanged { .. }))
+        matches!(
+            selected.as_slice(),
+            [
+                GameEvent::ChoiceMade { .. },
+                GameEvent::HpChanged { change },
+                GameEvent::PlantEarthResolutionCompleted { player: performer, due_turn_number: 3, melody_id },
+            ] if performer == &player && melody_id == "echo:falling-wood"
+                && change.team() == &hp[0].team && change.old_hp() == hp[0].hp
+                && change.delta() == 15 && change.effective_delta() > 0
+        ),
+        "{selected:#?}"
     );
+    assert_eq!(record.state().hp[1], hp[1]);
+    assert!(record.state().active_plant_earth_resolution.is_none());
+    assert!(record.state().pending_choice.is_none());
+    assert!(record.state().scheduled_echoes.is_empty());
     assert!(
-        selected
-            .iter()
-            .any(|event| matches!(event, GameEvent::PlantEarthResolutionCompleted { .. }))
+        record
+            .advance_automatic()
+            .unwrap()
+            .contains(&GameEvent::TurnStarted {
+                player,
+                turn_number: 3
+            })
     );
-    assert!(
-        !selected
-            .iter()
-            .any(|event| matches!(event, GameEvent::EchoScheduled { .. }))
-    );
-    assert!(
-        !selected
-            .iter()
-            .any(|event| matches!(event, GameEvent::ChoiceRequested { .. }))
-    );
+    assert_eq!(record.replay().unwrap(), *record.state());
+    assert_eq!(record.verify_replay().unwrap(), *record.state());
 }
 
 #[test]
@@ -1635,4 +2191,74 @@ fn choose_first_turn_draw_discard(record: &mut GameRecord) {
             },
         })
         .unwrap();
+}
+
+fn perform_record_formation(
+    record: &mut GameRecord,
+    player: &PlayerId,
+    formation_id: &str,
+    cards: &[u64],
+) -> Vec<GameEvent> {
+    record
+        .handle(Command::PerformFormation {
+            player: player.clone(),
+            formation_id: formation_id.to_string(),
+            cards: cards.iter().copied().map(card).collect(),
+            declared_targets: Vec::new(),
+        })
+        .unwrap()
+}
+
+fn resolve_record_shuffle(
+    record: &mut GameRecord,
+    shuffled_order: Vec<CardInstanceId>,
+) -> Vec<GameEvent> {
+    let request_id = record
+        .state()
+        .pending_randomness
+        .as_ref()
+        .unwrap()
+        .request_id
+        .clone();
+    record
+        .resolve_randomness(TrustedRandomnessAnswer {
+            request_id,
+            shuffled_order,
+        })
+        .unwrap()
+        .into_events()
+}
+
+fn start_ordered_echo_record(setup: GameSetup, first_cards: &[u64]) -> GameRecord {
+    let mut deck = first_cards.iter().copied().map(card).collect::<Vec<_>>();
+    let remaining = OfficialRules::new()
+        .official_deck_order(&setup)
+        .unwrap()
+        .into_iter()
+        .filter(|card| !deck.contains(card))
+        .collect::<Vec<_>>();
+    deck.extend(remaining);
+    let mut record = GameRecord::start(setup, deck).unwrap();
+    record.advance_automatic().unwrap();
+    record
+}
+
+fn select_record_formation(
+    record: &mut GameRecord,
+    player: &PlayerId,
+    formation_id: &str,
+) -> Vec<GameEvent> {
+    answer_record_choice(
+        record,
+        player.clone(),
+        ChoiceAnswer::Formation {
+            formation_id: formation_id.to_string(),
+        },
+    )
+    .unwrap()
+}
+
+fn finish_record_turn(record: &mut GameRecord) -> Vec<GameEvent> {
+    choose_first_turn_draw_discard(record);
+    record.advance_automatic().unwrap()
 }

@@ -5,6 +5,8 @@ use fewfc::domain::{
 };
 use fewfc::public_view::{Viewer, state_for};
 use fewfc::rules::{OfficialRules, PlayableAction};
+mod support;
+use support::record as play;
 
 fn state(player_count: usize, hero_enabled: bool) -> GameState {
     let players = (1..=player_count)
@@ -253,72 +255,68 @@ fn warrior_proficiencies_keep_original_formation_identity_and_effect() {
 
 #[test]
 fn hero_formations_and_battle_soul_work_in_four_player_games() {
-    let mut state = state(4, true);
-    set_profession(&mut state, "p1", "hero");
-    let slash = cards(
-        &state,
-        &[
-            (Element::Metal, 1),
-            (Element::Metal, 2),
-            (Element::Fire, 1),
-            (Element::Fire, 2),
-        ],
-    );
-    set_hand(&mut state, "p1", slash.clone());
-    assert!(
-        OfficialRules::new()
-            .playable_actions(&state, &PlayerId::new("p1"), &slash)
-            .unwrap()
-            .iter()
-            .any(|action| matches!(
-                action,
-                PlayableAction::PerformFormation(candidate)
-                    if candidate.formation_id == "falling-light-slash"
-            ))
-    );
-    assert!(
-        perform(&state, "falling-light-slash", slash)
-            .iter()
-            .any(|event| matches!(
-                event,
-                GameEvent::AttackResolved {
-                    point_breakdown,
-                    ..
-                } if point_breakdown.base_points == 36
-            ))
-    );
-
-    let shock = cards(
-        &state,
-        &[
-            (Element::Fire, 1),
-            (Element::Fire, 2),
-            (Element::Water, 1),
-            (Element::Metal, 1),
-        ],
-    );
-    set_hand(&mut state, "p1", shock.clone());
-    let actions = OfficialRules::new()
-        .playable_actions(&state, &PlayerId::new("p1"), &shock)
-        .unwrap();
-    assert!(actions.iter().any(|action| matches!(
-        action,
-        PlayableAction::PerformFormation(candidate) if candidate.formation_id == "shock-burst"
-    )));
-    let events = perform(&state, "shock-burst", shock);
-    assert_eq!(
-        events
+    let [p1, p2, p3, p4] = ["p1", "p2", "p3", "p4"].map(PlayerId::new);
+    for (formation, used) in [
+        ("falling-light-slash", [3, 6, 55, 59]),
+        ("shock-burst", [55, 59, 37, 3]),
+    ] {
+        let mut reserve = vec![2, 16, 13, 17];
+        reserve.extend(used);
+        let mut record = play::start_with_reserves(
+            play::setup(4, &[HERO_SCHOOLS_MODULE_ID]),
+            &[&[1, 5], &[], &[], &[]],
+            &[&reserve, &[], &[], &[]],
+        );
+        for (profession, cards) in [
+            ("warrior", [1, 5]),
+            ("war-god", [2, 16]),
+            ("hero", [13, 17]),
+        ] {
+            play::change(&mut record, &p1, profession, &cards);
+            play::finish(&mut record, &p1);
+            for player in [&p2, &p3, &p4] {
+                play::strike_with_spare(&mut record, player, &[]);
+                play::finish(&mut record, player);
+            }
+        }
+        assert!(record.playable_actions(&p1, &play::ids(&used)).unwrap().iter().any(|action| matches!(action,
+            PlayableAction::PerformFormation(candidate) if candidate.formation_id == formation
+        )));
+        let events = play::perform(&mut record, &p1, formation, &used);
+        let (points, effects) = events
             .iter()
             .find_map(|event| match event {
                 GameEvent::AttackResolved {
+                    target,
+                    point_breakdown,
                     elemental_context_update: Some(effects),
                     ..
-                } => Some(effects.statuses_added.len()),
+                } if target == &p4 => Some((point_breakdown.base_points, effects)),
                 _ => None,
             })
-            .unwrap_or_default(),
-        6
-    );
+            .unwrap();
+        if formation == "falling-light-slash" {
+            assert_eq!(points, 36);
+        } else {
+            assert_eq!(effects.statuses_added.len(), 6);
+            for player in [&p2, &p3, &p4] {
+                for kind in ["CannotAct", "CannotDraw"] {
+                    assert_eq!(
+                        effects
+                            .statuses_added
+                            .iter()
+                            .filter(|status| status.kind == kind
+                                && status.owner
+                                    == fewfc::domain::StatusOwner::Player(player.clone()))
+                            .count(),
+                        1
+                    );
+                }
+            }
+        }
+        assert!(record.state().discard.ends_with(&play::ids(&used)));
+        play::assert_replay(&record);
+    }
 }
 
 #[test]

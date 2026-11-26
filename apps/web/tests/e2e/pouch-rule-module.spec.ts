@@ -148,7 +148,19 @@ test('Chain stages Sheep Stealing as a typed exchange choice', async ({ browser 
     roomName: `連環牽羊測試 ${Date.now()}`,
     enabledRuleModules: pouchRuleModules,
   })
-  const { host, gameId: roomId } = game
+  const { host, guest, gameId: roomId } = game
+
+  const expectHiddenChoice = async () => {
+    const { state } = await requestJson<{
+      state: { pendingChoice: { visibility: string } | null }
+    }>(
+      `GET /api/games/${roomId} as the other Player`,
+      guest.context().request.get(`/api/games/${roomId}`),
+    )
+    expect(state.pendingChoice).toMatchObject({ visibility: 'hidden' })
+    expect(state.pendingChoice).not.toHaveProperty('choice')
+    expect(state.pendingChoice).not.toHaveProperty('choiceId')
+  }
 
   try {
     const fixture = await seedDevelopmentScenario<{
@@ -171,6 +183,8 @@ test('Chain stages Sheep Stealing as a typed exchange choice', async ({ browser 
     await chainAction.click()
     await chainCommand
 
+    await reloadFastGameRoute(actor, roomId)
+    await expectHiddenChoice()
     const chainDialog = actor.getByRole('dialog', { name: '連環：選擇錦囊' })
     await expect(chainDialog).toBeVisible()
     const state = await requestJson<{
@@ -234,6 +248,8 @@ test('Chain stages Sheep Stealing as a typed exchange choice', async ({ browser 
       },
     })
 
+    await reloadFastGameRoute(actor, roomId)
+    await expectHiddenChoice()
     const sheepDialog = actor.getByRole('dialog', { name: '牽羊：交換牌' })
     await expect(sheepDialog).toBeVisible()
     await chooseTwoMatrixCards(actor, '牽羊牌組矩陣')

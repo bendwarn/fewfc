@@ -8,6 +8,8 @@ use fewfc::domain::{
 };
 use fewfc::public_view::{PublicGameEvent, Viewer, event_for};
 use fewfc::rules::{OfficialRules, PlayableAction};
+mod support;
+use support::record as play;
 
 #[test]
 fn dark_glimmer_is_default_on_and_requires_spirit_transitively() {
@@ -112,41 +114,19 @@ fn set_profession(state: &mut GameState, player: &str, profession: &str) {
 
 #[test]
 fn dark_walker_transforms_before_its_dark_formation_resolves() {
-    let mut game = state(2);
-    set_profession(&mut game, "p1", "dark:dark-walker");
-    let used = cards(
-        &game,
-        &[
-            (Element::Fire, 1),
-            (Element::Fire, 2),
-            (Element::Water, 1),
-            (Element::Earth, 1),
-        ],
-    );
-    set_hand(&mut game, "p1", used.clone());
-
-    let events = handle_command(
-        &game,
-        Command::PerformFormation {
-            player: PlayerId::new("p1"),
-            formation_id: "dark:dark-shock-burst".to_string(),
-            cards: used,
-            declared_targets: Vec::new(),
-        },
-    )
-    .unwrap();
-    assert!(matches!(
-        events.iter().find(|event| matches!(event, GameEvent::ProfessionTransformed { .. })),
-        Some(GameEvent::ProfessionTransformed { profession, .. })
-            if profession == &ProfessionId::new("dark:dark-spirit-envoy")
-    ));
-    for event in &events {
-        apply_event(&mut game, event);
-    }
+    let p1 = PlayerId::new("p1");
+    let (record, events) = dark_envoy_record(&[], &[]);
+    assert!(matches!(events.iter().filter(|event| matches!(event,
+        GameEvent::ProfessionTransformed { .. } | GameEvent::AttackResolved { .. }
+    )).collect::<Vec<_>>().as_slice(),
+        [GameEvent::ProfessionTransformed { player, previous, profession, .. }, GameEvent::AttackResolved { formation_id, .. }]
+            if player == &p1 && previous.as_ref().is_some_and(|id| id.as_str() == "dark:dark-walker")
+                && profession.as_str() == "dark:dark-spirit-envoy" && formation_id == "dark:dark-shock-burst"));
     assert_eq!(
-        game.profession_for(&PlayerId::new("p1")),
+        record.state().profession_for(&p1),
         Some(&ProfessionId::new("dark:dark-spirit-envoy"))
     );
+    play::assert_replay(&record);
 }
 
 #[test]
@@ -210,53 +190,39 @@ fn other_professions_keep_their_legal_cross_system_profession_changes() {
 
 #[test]
 fn dark_spirit_lowers_one_physical_card_and_automatically_requires_it() {
-    let mut game = state(2);
-    set_profession(&mut game, "p1", "dark:dark-spirit-envoy");
-    let card = cards(&game, &[(Element::Earth, 5)])[0];
-    set_hand(&mut game, "p1", vec![card]);
-    let events = handle_command(
-        &game,
-        Command::ActivateProfessionAbility {
-            player: PlayerId::new("p1"),
+    let p1 = PlayerId::new("p1");
+    let (mut record, _) = dark_envoy_record(&[88], &[]);
+    let card = play::ids(&[88])[0];
+    record
+        .handle(Command::ActivateProfessionAbility {
+            player: p1.clone(),
             ability_id: "dark:dark-spirit".to_string(),
             cards: vec![card],
             target_card: Some(card),
             declared_element: Some(Element::Earth),
             declared_level: Some(1),
-        },
-    )
-    .unwrap();
-    for event in &events {
-        apply_event(&mut game, event);
-    }
+        })
+        .unwrap();
     assert_eq!(
-        game.card_level_for(&PlayerId::new("p1"), card),
+        record.state().card_level_for(&p1, card),
         Some(fewfc::domain::EffectiveCardLevel::new(1))
     );
+    let prepared = record.state().clone();
     assert!(matches!(
-        handle_command(
-            &game,
-            Command::PassAction {
-                player: PlayerId::new("p1"),
-                reason: fewfc::domain::PassActionReason::NoCardsInHand,
-            }
-        ),
+        record.handle(Command::PassAction {
+            player: p1.clone(),
+            reason: fewfc::domain::PassActionReason::NoCardsInHand
+        }),
         Err(GameError::Validation(_))
     ));
-    let events = handle_command(
-        &game,
-        Command::PerformFormation {
-            player: PlayerId::new("p1"),
-            formation_id: "earth-strike".to_string(),
-            cards: Vec::new(),
-            declared_targets: Vec::new(),
-        },
-    )
-    .unwrap();
-    assert!(events.iter().any(|event| matches!(event,
-        GameEvent::AttackResolved { used_cards, point_breakdown, .. }
-            if used_cards == &vec![card] && point_breakdown.base_points == 5
-    )));
+    assert_eq!(*record.state(), prepared);
+    let events = play::perform(&mut record, &p1, "earth-strike", &[]);
+    assert!(events.iter().any(
+        |event| matches!(event, GameEvent::AttackResolved { used_cards, point_breakdown, .. }
+        if used_cards == &[card] && point_breakdown.base_points == 5)
+    ));
+    assert!(record.state().discard.ends_with(&[card]));
+    play::assert_replay(&record);
 }
 
 #[test]
@@ -288,87 +254,86 @@ fn dark_spirit_rejects_an_element_that_does_not_match_the_offer() {
 
 #[test]
 fn demon_spirit_possession_transforms_without_resetting_power() {
-    let mut game = state(2);
-    game.spirits.push(PlayerSpirit {
-        player: PlayerId::new("p1"),
-        spirit: SpiritKind::Metal,
-        power: 5,
-    });
-    let used = cards(&game, &[(Element::Metal, 2), (Element::Wood, 2)]);
-    set_hand(&mut game, "p1", used.clone());
-    let events = handle_command(
-        &game,
-        Command::ChangeProfession {
-            player: PlayerId::new("p1"),
-            profession: ProfessionId::new("dark:demon-spirit-master"),
-            cards: used,
-        },
-    )
-    .unwrap();
-    assert!(events.iter().any(|event| matches!(
-        event,
-        GameEvent::SpiritTransformed {
-            spirit: SpiritKind::Evil,
-            power: 5,
-            ..
+    let p1 = PlayerId::new("p1");
+    let p2 = PlayerId::new("p2");
+    let mut record = play::start(
+        game_setup(2),
+        &[
+            1, 5, 6, 23, 37, 38, 39, 40, 41, 13, 73, 55, 19, 20, 14, 56, 57, 21, 22, 15, 58, 24, 25,
+        ],
+    );
+    play::perform(&mut record, &p1, "metal-spirit-summoning", &[1, 5]);
+    for (power, charge) in [(3, 13), (4, 14), (5, 15)] {
+        if power > 3 {
+            play::strike_with_spare(&mut record, &p1, &[6, 23]);
         }
-    )));
+        play::finish_discarding(&mut record, &p1, Some(CardInstanceId::new(charge)));
+        assert_eq!(record.state().spirit_for(&p1).unwrap().power, power);
+        play::strike_with_spare(&mut record, &p2, &[]);
+        play::finish(&mut record, &p2);
+    }
+    let events = play::change(&mut record, &p1, "dark:demon-spirit-master", &[6, 23]);
+    assert!(events.iter().any(|event| matches!(event, GameEvent::SpiritTransformed { player, spirit: SpiritKind::Evil, power: 5, .. } if player == &p1)));
+    assert_eq!(
+        record.state().spirit_for(&p1),
+        Some(&PlayerSpirit {
+            player: p1.clone(),
+            spirit: SpiritKind::Evil,
+            power: 5
+        })
+    );
+    assert_eq!(
+        record.state().profession_for(&p1).unwrap().as_str(),
+        "dark:demon-spirit-master"
+    );
+    play::assert_replay(&record);
 }
 
 #[test]
 fn dark_chaos_accepts_only_a_trusted_selection_from_the_target_hand() {
-    let mut game = state(2);
-    set_profession(&mut game, "p1", "dark:dark-spirit-envoy");
-    let used = cards(
-        &game,
-        &[
-            (Element::Earth, 1),
-            (Element::Earth, 2),
-            (Element::Wood, 1),
-            (Element::Metal, 1),
-        ],
-    );
-    let target_hand = cards(
-        &game,
-        &[(Element::Fire, 1), (Element::Water, 2), (Element::Metal, 3)],
-    );
-    set_hand(&mut game, "p1", used.clone());
-    set_hand(&mut game, "p2", target_hand.clone());
-
+    let p1 = PlayerId::new("p1");
+    let p2 = PlayerId::new("p2");
+    let (mut record, _) = dark_envoy_record(&[73, 77, 19, 1], &[56, 41, 9]);
+    let cards = play::ids(&[73, 77, 19, 1]);
+    let before = record.state().clone();
     assert!(matches!(
-        handle_command(
-            &game,
-            Command::PerformFormation {
-                player: PlayerId::new("p1"),
-                formation_id: "dark:dark-chaos".to_string(),
-                cards: used.clone(),
-                declared_targets: Vec::new(),
-            },
-        ),
+        record.handle(Command::PerformFormation {
+            player: p1.clone(),
+            formation_id: "dark:dark-chaos".to_string(),
+            cards: cards.clone(),
+            declared_targets: Vec::new(),
+        }),
         Err(GameError::Validation(
             ValidationError::TrustedRandomSelectionRequired { .. }
         ))
     ));
+    assert_eq!(*record.state(), before);
 
-    let selected = vec![target_hand[2], target_hand[0]];
-    let events = handle_command(
-        &game,
-        Command::PerformFormationWithTrustedRandomness {
-            player: PlayerId::new("p1"),
+    let selected = play::ids(&[9, 56]);
+    let events = record
+        .handle(Command::PerformFormationWithTrustedRandomness {
+            player: p1.clone(),
             formation_id: "dark:dark-chaos".to_string(),
-            cards: used,
+            cards: cards.clone(),
             declared_targets: Vec::new(),
             random_cards: selected.clone(),
-        },
-    )
-    .unwrap();
-    let expected_return_order = selected.into_iter().rev().collect::<Vec<_>>();
-    assert!(events.iter().any(|event| matches!(
-        event,
-        GameEvent::CardsMoved { card_moves }
-            if card_moves.iter().map(|card_move| card_move.card).collect::<Vec<_>>()
-                == expected_return_order
-    )));
+        })
+        .unwrap();
+    let expected = selected
+        .into_iter()
+        .rev()
+        .map(|card| fewfc::domain::CardMoveDelta {
+            card,
+            from: fewfc::domain::CardZone::Hand(p2.clone()),
+            to: fewfc::domain::CardZone::DeckTop,
+        })
+        .collect::<Vec<_>>();
+    assert!(events.contains(&GameEvent::CardsMoved {
+        card_moves: expected
+    }));
+    assert_eq!(&record.state().deck[..2], &play::ids(&[9, 56]));
+    assert!(record.state().discard.ends_with(&cards));
+    play::assert_replay(&record);
 }
 
 #[test]
@@ -695,43 +660,50 @@ fn death_omen_with_four_deck_cards_keeps_the_existing_immediate_resolution() {
 
 #[test]
 fn void_shattering_revives_broken_death_spirit_without_retroactive_shared_fate() {
-    let mut game = state(2);
-    set_profession(&mut game, "p2", "dark:demon-spirit-master");
-    game.spirits.push(PlayerSpirit {
-        player: PlayerId::new("p2"),
-        spirit: SpiritKind::Death,
-        power: 2,
-    });
-    let used = cards(
-        &game,
-        &[(Element::Metal, 3), (Element::Wood, 3), (Element::Water, 3)],
+    let p1 = PlayerId::new("p1");
+    let p2 = PlayerId::new("p2");
+    let mut record = play::start(
+        game_setup(2),
+        &[
+            9, 27, 45, 1, 55, 59, 67, 31, 37, 2, 3, 4, 38, 39, 40, 5, 6, 41, 42, 43,
+        ],
     );
-    set_hand(&mut game, "p1", used.clone());
-    let events = handle_command(
-        &game,
-        Command::PerformFormation {
-            player: PlayerId::new("p1"),
-            formation_id: "void-spirit-shattering".to_string(),
-            cards: used,
-            declared_targets: Vec::new(),
-        },
-    )
-    .unwrap();
-    assert!(events.iter().any(|event| matches!(
-        event,
-        GameEvent::VoidSpiritShatteringResolved {
-            broken_professions,
-            revived_spirits,
-            shared_fate_hp_changes,
-            ..
-        } if broken_professions.len() == 1
-            && revived_spirits == &vec![PlayerSpirit {
-                player: PlayerId::new("p2"),
-                spirit: SpiritKind::Death,
-                power: 2,
-            }]
-            && shared_fate_hp_changes.is_empty()
-    )));
+    play::strike_with_spare(&mut record, &p1, &[9, 27, 45]);
+    play::finish(&mut record, &p1);
+    play::perform(&mut record, &p2, "fire-spirit-summoning", &[55, 59]);
+    play::finish(&mut record, &p2);
+    play::strike_with_spare(&mut record, &p1, &[9, 27, 45]);
+    play::finish(&mut record, &p1);
+    play::change(&mut record, &p2, "dark:demon-spirit-master", &[67, 31]);
+    record.advance_automatic().unwrap();
+    let choice = record.state().pending_choice.as_ref().unwrap();
+    let fewfc::domain::PendingChoiceKind::Card { cards, .. } = &choice.kind else {
+        unreachable!()
+    };
+    let discard = *cards
+        .iter()
+        .find(|card| record.state().card_def(**card).unwrap().level.value() != 4)
+        .unwrap();
+    play::finish_discarding(&mut record, &p2, Some(discard));
+    assert_eq!(
+        record.state().spirit_for(&p2),
+        Some(&PlayerSpirit {
+            player: p2.clone(),
+            spirit: SpiritKind::Death,
+            power: 2
+        })
+    );
+    let events = play::perform(&mut record, &p1, "void-spirit-shattering", &[9, 27, 45]);
+    assert!(events.iter().any(
+        |event| matches!(event, GameEvent::VoidSpiritShatteringResolved {
+        broken_professions, revived_spirits, shared_fate_hp_changes, ..
+    } if broken_professions.len() == 1 && revived_spirits == &[PlayerSpirit {
+        player: p2.clone(), spirit: SpiritKind::Death, power: 2,
+    }] && shared_fate_hp_changes.is_empty())
+    ));
+    assert!(record.state().profession_for(&p2).is_none());
+    assert_eq!(record.state().spirit_for(&p2).unwrap().power, 2);
+    play::assert_replay(&record);
 }
 
 #[test]
@@ -941,4 +913,28 @@ fn mischief_uses_only_the_cards_evil_gaze_actually_inspected() {
         event,
         GameEvent::HpChanged { change } if change.delta() == -10
     )));
+}
+
+fn dark_envoy_record(
+    used: &[u64],
+    target_cards: &[u64],
+) -> (fewfc::application::GameRecord, Vec<GameEvent>) {
+    let p1 = PlayerId::new("p1");
+    let p2 = PlayerId::new("p2");
+    let shock = [55, 59, 39, 75];
+    let mut reserve = shock.to_vec();
+    reserve.extend_from_slice(used);
+    let mut record =
+        play::start_with_reserves(game_setup(2), &[&[3], target_cards], &[&reserve, &[]]);
+    play::change(&mut record, &p1, "dark:dark-walker", &[3]);
+    play::finish(&mut record, &p1);
+    play::strike_with_spare(&mut record, &p2, target_cards);
+    play::finish(&mut record, &p2);
+    let events = play::perform(&mut record, &p1, "dark:dark-shock-burst", &shock);
+    if !used.is_empty() {
+        play::finish(&mut record, &p1);
+        play::strike_with_spare(&mut record, &p2, target_cards);
+        play::finish(&mut record, &p2);
+    }
+    (record, events)
 }

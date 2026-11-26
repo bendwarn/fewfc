@@ -10,6 +10,8 @@ use fewfc::domain::{
 };
 use fewfc::public_view::{PublicGameEvent, Viewer, event_for, state_for};
 use fewfc::rules::{OfficialRules, PlayableAction};
+mod support;
+use support::record as play;
 
 fn state(personal_deck: bool) -> GameState {
     let players = vec![
@@ -274,19 +276,18 @@ fn set_residual(state: &mut GameState, card: CardInstanceId) {
 
 #[test]
 fn clear_wind_reveals_once_then_waits_for_a_destination_choice() {
-    let mut game = state(false);
-    let player = PlayerId::new("p2");
-    game.professions.push(PlayerProfession {
-        player: player.clone(),
-        profession: ProfessionId::new("confluence:clear-wind-adept"),
-    });
-    let top = cards(&game, &[(Element::Metal, 1)])[0];
-    let deck = game.deck_for_mut(&player).unwrap();
-    deck.clear();
-    deck.push(top);
+    let p1 = PlayerId::new("p1");
+    let p2 = PlayerId::new("p2");
+    let mut record =
+        play::start_with_reserves(confluence_setup(&[]), &[&[19, 5], &[]], &[&[], &[]]);
+    play::change(&mut record, &p1, "confluence:clear-wind-adept", &[19, 5]);
+    play::finish(&mut record, &p1);
+    play::strike_with_spare(&mut record, &p2, &[]);
+    play::finish(&mut record, &p2);
+    let top = record.state().deck[0];
 
-    let candidates = OfficialRules::new()
-        .playable_actions(&game, &player, &[])
+    let candidates = record
+        .playable_actions(&p1, &[])
         .unwrap()
         .into_iter()
         .filter_map(|action| match action {
@@ -301,61 +302,42 @@ fn clear_wind_reveals_once_then_waits_for_a_destination_choice() {
     assert_eq!(candidates.len(), 1);
     assert_eq!(candidates[0].target_card, None);
     assert_eq!(candidates[0].declared_level, None);
-
-    let events = handle_command(
-        &game,
-        Command::ActivateProfessionAbility {
-            player: player.clone(),
-            ability_id: "confluence:clear-wind".to_string(),
-            cards: Vec::new(),
-            target_card: None,
-            declared_element: None,
-            declared_level: None,
-        },
-    )
-    .unwrap();
-    assert!(events.iter().any(|event| matches!(
-        event,
-        GameEvent::DeckTopRevealed { player: owner, card }
-            if owner == &player && card == &top
-    )));
-    assert!(events.iter().any(|event| matches!(
-        event,
-        GameEvent::ChoiceRequested { choice, resolution }
-            if choice.player == player
-                && matches!(&choice.kind, fewfc::domain::PendingChoiceKind::Card {
-                    cards,
-                    minimum: 0,
-                    maximum: 1,
-                    ..
-                } if cards == &vec![top])
-                && matches!(resolution, PendingResolution::ConfluenceClearWindDiscardTop)
-    )));
-
-    for event in &events {
-        apply_event(&mut game, event);
-    }
-    let return_events = answer_choice(
-        &game,
-        player.clone(),
-        ChoiceAnswer::Cards { cards: Vec::new() },
-    )
-    .unwrap();
+    let events = record
+        .handle(confluence_ability(&p1, "confluence:clear-wind", &[]))
+        .unwrap();
+    assert!(events.contains(&GameEvent::DeckTopRevealed {
+        player: p1.clone(),
+        card: top
+    }));
+    assert_eq!(
+        record.state().pending_resolution,
+        Some(PendingResolution::ConfluenceClearWindDiscardTop)
+    );
     assert!(
-        !return_events
+        matches!(&record.state().pending_choice.as_ref().unwrap().kind,
+        fewfc::domain::PendingChoiceKind::Card { cards, minimum: 0, maximum: 1, .. } if cards == &[top])
+    );
+
+    let mut returned = record.clone();
+    let events = play::answer(&mut returned, &p1, ChoiceAnswer::Cards { cards: vec![] });
+    assert!(
+        !events
             .iter()
             .any(|event| matches!(event, GameEvent::CardsMoved { .. }))
     );
+    assert_eq!(returned.state().deck, record.state().deck);
+    play::assert_replay(&returned);
 
-    let discard_events =
-        answer_choice(&game, player, ChoiceAnswer::Cards { cards: vec![top] }).unwrap();
-    assert!(discard_events.iter().any(|event| matches!(
-        event,
-        GameEvent::CardsMoved { card_moves }
-            if card_moves.len() == 1
-                && card_moves[0].card == top
-                && matches!(card_moves[0].to, fewfc::domain::CardZone::Discard)
-    )));
+    let events = play::answer(&mut record, &p1, ChoiceAnswer::Cards { cards: vec![top] });
+    assert!(events.contains(&GameEvent::CardsMoved {
+        card_moves: vec![fewfc::domain::CardMoveDelta {
+            card: top,
+            from: fewfc::domain::CardZone::DeckTop,
+            to: fewfc::domain::CardZone::Discard,
+        }]
+    }));
+    assert_eq!(record.state().discard.last(), Some(&top));
+    play::assert_replay(&record);
 }
 
 #[test]
@@ -486,22 +468,47 @@ fn clear_wind_ten_thousand_miles_limits_kept_cards_and_discards_unselected_share
 
 #[test]
 fn clear_wind_ten_thousand_miles_allows_keeping_no_cards() {
-    let (mut game, player, used_cards, remaining_card, drawn_cards) =
-        clear_wind_ten_thousand_miles_game(false);
-    request_clear_wind_ten_thousand_miles(&mut game, &player, used_cards);
-
-    let events = answer_choice(
-        &game,
-        player.clone(),
-        ChoiceAnswer::Cards { cards: Vec::new() },
-    )
-    .unwrap();
-    for event in &events {
-        apply_event(&mut game, event);
+    let p1 = PlayerId::new("p1");
+    let p2 = PlayerId::new("p2");
+    let used = [1, 23, 45, 67];
+    let mut record = play::start_with_reserves(
+        confluence_setup(&[]),
+        &[&[2, 24], &[]],
+        &[&[37, 59, 81, 1, 23, 45, 67, 88], &[]],
+    );
+    for (profession, cards) in [
+        ("confluence:clear-wind-adept", &[2, 24][..]),
+        ("confluence:clear-wind-envoy", &[37, 59, 81][..]),
+    ] {
+        play::change(&mut record, &p1, profession, cards);
+        play::finish(&mut record, &p1);
+        play::strike_with_spare(&mut record, &p2, &[]);
+        play::finish(&mut record, &p2);
     }
-
-    assert_eq!(game.hand(&player).unwrap(), &[remaining_card]);
-    assert!(drawn_cards.iter().all(|card| game.discard.contains(card)));
+    let remaining = record
+        .state()
+        .hand(&p1)
+        .unwrap()
+        .iter()
+        .copied()
+        .filter(|card| !play::ids(&used).contains(card))
+        .collect::<Vec<_>>();
+    let drawn = record.state().deck[..10].to_vec();
+    play::perform(
+        &mut record,
+        &p1,
+        "confluence:clear-wind-ten-thousand-miles",
+        &used,
+    );
+    play::answer(&mut record, &p1, ChoiceAnswer::Cards { cards: Vec::new() });
+    assert_eq!(record.state().hand(&p1), Some(remaining.as_slice()));
+    assert!(
+        drawn
+            .iter()
+            .all(|card| record.state().discard.contains(card))
+    );
+    assert!(record.state().pending_resolution.is_none());
+    play::assert_replay(&record);
 }
 
 #[test]
@@ -544,70 +551,74 @@ fn clear_wind_ten_thousand_miles_rejects_answers_above_the_pending_maximum() {
 
 #[test]
 fn clear_wind_ten_thousand_miles_discards_personal_deck_cards_to_their_origin_piles() {
-    let (mut game, player, used_cards, _, mut drawn_cards) =
-        clear_wind_ten_thousand_miles_game(true);
-    let foreign_owner = PlayerId::new("p1");
-    let foreign_card = game
-        .card_instances
-        .iter()
-        .find(|instance| {
-            matches!(
-                &instance.origin,
-                fewfc::domain::CardOrigin::Player(owner) if owner == &foreign_owner
-            )
-        })
-        .unwrap()
-        .instance;
-    game.deck_for_mut(&foreign_owner)
-        .unwrap()
-        .retain(|card| card != &foreign_card);
-    let replaced_card = drawn_cards[9];
-    let deck = game.deck_for_mut(&player).unwrap();
-    let replaced_position = deck.iter().position(|card| card == &replaced_card).unwrap();
-    deck[replaced_position] = foreign_card;
-    drawn_cards[9] = foreign_card;
-    game.exposed_foreign_cards.push(foreign_card);
-    request_clear_wind_ten_thousand_miles(&mut game, &player, used_cards);
-
-    let events = answer_choice(
-        &game,
-        player.clone(),
-        ChoiceAnswer::Cards { cards: Vec::new() },
-    )
-    .unwrap();
-    assert!(events.iter().any(|event| matches!(
-        event,
-        GameEvent::CardsMoved { card_moves }
-            if card_moves.len() == drawn_cards.len()
-                && card_moves.iter().all(|move_delta| {
-                    matches!(
-                        move_delta.to,
-                        fewfc::domain::CardZone::PlayerDiscard(ref owner)
-                            if owner == if move_delta.card == foreign_card {
-                                &foreign_owner
-                            } else {
-                                &player
-                            }
-                    )
-                })
-    )));
-    for event in &events {
-        apply_event(&mut game, event);
-    }
-
-    let discard = game.discard_for(&player).unwrap();
-    assert!(
-        drawn_cards
+    use fewfc::domain::{CardZone, DISCARD_RETRIEVAL_MODULE_ID, PERSONAL_DECK_MODULE_ID};
+    let p1 = PlayerId::new("p1");
+    let p2 = PlayerId::new("p2");
+    let mut setup = confluence_setup(&[PERSONAL_DECK_MODULE_ID, DISCARD_RETRIEVAL_MODULE_ID]);
+    setup.base_draw = 7;
+    setup.hand_limit = 12;
+    let prefix = play::personal_prefix(
+        &setup,
+        &[
+            &[
+                (Element::Metal, 1),
+                (Element::Wood, 2),
+                (Element::Metal, 1),
+                (Element::Earth, 1),
+                (Element::Fire, 5),
+                (Element::Water, 1),
+                (Element::Fire, 2),
+                (Element::Earth, 3),
+                (Element::Wood, 2),
+                (Element::Water, 3),
+                (Element::Fire, 4),
+                (Element::Earth, 5),
+            ],
+            &[],
+        ],
+    );
+    let mut record = play::start_with_cards(setup, &prefix);
+    let numbers = |indices: &[usize]| {
+        indices
             .iter()
-            .filter(|card| **card != foreign_card)
-            .all(|card| discard.contains(card))
+            .map(|index| prefix[*index].as_u64())
+            .collect::<Vec<_>>()
+    };
+    for (profession, cards) in [
+        ("confluence:clear-wind-adept", numbers(&[0, 1])),
+        ("confluence:clear-wind-envoy", numbers(&[5, 6, 7])),
+    ] {
+        play::change(&mut record, &p1, profession, &cards);
+        play::finish(&mut record, &p1);
+        play::strike_with_spare(&mut record, &p2, &[]);
+        play::finish(&mut record, &p2);
+    }
+    let foreign = record.state().last_turn_discard_by_player[&p2].card;
+    record
+        .handle(Command::RetrievePreviousTurnDiscard { player: p1.clone() })
+        .unwrap();
+    let drawn = record.state().deck_for(&p1).unwrap()[..10].to_vec();
+    assert_eq!(drawn[0], foreign);
+    assert!(record.state().exposed_foreign_cards.contains(&foreign));
+    play::perform(
+        &mut record,
+        &p1,
+        "confluence:clear-wind-ten-thousand-miles",
+        &numbers(&[2, 8, 9, 10]),
     );
+    let events = play::answer(&mut record, &p1, ChoiceAnswer::Cards { cards: vec![] });
+    assert!(events.iter().any(|event| matches!(event, GameEvent::CardsMoved { card_moves }
+        if card_moves.len() == drawn.len() && card_moves.iter().all(|movement| movement.to
+            == CardZone::PlayerDiscard(if movement.card == foreign { p2.clone() } else { p1.clone() })))));
+    assert!(record.state().discard_for(&p2).unwrap().contains(&foreign));
+    assert!(!record.state().discard_for(&p1).unwrap().contains(&foreign));
     assert!(
-        game.discard_for(&foreign_owner)
-            .unwrap()
-            .contains(&foreign_card)
+        drawn[1..]
+            .iter()
+            .all(|card| record.state().discard_for(&p1).unwrap().contains(card))
     );
-    assert!(drawn_cards.iter().all(|card| !game.discard.contains(card)));
+    assert!(record.state().discard.is_empty());
+    play::assert_replay(&record);
 }
 
 #[test]
@@ -673,35 +684,22 @@ fn five_resonance_requires_distinct_cards_for_element_and_residual_level_slots()
 
 #[test]
 fn acquiring_dao_mage_persists_a_public_limited_use() {
-    let mut game = state(false);
-    game.professions.push(PlayerProfession {
-        player: PlayerId::new("p2"),
-        profession: ProfessionId::new("seeker"),
-    });
-    let transition = cards(&game, &[(Element::Fire, 1), (Element::Fire, 5)]);
-    set_hand(&mut game, transition.clone());
-    let events = handle_command(
-        &game,
-        Command::ChangeProfession {
-            player: PlayerId::new("p2"),
-            profession: ProfessionId::new("confluence:dao-mage"),
-            cards: transition,
-        },
-    )
-    .unwrap();
-    assert!(events.iter().any(|event| matches!(
-        event,
-        GameEvent::LimitedUseChanged {
-            key,
-            new_remaining: 1,
-            maximum: 1,
-            ..
-        } if key == "confluence:imprisoning-array"
-    )));
-    for event in &events {
-        apply_event(&mut game, event);
-    }
-    assert_eq!(state_for(&game, Viewer::Observer).limited_uses.len(), 1);
+    let p1 = PlayerId::new("p1");
+    let p2 = PlayerId::new("p2");
+    let mut record =
+        play::start_with_reserves(confluence_setup(&[]), &[&[19, 23], &[]], &[&[55, 70], &[]]);
+    play::change(&mut record, &p1, "seeker", &[19, 23]);
+    play::finish(&mut record, &p1);
+    play::strike_with_spare(&mut record, &p2, &[]);
+    play::finish(&mut record, &p2);
+    let events = play::change(&mut record, &p1, "confluence:dao-mage", &[55, 70]);
+    assert!(events.iter().any(|event| matches!(event, GameEvent::LimitedUseChanged { key, new_remaining: 1, maximum: 1, .. }
+        if key == "confluence:imprisoning-array")));
+    let public = state_for(record.state(), Viewer::Observer);
+    assert_eq!(public.limited_uses, record.state().limited_uses);
+    assert_eq!(public.limited_uses.len(), 1);
+    assert_eq!(public.limited_uses[0].remaining, 1);
+    play::assert_replay(&record);
 }
 
 #[test]
@@ -749,141 +747,83 @@ fn tuning_is_not_offered_when_the_retrieved_card_cannot_complete_a_profession_ch
 
 #[test]
 fn tuning_is_offered_when_easy_string_can_complete_an_inherited_profession_formation() {
-    let mut game = state(false);
-    game.professions.push(PlayerProfession {
-        player: PlayerId::new("p2"),
-        profession: ProfessionId::new("confluence:string-changer"),
-    });
-    let residual = cards(&game, &[(Element::Metal, 2)])[0];
-    set_residual(&mut game, residual);
-    let hand = cards(&game, &[(Element::Fire, 5), (Element::Fire, 2)]);
-    set_hand(&mut game, hand.clone());
-
-    let actions = OfficialRules::new()
-        .playable_actions(&game, &PlayerId::new("p2"), &[hand[0]])
+    let p2 = PlayerId::new("p2");
+    let mut record = string_changer_record();
+    assert!(record.playable_actions(&p2, &play::ids(&[70])).unwrap().iter().any(|action| matches!(action,
+        PlayableAction::ActivateProfessionAbility(candidate) if candidate.ability_id == "confluence:tuning")));
+    record
+        .handle(confluence_ability(&p2, "confluence:tuning", &[70]))
         .unwrap();
-    assert!(actions.iter().any(|action| matches!(
-        action,
-        PlayableAction::ActivateProfessionAbility(candidate)
-            if candidate.ability_id == "confluence:tuning"
-    )));
-
-    let events = handle_command(
-        &game,
-        Command::ActivateProfessionAbility {
-            player: PlayerId::new("p2"),
-            ability_id: "confluence:tuning".to_string(),
-            cards: vec![hand[0]],
-            target_card: None,
-            declared_element: None,
-            declared_level: None,
-        },
-    )
-    .unwrap();
-    for event in &events {
-        apply_event(&mut game, event);
-    }
-
-    let mirror_cards = vec![residual, hand[1]];
-    let actions = OfficialRules::new()
-        .playable_actions(&game, &PlayerId::new("p2"), &mirror_cards)
-        .unwrap();
-    assert!(actions.iter().any(|action| matches!(
-        action,
-        PlayableAction::PerformFormation(candidate)
-            if candidate.formation_id == "confluence:mirror-resonance"
-    )));
-
+    let mirror_cards = play::ids(&[8, 59]);
+    assert!(record.playable_actions(&p2, &mirror_cards).unwrap().iter().any(|action| matches!(action,
+        PlayableAction::PerformFormation(candidate) if candidate.formation_id == "confluence:mirror-resonance")));
+    let before = record.state().clone();
     assert!(
-        handle_command(
-            &game,
-            Command::PerformFormation {
-                player: PlayerId::new("p2"),
+        record
+            .handle(Command::PerformFormation {
+                player: p2.clone(),
                 formation_id: "metal-strike".to_string(),
-                cards: vec![residual],
+                cards: play::ids(&[8]),
                 declared_targets: vec![],
-            },
-        )
-        .is_err()
+            })
+            .is_err()
     );
-
-    let events = handle_command(
-        &game,
-        Command::PerformFormation {
-            player: PlayerId::new("p2"),
-            formation_id: "confluence:mirror-resonance".to_string(),
-            cards: mirror_cards,
-            declared_targets: vec![],
-        },
-    )
-    .unwrap();
-    assert!(events.iter().any(|event| matches!(
-        event,
-        GameEvent::ConfluenceCardObligationCleared { owner, card }
-            if owner == &PlayerId::new("p2") && *card == residual
-    )));
+    assert_eq!(*record.state(), before);
+    let events = play::perform(&mut record, &p2, "confluence:mirror-resonance", &[8, 59]);
+    assert!(
+        events.contains(&GameEvent::ConfluenceCardObligationCleared {
+            owner: p2.clone(),
+            card: CardInstanceId::new(8)
+        })
+    );
+    assert!(record.state().confluence_card_obligations.is_empty());
+    play::assert_replay(&record);
 }
 
 #[test]
 fn voluntary_non_action_effect_cannot_consume_the_only_tuning_completion_path() {
-    let mut game = state(false);
-    game.enabled_rule_modules
-        .push(RuleModuleId::new(SPIRIT_MODULE_ID));
-    game.professions.push(PlayerProfession {
-        player: PlayerId::new("p2"),
-        profession: ProfessionId::new("confluence:string-changer"),
-    });
-    game.spirits.push(PlayerSpirit {
-        player: PlayerId::new("p2"),
-        spirit: SpiritKind::Water,
-        power: 1,
-    });
-    let residual = cards(&game, &[(Element::Metal, 2)])[0];
-    set_residual(&mut game, residual);
-    let hand = cards(&game, &[(Element::Fire, 5), (Element::Fire, 2)]);
-    set_hand(&mut game, hand.clone());
-
-    let events = handle_command(
-        &game,
-        Command::ActivateProfessionAbility {
-            player: PlayerId::new("p2"),
-            ability_id: "confluence:tuning".to_string(),
-            cards: vec![hand[0]],
-            target_card: None,
-            declared_element: None,
-            declared_level: None,
-        },
-    )
-    .unwrap();
-    for event in &events {
-        apply_event(&mut game, event);
-    }
-    assert!(game.confluence_card_obligations.iter().any(|obligation| {
-        obligation.owner == PlayerId::new("p2")
-            && obligation.card == residual
-            && obligation.applied_on_turn == game.turn_number
-    }));
-
+    let p2 = PlayerId::new("p2");
+    let mut record = string_changer_record();
+    let flow = Command::UseSpiritSkill {
+        player: p2.clone(),
+        skill: SpiritSkill::Flow,
+        selected_card: Some(CardInstanceId::new(59)),
+        declared_level: None,
+    };
+    let mut baseline = record.clone();
+    baseline.handle(flow.clone()).unwrap();
     assert!(
-        handle_command(
-            &game,
-            Command::UseSpiritSkill {
-                player: PlayerId::new("p2"),
-                skill: SpiritSkill::Flow,
-                selected_card: Some(hand[1]),
-                declared_level: None,
-            },
-        )
-        .is_err()
+        !baseline
+            .state()
+            .hand(&p2)
+            .unwrap()
+            .contains(&CardInstanceId::new(59))
     );
+    play::assert_replay(&baseline);
 
-    let actions = OfficialRules::new()
-        .playable_actions(&game, &PlayerId::new("p2"), &[hand[1]])
+    record
+        .handle(confluence_ability(&p2, "confluence:tuning", &[70]))
         .unwrap();
-    assert!(!actions.iter().any(|action| matches!(
-        action,
-        PlayableAction::UseSpiritSkill(candidate) if candidate.skill == SpiritSkill::Flow
-    )));
+    let before = record.state().clone();
+    assert!(
+        before
+            .confluence_card_obligations
+            .iter()
+            .any(|obligation| obligation.owner == p2
+                && obligation.card == CardInstanceId::new(8)
+                && obligation.applied_on_turn == before.turn_number)
+    );
+    assert!(record.handle(flow).is_err());
+    assert_eq!(*record.state(), before);
+    assert!(
+        !record
+            .playable_actions(&p2, &play::ids(&[59]))
+            .unwrap()
+            .iter()
+            .any(|action| matches!(action,
+        PlayableAction::UseSpiritSkill(candidate) if candidate.skill == SpiritSkill::Flow))
+    );
+    play::assert_replay(&record);
 }
 
 #[test]
@@ -1261,4 +1201,55 @@ fn limited(player: &str, remaining: u32) -> LimitedUse {
         remaining,
         maximum: 1,
     }
+}
+
+fn confluence_setup(extra: &[&str]) -> fewfc::domain::GameSetup {
+    let mut modules = vec![
+        STAR_MODULE_ID,
+        FIVE_DIRECTIONS_LEGEND_MODULE_ID,
+        HERO_SCHOOLS_MODULE_ID,
+        CONFLUENCE_GENERATION_MODULE_ID,
+    ];
+    modules.extend_from_slice(extra);
+    play::setup(2, &modules)
+}
+
+fn confluence_ability(player: &PlayerId, id: &str, cards: &[u64]) -> Command {
+    Command::ActivateProfessionAbility {
+        player: player.clone(),
+        ability_id: id.to_string(),
+        cards: play::ids(cards),
+        target_card: None,
+        declared_element: None,
+        declared_level: None,
+    }
+}
+
+fn string_changer_record() -> fewfc::application::GameRecord {
+    let p1 = PlayerId::new("p1");
+    let p2 = PlayerId::new("p2");
+    let mut record = play::start(
+        confluence_setup(&[SPIRIT_MODULE_ID]),
+        &[
+            19, 20, 21, 22, 37, 41, 9, 10, 11, 5, 23, 24, 38, 70, 59, 6, 25, 39, 67, 7, 26, 40, 68,
+            69, 8, 28,
+        ],
+    );
+    for (strike, residual, profession, used) in [
+        (19, 5, None, &[37, 41][..]),
+        (20, 6, Some("confluence:tuner"), &[9][..]),
+        (21, 7, Some("confluence:string-changer"), &[10, 11][..]),
+    ] {
+        play::perform(&mut record, &p1, "wood-strike", &[strike]);
+        play::finish_discarding(&mut record, &p1, Some(CardInstanceId::new(residual)));
+        if let Some(profession) = profession {
+            play::change(&mut record, &p2, profession, used);
+        } else {
+            play::perform(&mut record, &p2, "water-spirit-summoning", used);
+        }
+        play::finish(&mut record, &p2);
+    }
+    play::perform(&mut record, &p1, "wood-strike", &[22]);
+    play::finish_discarding(&mut record, &p1, Some(CardInstanceId::new(8)));
+    record
 }

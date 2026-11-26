@@ -2,12 +2,14 @@ use fewfc::application::{advance_automatic, apply_event, handle_command};
 use fewfc::domain::{
     CardInstanceId, Command, Element, FIVE_DIRECTIONS_LEGEND_MODULE_ID, GameEvent, GameOutcome,
     GameState, GameStatus, HERO_SCHOOLS_MODULE_ID, JIANGHU_MODULE_ID, JianghuState,
-    JianghuStateKind, LastFormationUse, Phase, Player, PlayerId, PlayerProfession, PlayerSpirit,
-    ProfessionId, RuleModuleId, SPIRIT_MODULE_ID, STAR_MODULE_ID, SpiritKind, StatusDuration,
-    StatusEffect, StatusExpiryTiming, StatusOwner, TeamId, TeamStar,
+    JianghuStateKind, Phase, Player, PlayerId, PlayerProfession, PlayerSpirit, ProfessionId,
+    RuleModuleId, SPIRIT_MODULE_ID, STAR_MODULE_ID, SpiritKind, StatusDuration, StatusEffect,
+    StatusExpiryTiming, StatusOwner, TeamId,
 };
 use fewfc::public_view::{Viewer, state_for};
 use fewfc::rules::{OfficialRules, PlayableAction};
+mod support;
+use support::record as play;
 
 fn state() -> GameState {
     let players = vec![
@@ -228,75 +230,93 @@ fn heavenly_yang_aura_lasts_one_round_and_expires_at_its_owners_next_turn_start(
 
 #[test]
 fn thousand_blades_applies_immediately_and_replays_as_typed_state() {
-    let mut game = state();
-    set_profession(&mut game, "p1", "jianghu:swordsman");
-    let used = cards(&game, &[(Element::Metal, 2), (Element::Wood, 2)]);
-    set_hand(&mut game, "p1", used.clone());
-
-    let events = handle_command(
-        &game,
-        Command::PerformFormation {
-            player: PlayerId::new("p1"),
-            formation_id: "jianghu:thousand-blades-sword-art".to_string(),
-            cards: used,
-            declared_targets: Vec::new(),
-        },
-    )
-    .unwrap();
-    assert!(events.iter().any(|event| matches!(
-        event,
-        GameEvent::AttackResolved { point_breakdown, .. }
-            if point_breakdown.base_points == 18
-    )));
-    assert!(events.iter().any(|event| matches!(
-        event,
-        GameEvent::JianghuStateApplied { state }
-            if state.kind == JianghuStateKind::ThousandBlades
-    )));
-
-    for event in &events {
-        apply_event(&mut game, event);
+    let p1 = PlayerId::new("p1");
+    let p2 = PlayerId::new("p2");
+    let mut record =
+        play::start_with_reserves(jianghu_setup(), &[&[1, 9, 45], &[]], &[&[5, 23], &[]]);
+    for (profession, cards) in [
+        ("first-wanderer", &[1][..]),
+        ("jianghu:swordsman", &[9, 45][..]),
+    ] {
+        play::change(&mut record, &p1, profession, cards);
+        advance_jianghu_round(&mut record, &p1, &p2);
     }
-    assert!(game.jianghu_states.iter().any(|state| {
-        state.owner == PlayerId::new("p1") && state.kind == JianghuStateKind::ThousandBlades
-    }));
+    let events = play::perform(
+        &mut record,
+        &p1,
+        "jianghu:thousand-blades-sword-art",
+        &[5, 23],
+    );
+    assert!(events.iter().any(|event| matches!(event, GameEvent::AttackResolved { point_breakdown, .. } if point_breakdown.base_points == 18)));
+    assert!(events.iter().any(|event| matches!(event, GameEvent::JianghuStateApplied { state } if state.owner == p1 && state.kind == JianghuStateKind::ThousandBlades)));
+    assert!(
+        record
+            .state()
+            .jianghu_states
+            .iter()
+            .any(|state| state.owner == p1 && state.kind == JianghuStateKind::ThousandBlades)
+    );
+    assert!(record.state().discard.ends_with(&play::ids(&[5, 23])));
+    play::assert_replay(&record);
 }
 
 #[test]
 fn poison_stacks_ticks_at_affected_players_turn_end_and_uses_poison_mastery() {
-    let mut game = state();
-    set_profession(&mut game, "p1", "jianghu:poison-saint");
-    game.current_turn_index = 1;
-    game.phase = Phase::TurnEnd;
-    game.jianghu_states.push(JianghuState {
-        owner: PlayerId::new("p2"),
-        kind: JianghuStateKind::Poison,
-        remaining_turns: 3,
-        expires_on_turn: None,
-        last_resolved_turn: None,
-    });
-
-    let events = advance_automatic(&game).unwrap();
-    assert!(matches!(
-        events.first(),
-        Some(GameEvent::JianghuPoisonTicked {
-            owner,
-            damage: 15,
-            remaining_turns: 2,
-            ..
-        }) if owner == &PlayerId::new("p2")
-    ));
-    for event in &events {
-        apply_event(&mut game, event);
+    let p1 = PlayerId::new("p1");
+    let p2 = PlayerId::new("p2");
+    for mastery in [false, true] {
+        let mut record = play::start_with_reserves(
+            jianghu_setup(),
+            &[&[1, 19, 37], &[]],
+            &[&[2, 55, 73, 9, 27, 63, 3], &[]],
+        );
+        play::change(&mut record, &p1, "first-wanderer", &[1]);
+        advance_jianghu_round(&mut record, &p1, &p2);
+        play::change(&mut record, &p1, "jianghu:poisoner", &[19, 37]);
+        advance_jianghu_round(&mut record, &p1, &p2);
+        if mastery {
+            play::change(&mut record, &p1, "jianghu:poison-saint", &[2, 55, 73]);
+            advance_jianghu_round(&mut record, &p1, &p2);
+        }
+        let applied = play::perform(
+            &mut record,
+            &p1,
+            "jianghu:thousand-poison-hand",
+            &[9, 27, 63],
+        );
+        assert!(applied.iter().any(|event| matches!(event, GameEvent::JianghuStateApplied { state }
+            if state.owner == p2 && state.kind == JianghuStateKind::Poison && state.remaining_turns == 2)));
+        let unrelated_turn = play::finish(&mut record, &p1);
+        assert!(
+            !unrelated_turn
+                .iter()
+                .any(|event| matches!(event, GameEvent::JianghuPoisonTicked { .. }))
+        );
+        play::strike_with_spare(&mut record, &p2, &[]);
+        let expected = if mastery { 15 } else { 10 };
+        let before = record.state().hp.clone();
+        let events = play::finish(&mut record, &p2);
+        assert!(
+            matches!(events.iter().filter(|event| matches!(event, GameEvent::JianghuPoisonTicked { .. })).collect::<Vec<_>>().as_slice(),
+            [GameEvent::JianghuPoisonTicked { owner, damage, remaining_turns: 1, hp_change }]
+                if owner == &p2 && *damage == expected && hp_change.old_hp() == before[1].hp
+                    && hp_change.new_hp() == before[1].hp - expected)
+        );
+        assert_eq!(record.state().hp[0], before[0]);
+        assert!(
+            record
+                .state()
+                .jianghu_states
+                .iter()
+                .any(|active| active.owner == p2
+                    && active.kind == JianghuStateKind::Poison
+                    && active.remaining_turns == 1)
+        );
+        let reapplied = play::perform(&mut record, &p1, "jianghu:poison-dart", &[3]);
+        assert!(reapplied.iter().any(|event| matches!(event, GameEvent::JianghuStateApplied { state }
+            if state.owner == p2 && state.kind == JianghuStateKind::Poison && state.remaining_turns == 2)));
+        play::assert_replay(&record);
     }
-    assert_eq!(
-        game.jianghu_states
-            .iter()
-            .find(|active| active.kind == JianghuStateKind::Poison)
-            .unwrap()
-            .remaining_turns,
-        2
-    );
 }
 
 #[test]
@@ -464,164 +484,214 @@ fn lethal_poison_tick_blooms_before_turn_end_game_conclusion() {
 
 #[test]
 fn king_yama_decree_wins_directly_through_watch_fire_protection() {
-    let mut game = state();
-    set_profession(&mut game, "p1", "jianghu:poison-saint");
-    let decree = cards(&game, &[(Element::Metal, 1)]);
-    set_hand(&mut game, "p1", decree.clone());
-    game.hp
-        .iter_mut()
-        .find(|team_hp| team_hp.team == TeamId::new("team:b"))
-        .unwrap()
-        .hp = 40;
-    game.statuses.push(StatusEffect {
-        id: "watch-fire".to_string(),
-        owner: StatusOwner::Player(PlayerId::new("p1")),
-        kind: "PouchWatchFire".to_string(),
-        value: None,
-        duration: StatusDuration::UntilTurnEnd {
-            player: PlayerId::new("p1"),
-        },
-    });
-
-    let events = handle_command(
-        &game,
-        Command::PerformFormation {
-            player: PlayerId::new("p1"),
-            formation_id: "jianghu:king-yama-decree".to_string(),
-            cards: decree,
-            declared_targets: Vec::new(),
-        },
-    )
-    .unwrap();
-    assert!(events.iter().any(|event| matches!(
-        event,
-        GameEvent::KingYamaDecreeVictoryAchieved { player, team }
-            if player == &PlayerId::new("p1") && team == &TeamId::new("team:a")
-    )));
-    for event in &events {
-        apply_event(&mut game, event);
-    }
-
-    assert!(matches!(
-        game.status,
-        GameStatus::Finished {
-            ref conclusion
-        } if conclusion.outcome == GameOutcome::Winner(TeamId::new("team:a"))
-    ));
-    assert_eq!(
-        game.hp
-            .iter()
-            .find(|team_hp| team_hp.team == TeamId::new("team:b"))
-            .unwrap()
-            .hp,
-        40,
-        "觀火仍應阻止陣式造成的生命值變化"
+    use fewfc::domain::{
+        PERSONAL_DECK_MODULE_ID, POUCH_MODULE_ID, SecretStrategy, SecretStrategyDecision,
+    };
+    let p1 = PlayerId::new("p1");
+    let p2 = PlayerId::new("p2");
+    let mut setup = play::setup(
+        2,
+        &[
+            STAR_MODULE_ID,
+            FIVE_DIRECTIONS_LEGEND_MODULE_ID,
+            HERO_SCHOOLS_MODULE_ID,
+            JIANGHU_MODULE_ID,
+            PERSONAL_DECK_MODULE_ID,
+            SPIRIT_MODULE_ID,
+            POUCH_MODULE_ID,
+        ],
     );
+    setup.hp[1].hp = 40;
+    setup.base_draw = 5;
+    setup.hand_limit = 10;
+    let prefix = play::personal_prefix(
+        &setup,
+        &[
+            &[
+                (Element::Fire, 1),
+                (Element::Metal, 1),
+                (Element::Wood, 1),
+                (Element::Water, 1),
+                (Element::Earth, 1),
+                (Element::Fire, 2),
+                (Element::Metal, 1),
+                (Element::Fire, 1),
+                (Element::Earth, 1),
+                (Element::Water, 1),
+                (Element::Wood, 1),
+            ],
+            &[(Element::Fire, 1)],
+        ],
+    );
+    let mut record = play::start_pouch(setup, &[prefix[0], prefix[11]], &prefix[1..11]);
+    for (profession, indices) in [
+        ("first-wanderer", &[1][..]),
+        ("jianghu:poisoner", &[2, 3][..]),
+        ("jianghu:poison-saint", &[6, 7, 8][..]),
+    ] {
+        let cards = indices
+            .iter()
+            .map(|index| prefix[*index].as_u64())
+            .collect::<Vec<_>>();
+        play::change(&mut record, &p1, profession, &cards);
+        play::finish(&mut record, &p1);
+        if profession != "jianghu:poison-saint" {
+            play::strike_with_spare(&mut record, &p2, &[]);
+            play::finish(&mut record, &p2);
+        }
+    }
+    for watch in [false, true] {
+        let mut record = record.clone();
+        if watch {
+            let events = record
+                .handle(Command::TriggerSecretStrategy {
+                    player: p2.clone(),
+                    decision: SecretStrategyDecision::NoInput {
+                        source_card: prefix[11],
+                        strategy: SecretStrategy::WatchTheFire,
+                    },
+                })
+                .unwrap();
+            assert!(events.iter().any(|event| matches!(event, GameEvent::StatusAdded { status }
+                if status.owner == StatusOwner::Player(p1.clone()) && status.kind == "PouchWatchFire")));
+        }
+        play::strike_with_spare(&mut record, &p2, &[]);
+        play::finish(&mut record, &p2);
+        assert_eq!(record.state().hp[1].hp, 40);
+        assert_eq!(
+            record
+                .state()
+                .statuses
+                .iter()
+                .any(|status| status.owner == StatusOwner::Player(p1.clone())
+                    && status.kind == "PouchWatchFire"),
+            watch
+        );
+        let events = play::perform(
+            &mut record,
+            &p1,
+            "jianghu:king-yama-decree",
+            &[prefix[4].as_u64()],
+        );
+        assert!(events.contains(&GameEvent::KingYamaDecreeVictoryAchieved {
+            player: p1.clone(),
+            team: TeamId::new("team:a")
+        }));
+        assert!(
+            matches!(&record.state().status, GameStatus::Finished { conclusion } if conclusion.outcome == GameOutcome::Winner(TeamId::new("team:a")))
+        );
+        assert_eq!(record.state().hp[1].hp, 40);
+        play::assert_replay(&record);
+    }
 }
 
 #[test]
 fn water_dotting_fan_only_reads_the_immediately_previous_turns_formation() {
-    let mut stale = state();
-    stale.turn_number = 3;
-    set_profession(&mut stale, "p1", "jianghu:ink-seeker");
-    let fan = cards(&stale, &[(Element::Metal, 1)]);
-    set_hand(&mut stale, "p1", fan.clone());
-    stale.last_formation_by_player.insert(
-        PlayerId::new("p2"),
-        LastFormationUse {
-            formation_id: "five-streams-unite".to_string(),
-            resolved_effect_id: "five-streams-unite".to_string(),
-            used_cards: (1..=4).map(CardInstanceId::new).collect(),
-            resolved_turn: 1,
-        },
-    );
-    let mut fresh = stale.clone();
-    fresh
-        .last_formation_by_player
-        .get_mut(&PlayerId::new("p2"))
-        .unwrap()
-        .resolved_turn = 2;
-
-    let perform = |game: &GameState| {
-        handle_command(
-            game,
-            Command::PerformFormation {
-                player: PlayerId::new("p1"),
-                formation_id: "jianghu:water-dotting-fan".to_string(),
-                cards: fan.clone(),
-                declared_targets: Vec::new(),
-            },
-        )
-        .unwrap()
-    };
-    let stale_events = perform(&stale);
-    let fresh_events = perform(&fresh);
-
-    assert!(!stale_events.iter().any(|event| matches!(
-        event,
-        GameEvent::StatusAdded { status }
-            if matches!(status.kind.as_str(), "CannotAct" | "CannotDraw")
-    )));
-    assert_eq!(
-        fresh_events
+    let p1 = PlayerId::new("p1");
+    let p2 = PlayerId::new("p2");
+    for fresh in [false, true] {
+        let mut configured = jianghu_setup();
+        configured.hp[0].hp = 800;
+        let mut record = play::start_with_reserves(
+            configured,
+            &[&[1, 9, 10, 2], &[11, 27, 45, 63, 81]],
+            &[&[], &[12, 28, 46, 64, 82, 3]],
+        );
+        play::change(&mut record, &p1, "first-wanderer", &[1]);
+        play::finish(&mut record, &p1);
+        play::perform(
+            &mut record,
+            &p2,
+            "five-streams-unite",
+            &[11, 27, 45, 63, 81],
+        );
+        play::finish(&mut record, &p2);
+        play::change(&mut record, &p1, "jianghu:ink-seeker", &[9, 10]);
+        play::finish(&mut record, &p1);
+        if fresh {
+            play::perform(
+                &mut record,
+                &p2,
+                "five-streams-unite",
+                &[12, 28, 46, 64, 82],
+            );
+        } else {
+            play::change(&mut record, &p2, "first-wanderer", &[3]);
+        }
+        play::finish(&mut record, &p2);
+        let last = &record.state().last_formation_by_player[&p2];
+        assert_eq!(last.resolved_turn, if fresh { 4 } else { 2 });
+        assert_eq!(last.used_cards.len(), 5);
+        let events = play::perform(&mut record, &p1, "jianghu:water-dotting-fan", &[2]);
+        let effects = events
             .iter()
-            .filter_map(|event| match event {
+            .find_map(|event| match event {
                 GameEvent::AttackResolved {
+                    target,
                     elemental_context_update: Some(effects),
                     ..
-                } => Some(&effects.statuses_added),
+                } if target == &p2 => Some(effects),
                 _ => None,
             })
-            .flatten()
-            .filter(|status| matches!(status.kind.as_str(), "CannotAct" | "CannotDraw"))
-            .count(),
-        2
-    );
+            .unwrap();
+        let statuses = effects
+            .statuses_added
+            .iter()
+            .map(|status| (&status.owner, status.kind.as_str()))
+            .collect::<Vec<_>>();
+        let owner = StatusOwner::Player(p2.clone());
+        assert_eq!(
+            statuses,
+            if fresh {
+                vec![(&owner, "CannotAct"), (&owner, "CannotDraw")]
+            } else {
+                vec![]
+            }
+        );
+        assert!(record.state().discard.ends_with(&play::ids(&[2])));
+        play::assert_replay(&record);
+    }
 }
 
 #[test]
 fn dancing_yang_uses_the_attack_attribute_and_formation_card_count() {
-    let mut game = state();
-    set_profession(&mut game, "p1", "jianghu:qi-grandmaster");
-    game.team_stars.push(TeamStar {
-        team: TeamId::new("team:a"),
-        star: fewfc::domain::StarKind::Wood,
-    });
-    let used = cards(
-        &game,
-        &[(Element::Wood, 2), (Element::Wood, 3), (Element::Water, 1)],
-    );
-    set_hand(&mut game, "p1", used.clone());
-
-    let activation = handle_command(
-        &game,
-        Command::ActivateProfessionAbility {
-            player: PlayerId::new("p1"),
-            ability_id: "jianghu:dancing-yang-art".to_string(),
-            cards: Vec::new(),
-            target_card: None,
-            declared_element: None,
-            declared_level: None,
-        },
-    )
-    .unwrap();
-    for event in &activation {
-        apply_event(&mut game, event);
-    }
-
-    let events = handle_command(
-        &game,
-        Command::PerformFormation {
-            player: PlayerId::new("p1"),
-            formation_id: "suixing-heaven-pillar".to_string(),
-            cards: used,
-            declared_targets: Vec::new(),
-        },
-    )
-    .unwrap();
-
-    assert_eq!(
-        events
+    let p1 = PlayerId::new("p1");
+    let p2 = PlayerId::new("p2");
+    for (activated, eligible_attack) in [(false, true), (true, true), (true, false)] {
+        let mut record = play::start_with_reserves(
+            jianghu_setup(),
+            &[&[1, 27, 63], &[]],
+            &[&[34, 70, 28, 31, 35, 23, 29, 37, 20], &[]],
+        );
+        for (profession, cards) in [
+            ("first-wanderer", &[1][..]),
+            ("jianghu:qi-cultivator", &[27, 63][..]),
+            ("jianghu:qi-grandmaster", &[34, 70][..]),
+        ] {
+            play::change(&mut record, &p1, profession, cards);
+            advance_jianghu_round(&mut record, &p1, &p2);
+        }
+        play::perform(&mut record, &p1, "triple-wood", &[28, 31, 35]);
+        advance_jianghu_round(&mut record, &p1, &p2);
+        if activated {
+            record
+                .handle(Command::ActivateProfessionAbility {
+                    player: p1.clone(),
+                    ability_id: "jianghu:dancing-yang-art".to_string(),
+                    cards: vec![],
+                    target_card: None,
+                    declared_element: None,
+                    declared_level: None,
+                })
+                .unwrap();
+        }
+        let (formation, cards) = if eligible_attack {
+            ("suixing-heaven-pillar", &[23, 29, 37][..])
+        } else {
+            ("wood-strike", &[20][..])
+        };
+        let events = play::perform(&mut record, &p1, formation, cards);
+        let changes = events
             .iter()
             .filter_map(|event| match event {
                 GameEvent::AttackResolved {
@@ -632,8 +702,38 @@ fn dancing_yang_uses_the_attack_attribute_and_formation_card_count() {
             })
             .flatten()
             .map(|change| (change.old_value, change.new_value))
-            .collect::<Vec<_>>(),
-        vec![(0, 1), (1, 2)],
-        "歲星柱天陣 is a three-card 木行 attack, so its own bonus and 舞陽訣 both apply"
-    );
+            .collect::<Vec<_>>();
+        assert_eq!(
+            changes,
+            match (eligible_attack, activated) {
+                (true, true) => vec![(0, 1), (1, 2)],
+                (true, false) => vec![(0, 1)],
+                (false, _) => vec![],
+            }
+        );
+        assert!(record.state().discard.ends_with(&play::ids(cards)));
+        play::assert_replay(&record);
+    }
+}
+
+fn jianghu_setup() -> fewfc::domain::GameSetup {
+    play::setup(
+        2,
+        &[
+            STAR_MODULE_ID,
+            FIVE_DIRECTIONS_LEGEND_MODULE_ID,
+            HERO_SCHOOLS_MODULE_ID,
+            JIANGHU_MODULE_ID,
+        ],
+    )
+}
+
+fn advance_jianghu_round(
+    record: &mut fewfc::application::GameRecord,
+    p1: &PlayerId,
+    p2: &PlayerId,
+) {
+    play::finish(record, p1);
+    play::strike_with_spare(record, p2, &[]);
+    play::finish(record, p2);
 }

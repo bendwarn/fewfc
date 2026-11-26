@@ -1,10 +1,10 @@
 use fewfc::application::GameRecord;
 use fewfc::domain::{
-    CardInstanceId, CardOrigin, ChoiceAnswer, Command, DISCARD_RETRIEVAL_MODULE_ID, Element,
-    GameError, GameEvent, GameSetup, GameState, PERSONAL_DECK_MODULE_ID, Player, PlayerId,
+    CardInstanceId, CardOrigin, CardZone, ChoiceAnswer, Command, DISCARD_RETRIEVAL_MODULE_ID,
+    Element, GameError, GameEvent, GameSetup, GameState, PERSONAL_DECK_MODULE_ID, Player, PlayerId,
     RuleModuleId, StatusOwner, TeamId, ValidationError,
 };
-use fewfc::public_view::{PublicGameEvent, Viewer, state_for};
+use fewfc::public_view::{PublicCardRefs, PublicGameEvent, Viewer, state_for};
 use fewfc::rules::OfficialRules;
 
 fn players() -> (Vec<Player>, Vec<PlayerId>) {
@@ -75,22 +75,31 @@ fn take_element_card(
 /// 固定牌堆順序僅是背景：它將合法的四張 Radiance 組合發給 P1，為 P2 留下五張
 /// 初始手牌，並給 P1 一張已知的回合抽牌棄牌。下方測試的效果仍由真正的
 /// 陣形/回合抽牌命令建立。
-fn shared_deck_order_for_radiance(setup: &GameSetup) -> (Vec<CardInstanceId>, CardInstanceId) {
-    let mut remaining = OfficialRules::new().official_deck_order(setup).unwrap();
+fn deck_order_for_radiance(setup: &GameSetup) -> (Vec<CardInstanceId>, CardInstanceId) {
+    let personal_deck = setup.has_rule_module(PERSONAL_DECK_MODULE_ID);
+    let order = OfficialRules::new().official_deck_order(setup).unwrap();
+    let (mut remaining, other_deck): (Vec<_>, Vec<_>) = order.into_iter().partition(|card| {
+        !personal_deck
+            || setup.card_instances.iter().any(|instance| {
+                instance.instance == *card
+                    && instance.origin == CardOrigin::Player(setup.turn_order[0].clone())
+            })
+    });
     let mut deck = vec![
         take_element_card(setup, &mut remaining, Element::Metal),
         take_element_card(setup, &mut remaining, Element::Metal),
         take_element_card(setup, &mut remaining, Element::Fire),
         take_element_card(setup, &mut remaining, Element::Water),
     ];
-    // P2 的正常初始發牌是此互動無關的背景。
-    for _ in 0..5 {
-        deck.push(remaining.remove(0));
+    if !personal_deck {
+        // 共用牌堆須先發完 P2 的起手牌，P1 才能抽到指定的棄牌。
+        deck.extend(remaining.drain(..5));
     }
     let turn_draw_discard = remaining.remove(0);
     deck.push(turn_draw_discard);
     deck.push(remaining.remove(0));
     deck.extend(remaining);
+    deck.extend(other_deck);
     (deck, turn_draw_discard)
 }
 
@@ -259,10 +268,27 @@ fn personal_deck_start_matrix_prepares_owned_piles_deals_opening_hands_and_repla
 
 #[test]
 fn radiance_discard_retrieval_matrix_keeps_the_active_effect_legal_under_cannot_act() {
-    let setup = shared_discard_retrieval_setup();
-    let (deck_order, turn_draw_discard) = shared_deck_order_for_radiance(&setup);
+    assert_radiance_discard_retrieval(shared_discard_retrieval_setup());
+}
+
+#[test]
+fn radiance_personal_deck_discard_retrieval_matrix_preserves_public_exposure_and_cost() {
+    assert_radiance_discard_retrieval(personal_setup());
+}
+
+fn assert_radiance_discard_retrieval(setup: GameSetup) {
+    let (deck_order, turn_draw_discard) = deck_order_for_radiance(&setup);
     let p1 = PlayerId::new("p1");
     let p2 = PlayerId::new("p2");
+    let personal_deck = setup.has_rule_module(PERSONAL_DECK_MODULE_ID);
+    let (discard_zone, deck_top) = if personal_deck {
+        (
+            CardZone::PlayerDiscard(p1.clone()),
+            CardZone::PlayerDeckTop(p2.clone()),
+        )
+    } else {
+        (CardZone::Discard, CardZone::DeckTop)
+    };
 
     // 基準：沒有 Radiance 時，可以在 P2 的作用中效果中取回緊接之前的合法回合
     // 抽牌棄牌。
@@ -279,6 +305,13 @@ fn radiance_discard_retrieval_matrix_keeps_the_active_effect_legal_under_cannot_
         .unwrap();
     advance_after_p1_turn_draw(&mut baseline, &p1, turn_draw_discard);
     assert_eq!(baseline.state().current_player(), Some(&p2));
+    let hp_cost = (baseline
+        .state()
+        .card_def(turn_draw_discard)
+        .unwrap()
+        .level
+        .value()
+        * 2) as i32;
     let baseline_events = baseline
         .handle(Command::RetrievePreviousTurnDiscard { player: p2.clone() })
         .unwrap();
@@ -293,9 +326,8 @@ fn radiance_discard_retrieval_matrix_keeps_the_active_effect_legal_under_cannot_
         }] if player == &p2
             && previous_player == &p1
             && *card == turn_draw_discard
-            && card_move.from == fewfc::domain::CardZone::Discard
-            && card_move.to == fewfc::domain::CardZone::DeckTop
-            && hp_change.effective_delta() < 0
+            && card_move.from == discard_zone && card_move.to == deck_top
+            && hp_change.delta() == -hp_cost && hp_change.effective_delta() == -hp_cost
     ));
     assert_eq!(baseline.replay().unwrap(), baseline.state().clone());
 
@@ -341,6 +373,13 @@ fn radiance_discard_retrieval_matrix_keeps_the_active_effect_legal_under_cannot_
     );
     // CannotDraw 讓 P2 的五張起手牌保持不變；它不會抑制下方的非行動取回命令。
     assert_eq!(interaction.state().hand(&p2).unwrap().len(), 5);
+    assert!(
+        interaction
+            .state()
+            .discard_for(&p1)
+            .unwrap()
+            .contains(&turn_draw_discard)
+    );
 
     let interaction_events = interaction
         .handle(Command::RetrievePreviousTurnDiscard { player: p2.clone() })
@@ -356,12 +395,32 @@ fn radiance_discard_retrieval_matrix_keeps_the_active_effect_legal_under_cannot_
         }] if player == &p2
             && previous_player == &p1
             && *card == turn_draw_discard
-            && card_move.from == fewfc::domain::CardZone::Discard
-            && card_move.to == fewfc::domain::CardZone::DeckTop
-            && hp_change.effective_delta() < 0
+            && card_move.from == discard_zone && card_move.to == deck_top
+            && hp_change.team() == &TeamId::new("team:p2")
+            && hp_change.delta() == -hp_cost && hp_change.effective_delta() == -hp_cost
     ));
-    assert_eq!(interaction.state().deck.first(), Some(&turn_draw_discard));
-    assert!(!interaction.state().discard.contains(&turn_draw_discard));
+    assert_eq!(
+        interaction.state().deck_for(&p2).unwrap().first(),
+        Some(&turn_draw_discard)
+    );
+    assert!(
+        !interaction
+            .state()
+            .discard_for(&p1)
+            .unwrap()
+            .contains(&turn_draw_discard)
+    );
+    assert_eq!(
+        interaction.state().phase,
+        fewfc::domain::Phase::ActiveEffects
+    );
+    if personal_deck {
+        let observer = interaction.public_view(Viewer::Observer).unwrap();
+        assert!(matches!(
+            &observer.player_decks.iter().find(|pile| pile.player == p2).unwrap().cards,
+            PublicCardRefs::PartiallyKnown { cards } if cards.first() == Some(&Some(turn_draw_discard))
+        ));
+    }
     assert!(matches!(
         interaction.public_events_for(Viewer::Observer).last(),
         Some(PublicGameEvent::Public(GameEvent::DiscardRetrieved { card, .. }))
@@ -377,7 +436,7 @@ fn radiance_discard_retrieval_matrix_keeps_the_active_effect_legal_under_cannot_
 #[test]
 fn discard_retrieval_matrix_uses_only_the_immediate_previous_turn_discard() {
     let setup = shared_discard_retrieval_setup();
-    let (deck_order, _) = shared_deck_order_for_radiance(&setup);
+    let (deck_order, _) = deck_order_for_radiance(&setup);
     let p1 = PlayerId::new("p1");
     let p2 = PlayerId::new("p2");
     let mut record = GameRecord::start(setup, deck_order).unwrap();

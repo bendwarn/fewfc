@@ -430,6 +430,17 @@ fn new_choice_and_randomness_fields_serialize_as_camel_case() {
         })
     );
     assert_eq!(
+        serde_json::to_value(PendingResolution::PouchChainRecycle).unwrap(),
+        serde_json::json!({ "type": "pouchChainRecycle" })
+    );
+    assert_eq!(
+        serde_json::to_value(PendingResolution::PouchSheepStealingRecycle {
+            source_card: card(9),
+        })
+        .unwrap(),
+        serde_json::json!({ "type": "pouchSheepStealingRecycle", "sourceCard": 9 })
+    );
+    assert_eq!(
         serde_json::to_value(fewfc::domain::RandomnessOperation::DiscardShuffle {
             pile: RandomnessDeck::Player(PlayerId::new("p1")),
             placement: fewfc::domain::DeckPlacement::Bottom,

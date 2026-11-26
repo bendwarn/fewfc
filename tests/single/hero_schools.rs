@@ -8,6 +8,8 @@ use fewfc::domain::{
 };
 use fewfc::public_view::{Viewer, state_for};
 use fewfc::rules::{ActionInputRequirement, OfficialRules, PlayableAction};
+mod support;
+use support::record as play;
 
 fn game_state(modules: &[&str]) -> GameState {
     let setup = OfficialRules::new()
@@ -126,212 +128,101 @@ fn perform(
     )
 }
 
-fn answer_choice(
-    state: &GameState,
-    player: PlayerId,
-    answer: ChoiceAnswer,
-) -> Result<Vec<GameEvent>, GameError> {
-    handle_command(
-        state,
-        Command::AnswerChoice {
-            player,
-            choice_id: state
-                .pending_choice
-                .as_ref()
-                .expect("pending choice")
-                .choice_id,
-            answer,
-        },
-    )
-}
-
 #[test]
 fn immortal_chaos_grants_one_draw_after_chaos_return_two_completes() {
-    let mut state = game_state(&[HERO_SCHOOLS_MODULE_ID]);
-    set_profession(&mut state, "p1", "immortal");
-    let chaos = cards(
-        &state,
-        &[
-            (Element::Earth, 1),
-            (Element::Earth, 2),
-            (Element::Wood, 1),
-            (Element::Metal, 1),
-        ],
-    );
-    let selected_for_return = cards(&state, &[(Element::Fire, 1), (Element::Water, 1)]);
-    set_hand(&mut state, "p1", chaos.clone());
-    set_hand(&mut state, "p2", selected_for_return.clone());
-
-    let formation_events = perform(&state, "chaos", chaos, Vec::new()).unwrap();
+    let p1 = PlayerId::new("p1");
+    let used = [73, 77, 19, 1];
+    let mut record = immortal_record(&used, &[55, 37]);
+    let started = play::perform(&mut record, &p1, "chaos", &used);
     assert!(
-        !formation_events
+        !started
             .iter()
             .any(|event| matches!(event, GameEvent::TurnDrawBonusChanged { .. }))
     );
-    apply_all(&mut state, &formation_events);
-
-    let completion_events = answer_choice(
-        &state,
-        PlayerId::new("p1"),
+    assert!(!record.state().turn_draw_bonus_by_player.contains_key(&p1));
+    let answer = play::answer(
+        &mut record,
+        &p1,
         ChoiceAnswer::Cards {
-            cards: selected_for_return,
+            cards: play::ids(&[55, 37]),
         },
-    )
-    .unwrap();
-    assert_eq!(
-        completion_events
-            .iter()
-            .filter(|event| matches!(
-                event,
-                GameEvent::TurnDrawBonusChanged {
-                    player,
-                    old_value: 0,
-                    delta: 1,
-                    new_value: 1,
-                } if player == &PlayerId::new("p1")
-            ))
-            .count(),
-        1
     );
-    apply_all(&mut state, &completion_events);
-    assert_eq!(
-        state.turn_draw_bonus_by_player.get(&PlayerId::new("p1")),
-        Some(&1)
-    );
+    assert_immortal_spell_bonus(&record, &p1, &answer, &used);
+    assert_eq!(&record.state().deck[..2], &play::ids(&[55, 37]));
 }
 
 #[test]
 fn immortal_barrier_grants_one_draw_through_the_completed_active_spell_boundary() {
-    let mut state = game_state(&[HERO_SCHOOLS_MODULE_ID]);
-    set_profession(&mut state, "p1", "immortal");
-    let barrier = cards(
-        &state,
-        &[
-            (Element::Wood, 1),
-            (Element::Wood, 2),
-            (Element::Metal, 1),
-            (Element::Fire, 1),
-        ],
-    );
-    set_hand(&mut state, "p1", barrier.clone());
-
-    let events = perform(&state, "barrier", barrier, Vec::new()).unwrap();
-    assert_eq!(
-        events
-            .iter()
-            .filter(|event| matches!(
-                event,
-                GameEvent::TurnDrawBonusChanged {
-                    player,
-                    old_value: 0,
-                    delta: 1,
-                    new_value: 1,
-                } if player == &PlayerId::new("p1")
-            ))
-            .count(),
-        1
-    );
-    apply_all(&mut state, &events);
-    assert_eq!(
-        state.turn_draw_bonus_by_player.get(&PlayerId::new("p1")),
-        Some(&1)
-    );
+    let p1 = PlayerId::new("p1");
+    let used = [19, 23, 1, 55];
+    let mut record = immortal_record(&used, &[]);
+    let events = play::perform(&mut record, &p1, "barrier", &used);
+    assert_immortal_spell_bonus(&record, &p1, &events, &used);
+    assert_eq!(record.state().shield(&p1), Some(20));
 }
 
 #[test]
 fn immortal_radiance_and_return_to_origin_grant_one_draw_as_completed_active_spells() {
-    for (formation_id, formation_cards) in [
-        (
-            "radiance",
-            vec![
-                (Element::Metal, 1),
-                (Element::Metal, 2),
-                (Element::Fire, 1),
-                (Element::Water, 1),
-            ],
-        ),
-        (
-            "return-to-origin",
-            vec![
-                (Element::Water, 1),
-                (Element::Water, 2),
-                (Element::Earth, 1),
-                (Element::Wood, 1),
-            ],
-        ),
+    let p1 = PlayerId::new("p1");
+    let p2 = PlayerId::new("p2");
+    for (formation, used) in [
+        ("radiance", [1, 5, 55, 37]),
+        ("return-to-origin", [37, 41, 73, 19]),
     ] {
-        let mut state = game_state(&[HERO_SCHOOLS_MODULE_ID]);
-        set_profession(&mut state, "p1", "immortal");
-        let selected = cards(&state, &formation_cards);
-        set_hand(&mut state, "p1", selected.clone());
-
-        let events = perform(&state, formation_id, selected, Vec::new()).unwrap();
-        assert_eq!(
-            events
-                .iter()
-                .filter(|event| matches!(
-                    event,
-                    GameEvent::TurnDrawBonusChanged {
-                        player,
-                        old_value: 0,
-                        delta: 1,
-                        new_value: 1,
-                    } if player == &PlayerId::new("p1")
-                ))
-                .count(),
-            1,
-            "{formation_id} must emit exactly one canonical draw bonus"
-        );
-        apply_all(&mut state, &events);
-        assert_eq!(
-            state.turn_draw_bonus_by_player.get(&PlayerId::new("p1")),
-            Some(&1),
-            "{formation_id} must project its draw bonus"
-        );
+        let mut record = immortal_record(&used, &[]);
+        let hp = record.state().hp[0].hp;
+        let events = play::perform(&mut record, &p1, formation, &used);
+        assert_immortal_spell_bonus(&record, &p1, &events, &used);
+        if formation == "radiance" {
+            assert!(
+                record
+                    .state()
+                    .statuses
+                    .iter()
+                    .any(|status| status.kind == "CannotAct"
+                        && status.owner == fewfc::domain::StatusOwner::Player(p2.clone()))
+            );
+        } else {
+            assert!(record.state().hp[0].hp > hp);
+        }
     }
 }
 
 #[test]
 fn immortal_shock_burst_keeps_one_draw_in_the_atomic_attack_resolution() {
-    let mut state = game_state(&[HERO_SCHOOLS_MODULE_ID]);
-    set_profession(&mut state, "p1", "immortal");
-    let shock_burst = cards(
-        &state,
-        &[
-            (Element::Fire, 1),
-            (Element::Fire, 2),
-            (Element::Water, 1),
-            (Element::Earth, 1),
-        ],
-    );
-    set_hand(&mut state, "p1", shock_burst.clone());
-
-    let events = perform(&state, "shock-burst", shock_burst, Vec::new()).unwrap();
+    let p1 = PlayerId::new("p1");
+    let used = [55, 59, 37, 73];
+    let mut record = immortal_record(&used, &[]);
+    let events = play::perform(&mut record, &p1, "shock-burst", &used);
+    let deltas = events
+        .iter()
+        .filter_map(|event| match event {
+            GameEvent::AttackResolved {
+                elemental_context_update: Some(effects),
+                ..
+            } => Some(&effects.turn_draw_bonus_changes),
+            _ => None,
+        })
+        .flatten()
+        .cloned()
+        .collect::<Vec<_>>();
     assert_eq!(
-        events
+        deltas,
+        [fewfc::domain::TurnDrawBonusDelta {
+            player: p1.clone(),
+            old_value: 0,
+            delta: 1,
+            new_value: 1
+        }]
+    );
+    assert!(
+        !events
             .iter()
-            .filter_map(|event| match event {
-                GameEvent::AttackResolved {
-                    elemental_context_update: Some(effects),
-                    ..
-                } => Some(&effects.turn_draw_bonus_changes),
-                _ => None,
-            })
-            .flatten()
-            .filter(|change| {
-                change.player == PlayerId::new("p1")
-                    && change.old_value == 0
-                    && change.delta == 1
-                    && change.new_value == 1
-            })
-            .count(),
-        1
+            .any(|event| matches!(event, GameEvent::TurnDrawBonusChanged { .. }))
     );
-    apply_all(&mut state, &events);
-    assert_eq!(
-        state.turn_draw_bonus_by_player.get(&PlayerId::new("p1")),
-        Some(&1)
-    );
+    assert_eq!(record.state().turn_draw_bonus_by_player.get(&p1), Some(&1));
+    assert!(record.state().discard.ends_with(&play::ids(&used)));
+    play::assert_replay(&record);
 }
 
 #[test]
@@ -711,143 +602,98 @@ fn illusion_and_phantasm_are_single_offers_with_virtual_card_input() {
 
 #[test]
 fn mesmer_preparation_is_public_shared_and_clears_after_action() {
-    let mut state = game_state(&[HERO_SCHOOLS_MODULE_ID]);
-    set_profession(&mut state, "p1", "hermit");
-    let selected = cards(
-        &state,
-        &[(Element::Metal, 1), (Element::Wood, 1), (Element::Earth, 2)],
-    );
-    set_hand(&mut state, "p1", selected.clone());
-    let events = handle_command(
-        &state,
-        Command::ActivateProfessionAbility {
-            player: PlayerId::new("p1"),
-            ability_id: "illusion".to_string(),
-            cards: selected[..2].to_vec(),
-            target_card: None,
-            declared_element: Some(Element::Fire),
-            declared_level: Some(3),
-        },
-    )
-    .unwrap();
+    let p1 = PlayerId::new("p1");
+    let mut record = hermit_record(&[1, 19]);
+    let preparation = |ability: &str| mesmer_ability(&p1, ability, &[1, 19]);
+    let events = record.handle(preparation("illusion")).unwrap();
     assert!(
         events
             .iter()
             .any(|event| matches!(event, GameEvent::TurnDrawBonusChanged { delta: 1, .. }))
     );
-    apply_all(&mut state, &events);
     assert!(
-        state_for(&state, Viewer::Observer)
+        state_for(record.state(), Viewer::Observer)
             .card_interpretations
             .is_empty()
     );
     assert!(
-        matches!(state.formation_requirements.as_slice(), [requirement]
+        matches!(record.state().formation_requirements.as_slice(), [requirement]
         if requirement.virtual_card.as_ref().is_some_and(|card| card.element == Element::Fire && card.level == 3))
     );
+    let prepared = record.state().clone();
     assert!(matches!(
-        handle_command(
-            &state,
-            Command::ActivateProfessionAbility {
-                player: PlayerId::new("p1"),
-                ability_id: "phantasm".to_string(),
-                cards: selected[..2].to_vec(),
-                target_card: None,
-                declared_element: Some(Element::Fire),
-                declared_level: Some(3),
-            },
-        ),
+        record.handle(preparation("phantasm")),
         Err(GameError::Validation(
             ValidationError::ProfessionAbilityAlreadyActivated { .. }
         ))
     ));
-
-    let candidates = formation_candidates(&state, &[], "fire-strike");
-    assert!(!candidates.is_empty());
-    let events = perform(&state, "fire-strike", vec![], Vec::new()).unwrap();
-    apply_all(&mut state, &events);
-    assert!(state.prepared_profession_abilities.is_empty());
-    assert!(state.formation_requirements.is_empty());
+    assert_eq!(*record.state(), prepared);
+    assert!(!formation_candidates(record.state(), &[], "fire-strike").is_empty());
+    play::perform(&mut record, &p1, "fire-strike", &[]);
+    assert!(record.state().prepared_profession_abilities.is_empty());
+    assert!(record.state().formation_requirements.is_empty());
+    play::assert_replay(&record);
 }
 
 #[test]
 fn phantasm_does_not_trigger_illusion_refinement_and_mesmer_formations_resolve() {
-    let mut state = game_state(&[HERO_SCHOOLS_MODULE_ID]);
-    set_profession(&mut state, "p1", "hermit");
-    let selected = cards(
-        &state,
-        &[(Element::Metal, 1), (Element::Wood, 1), (Element::Earth, 2)],
-    );
-    set_hand(&mut state, "p1", selected.clone());
-    let events = handle_command(
-        &state,
-        Command::ActivateProfessionAbility {
-            player: PlayerId::new("p1"),
-            ability_id: "phantasm".to_string(),
-            cards: selected[..2].to_vec(),
-            target_card: None,
-            declared_element: Some(Element::Fire),
-            declared_level: Some(3),
-        },
-    )
-    .unwrap();
+    let p1 = PlayerId::new("p1");
+    let shield = [19, 23, 1];
+    let mut record = hermit_record(&[2, 20, 19, 23, 1]);
+    let events = record
+        .handle(mesmer_ability(&p1, "phantasm", &[2, 20]))
+        .unwrap();
     assert!(
         !events
             .iter()
             .any(|event| matches!(event, GameEvent::TurnDrawBonusChanged { .. }))
     );
-
-    apply_all(&mut state, &events);
-    let shield = cards(
-        &state,
-        &[(Element::Wood, 1), (Element::Wood, 2), (Element::Metal, 1)],
-    );
-    set_hand(&mut state, "p1", shield.clone());
-    let events = perform(&state, "barrier", shield, Vec::new()).unwrap();
-    assert!(
-        events
-            .iter()
-            .any(|event| matches!(event, GameEvent::ShieldChanged { new_value: 28, .. }))
-    );
-    assert!(events.iter().any(
-        |event| matches!(event, GameEvent::FormationRequirementFulfilled { composition, .. }
-        if composition.physical_cards.len() == 3 && composition.virtual_card.is_some())
-    ));
+    let events = play::perform(&mut record, &p1, "barrier", &shield);
+    assert!(events.iter().any(|event| matches!(event,
+        GameEvent::FormationRequirementFulfilled { composition, .. }
+            if composition.physical_cards == play::ids(&shield) && composition.virtual_card.is_some())));
+    assert_eq!(record.state().shield(&p1), Some(28));
+    assert!(record.state().discard.ends_with(&play::ids(&shield)));
+    play::assert_replay(&record);
 }
 
 #[test]
 fn mage_point_modifiers_and_star_qualification_use_attack_points() {
-    let mut state = game_state(&[HERO_SCHOOLS_MODULE_ID, STAR_MODULE_ID]);
-    set_profession(&mut state, "p1", "mage");
-    let selected = cards(
-        &state,
-        &[(Element::Metal, 3), (Element::Metal, 4), (Element::Wood, 1)],
-    );
-    set_hand(&mut state, "p1", selected.clone());
-    let events = perform(&state, "triple-metal", selected, Vec::new()).unwrap();
-    assert!(events.iter().any(|event| matches!(
-        event,
-        GameEvent::AttackResolved { point_breakdown, .. }
-            if point_breakdown.base_points == 18
-    )));
-    assert!(
-        !events
-            .iter()
-            .any(|event| matches!(event, GameEvent::StarSummoned { .. }))
-    );
-
-    set_profession(&mut state, "p1", "sage");
-    let selected = cards(
-        &state,
-        &[(Element::Metal, 5), (Element::Metal, 5), (Element::Wood, 5)],
-    );
-    set_hand(&mut state, "p1", selected.clone());
-    let events = perform(&state, "triple-metal", selected, Vec::new()).unwrap();
-    assert!(
-        events
-            .iter()
-            .any(|event| matches!(event, GameEvent::StarSummoned { .. }))
-    );
+    let p1 = PlayerId::new("p1");
+    let p2 = PlayerId::new("p2");
+    for (advanced, used, points) in [
+        (false, [9, 13, 19], 18),
+        (false, [16, 17, 34], 39),
+        (true, [16, 17, 34], 39),
+    ] {
+        let mut reserve = vec![56, 70, 67, 71];
+        reserve.extend(used);
+        let mut record = play::start_with_reserves(
+            play::setup(2, &[HERO_SCHOOLS_MODULE_ID, STAR_MODULE_ID]),
+            &[&[55, 59], &[]],
+            &[&reserve, &[]],
+        );
+        play::change(&mut record, &p1, "mage", &[55, 59]);
+        finish_hero_round(&mut record, &p1, &p2, &[]);
+        if advanced {
+            play::change(&mut record, &p1, "mage-guide", &[56, 70]);
+            finish_hero_round(&mut record, &p1, &p2, &[]);
+            play::change(&mut record, &p1, "sage", &[67, 71]);
+            finish_hero_round(&mut record, &p1, &p2, &[]);
+        }
+        let events = play::perform(&mut record, &p1, "triple-metal", &used);
+        assert!(events.iter().any(
+            |event| matches!(event, GameEvent::AttackResolved { point_breakdown, .. }
+            if point_breakdown.base_points == points)
+        ));
+        assert_eq!(
+            events
+                .iter()
+                .any(|event| matches!(event, GameEvent::StarSummoned { .. })),
+            advanced
+        );
+        play::assert_replay(&record);
+    }
 }
 
 #[test]
@@ -1257,4 +1103,85 @@ fn high_level_void_reversion_breaks_legendary_professions_before_outcome() {
         state.status,
         fewfc::domain::GameStatus::Finished { .. }
     ));
+}
+
+fn finish_hero_round(
+    record: &mut fewfc::application::GameRecord,
+    p1: &PlayerId,
+    p2: &PlayerId,
+    reserved: &[u64],
+) {
+    play::finish(record, p1);
+    play::strike_with_spare(record, p2, reserved);
+    play::finish(record, p2);
+}
+
+fn immortal_record(used: &[u64], opponent_reserved: &[u64]) -> fewfc::application::GameRecord {
+    let p1 = PlayerId::new("p1");
+    let p2 = PlayerId::new("p2");
+    let mut reserve = vec![57, 71, 16, 34, 52];
+    reserve.extend_from_slice(used);
+    let mut record = play::start_with_reserves(
+        play::setup(2, &[HERO_SCHOOLS_MODULE_ID]),
+        &[&[56, 60], opponent_reserved],
+        &[&reserve, &[]],
+    );
+    for (profession, cards) in [
+        ("mage", &[56, 60][..]),
+        ("mage-guide", &[57, 71][..]),
+        ("immortal", &[16, 34, 52][..]),
+    ] {
+        play::change(&mut record, &p1, profession, cards);
+        finish_hero_round(&mut record, &p1, &p2, opponent_reserved);
+    }
+    record
+}
+
+fn assert_immortal_spell_bonus(
+    record: &fewfc::application::GameRecord,
+    player: &PlayerId,
+    events: &[GameEvent],
+    used: &[u64],
+) {
+    assert_eq!(events.iter().filter(|event| matches!(event,
+        GameEvent::TurnDrawBonusChanged { player: owner, old_value: 0, delta: 1, new_value: 1 } if owner == player
+    )).count(), 1);
+    assert_eq!(
+        record.state().turn_draw_bonus_by_player.get(player),
+        Some(&1)
+    );
+    assert!(record.state().discard.ends_with(&play::ids(used)));
+    play::assert_replay(record);
+}
+
+fn hermit_record(used: &[u64]) -> fewfc::application::GameRecord {
+    let p1 = PlayerId::new("p1");
+    let p2 = PlayerId::new("p2");
+    let mut reserve = vec![38, 52, 49, 53];
+    reserve.extend_from_slice(used);
+    let mut record = play::start_with_reserves(
+        play::setup(2, &[HERO_SCHOOLS_MODULE_ID]),
+        &[&[37, 41], &[]],
+        &[&reserve, &[]],
+    );
+    for (profession, cards) in [
+        ("mesmer", &[37, 41][..]),
+        ("spirit-mesmer", &[38, 52][..]),
+        ("hermit", &[49, 53][..]),
+    ] {
+        play::change(&mut record, &p1, profession, cards);
+        finish_hero_round(&mut record, &p1, &p2, &[]);
+    }
+    record
+}
+
+fn mesmer_ability(player: &PlayerId, ability: &str, cards: &[u64]) -> Command {
+    Command::ActivateProfessionAbility {
+        player: player.clone(),
+        ability_id: ability.to_string(),
+        cards: play::ids(cards),
+        target_card: None,
+        declared_element: Some(Element::Fire),
+        declared_level: Some(3),
+    }
 }
