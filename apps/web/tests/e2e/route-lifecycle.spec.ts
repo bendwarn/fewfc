@@ -88,10 +88,7 @@ fastPageTest('Deck cleans up dialog listeners on navigation and Replay routes re
   await page.goto('/deck')
   await page.getByRole('button', { name: '匯入牌組' }).click()
   await expect(page.getByRole('dialog', { name: '匯入牌組' })).toBeVisible()
-  await Promise.all([
-    page.goto('/rooms', { waitUntil: 'domcontentloaded' }),
-    page.context().request.get('/api/games'),
-  ])
+  await gotoAppRoute(page, '/rooms')
   const createRoomButton = page.getByRole('button', { name: '建立房間', exact: true })
   await createRoomButton.click()
   await expect(page.getByRole('dialog', { name: '建立房間' })).toBeVisible()
