@@ -6,231 +6,135 @@ ready-for-agent
 
 ## Goal
 
-Replace Secret Strategy's wide optional-field command and option bags with one
-deep, closed Decision module that preserves Pouch and Chain behavior while
-making invalid input combinations unrepresentable and stale submissions fail
-atomically.
+以單一深度、封閉的決策模組取代秘計含大量選用欄位的命令及選項袋，保留錦囊與連環行為，同時讓無效輸入組合無法表示，並讓過期提交原子失敗。
 
 ## Problem Statement
 
-Direct Pouch triggering and Chain currently spread Secret Strategy offer
-construction, optional input interpretation, validation, effect dispatch, and
-continuations across the Pouch Rule Module, Web DTOs, and browser drafts. The
-command can carry unrelated optional fields, some strategies silently ignore
-irrelevant data, and the Web layer must infer which combinations are meaningful.
-This weakens the Rules Engine authority and makes new branches easy to add
-without exhaustive validation.
+目前直接觸發錦囊及連環，將秘計選項建構、選用輸入解讀、驗證、效果分派及續接分散在錦囊規則模組、Web DTO 及瀏覽器草稿中。命令可攜帶無關選用欄位，某些秘計會靜默忽略無關資料，Web 層又必須推測哪些組合有意義。這削弱規則引擎權威，也讓新分支容易在未窮舉驗證下加入。
 
-The current direct 瞞天 path also accepts a nonexistent Star target, reveals and
-consumes the Pouch, and resolves no effect. The published rule requires an
-existing Star, so this is an atomic-validation defect rather than a legal
-no-effect case. 走為 has different intentional no-change cases that must remain
-legal. 牽羊 is structurally deferred and must retain its existing typed Pending
-Choice instead of forcing future Card selections into the initial command.
+目前直接瞞天路徑還接受不存在的星辰目標、翻開並消耗錦囊，最後無效果。公開規則要求星辰存在，因此這是原子驗證缺陷，而非合法無效果案例。走為有不同且刻意允許的無變化情況，必須保留合法；牽羊結構上延後處理，必須保留既有具型別待選擇事項，不得強制將未來選牌塞入初始命令。
 
 ## Solution
 
-Create an internal Secret Strategy Decision child module inside the Rust Pouch
-Rule Module. Give it responsibility for answer-shaped offer construction,
-complete Decision validation, immediate strategy effect events, and
-strategy-specific continuations. Keep reveal, placement, consumption,
-direct-versus-Chain lifecycle, and Chain post-search shuffle in the outer Pouch
-module.
+在 Rust 錦囊規則模組內建立秘計決策子模組，負責符合答案結構的選項建構、完整決策驗證、立即秘計效果事件及秘計專屬續接。翻開、放置、消耗、直接觸發與連環的生命週期，以及連環檢索後洗牌仍由外層錦囊模組負責。
 
-Use a closed algebraic Command/Parameter Object with exhaustive typed dispatch.
-Direct Pouch triggering carries one complete Decision. Chain uses a closed
-`PlaceOnly` or `PlaceAndTrigger` envelope, with the latter nesting the same
-Decision. Adapt browser drafts to those DTOs without reimplementing Rules Engine
-eligibility. Replace the old contract atomically; add no compatibility path.
+使用具窮舉型別分派的封閉代數命令／參數物件。直接觸發錦囊攜帶一個完整決策；連環使用封閉的 `PlaceOnly` 或 `PlaceAndTrigger` 外層變體，後者巢狀包含相同決策。瀏覽器草稿轉接至這些 DTO，不重作規則引擎資格判定。原子取代舊契約，不新增相容路徑。
 
 ## Confirmed Decision Shape
 
-A Secret Strategy Decision retains its source Card and exactly one
-answer-shaped selection from these five families:
+秘計決策保留來源牌，並恰好包含下列五種類別之一、符合答案結構的選擇：
 
-1. No extra input: 金蟬, 偷梁, 混水, 觀火, 還魂, or 暗渡.
-2. Target Player: 離山 with exactly one target Player.
-3. Star operation: 瞞天 with `Gain(star)` or `Break(star)`.
-4. Environment operation: 走為 with `Clear` or
-   `TransferByDiscard(card)`.
-5. Begin deferred exchange: 牽羊 with no Deck or Discard Pile selections.
+1. 無額外輸入：金蟬、偷梁、混水、觀火、還魂或暗渡。
+2. 目標玩家：離山恰好指定一位玩家。
+3. 星辰操作：瞞天使用 `Gain(star)` 或 `Break(star)`。
+4. 環境操作：走為使用 `Clear` 或 `TransferByDiscard(card)`。
+5. 開始延後交換：牽羊不包含牌堆或棄牌堆選牌。
 
-The concrete Rust naming may follow repository conventions, but the type system
-must enforce these relationships. Do not retain a common bag containing
-`target`, `star`, `breakStar`, `discardCard`, `deckCards`, or `discardCards`.
-Replace `star + breakStar` with the Star operation and optional discard Card
-with the Environment operation. Use one exhaustive internal dispatch rather
-than ten shallow Strategy implementations.
+具體 Rust 命名可遵循儲存庫慣例，但型別系統必須強制這些關係。不保留共同欄位袋 `target`、`star`、`breakStar`、`discardCard`、`deckCards` 或 `discardCards`。以星辰操作取代 `star + breakStar`，以環境操作取代選用棄牌。使用一個窮舉內部分派，不建立十個淺層秘計實作。
 
-Direct Pouch triggering and Chain share this Decision type but keep distinct
-outer command or answer variants and lifecycle handling. The source Card is
-part of the Decision in both paths. There is no opaque offer or Option ID.
+直接觸發錦囊與連環共用此決策型別，但保留各自外層命令或答案變體及生命週期處理。兩條路徑的決策均包含來源牌；不存在不透明選項或 Option ID。
 
 ## Offer And Projection Decisions
 
-- Replace generic Secret Strategy options with the same five answer-shaped
-  families.
-- A no-input option carries only its Secret Strategy.
-- A target-Player option carries only currently legal target candidates.
-- A Star option carries only currently legal `Gain` and `Break` operations.
-- An Environment option carries only currently legal `Clear` and
-  `TransferByDiscard` operations.
-- A 牽羊 option states only that the deferred exchange can begin.
-- Remove unrelated empty collections and generic `requiredCardCount` fields.
-- Keep these options in the private interaction/action projection. Do not put a
-  submitted Decision in canonical Game State, Public State, or the Public Event
-  Feed.
-- Serialize Rust-to-TypeScript tagged variants and multiword fields with exact
-  camelCase contracts and add explicit serialization tests.
+- 以相同五類符合答案結構的選項取代通用秘計選項。
+- 無輸入選項只攜帶其秘計。
+- 目標玩家選項只攜帶目前合法的候選目標。
+- 星辰選項只攜帶目前合法的 `Gain` 與 `Break` 操作。
+- 環境選項只攜帶目前合法的 `Clear` 與 `TransferByDiscard` 操作。
+- 牽羊選項只表明可開始延後交換。
+- 移除無關空集合及通用 `requiredCardCount` 欄位。
+- 這些選項留在私密互動／行動投影中；不將提交的決策放入正規遊戲狀態、公開狀態或公開事件動態。
+- Rust 至 TypeScript 的帶標籤變體及多詞欄位以精確 camelCase 契約序列化，並新增明確序列化測試。
 
 ## Validation And Error Decisions
 
-- Revalidate the full Decision from current canonical state at submission. Do
-  not trust the earlier offer snapshot.
-- Validate the source Card against the direct current Pouch or Chain trigger
-  selection, the strategy against the source Card's printed element or level,
-  the actor and target authority, and all operation-specific Card or rule state.
-- Complete every immediately decidable validation before emitting any
-  canonical event.
-- A stale, forged, mismatched, or illegal Decision is a Validation Failure. It
-  emits no reveal, consume, movement, cost, or other canonical event.
-- Only a self-produced Decision that passed validation but cannot be resolved
-  is a Rule Implementation Error.
-- Do not add an external plug-in seam or change the public `OfficialRules`
-  interface.
+- 提交時依目前正規狀態重新驗證完整決策，不信任先前選項快照。
+- 對照目前直接錦囊或連環觸發選擇驗證來源牌；依來源牌牌面屬性或等級驗證秘計；並驗證操作者及目標權限，以及所有操作專屬牌或規則狀態。
+- 發出任何正規事件前，完成所有當下可判定的驗證。
+- 過期、偽造、不相符或非法決策屬驗證失敗，不發出翻開、消耗、移動、代價或其他正規事件。
+- 只有自行產生且已通過驗證、卻無法結算的決策才屬規則實作錯誤。
+- 不新增外部外掛接點，也不改變公開 `OfficialRules` 介面。
 
 ## Strategy-Specific Decisions
 
 ### Deceive Heaven (`瞞天`)
 
-- `Break(star)` may target any Star that currently exists, including one owned
-  by either Team.
-- If the selected Star no longer exists at submission, return a Validation
-  Failure with zero canonical events. Do not reveal or consume the Pouch.
-- `Gain(star)` retains the existing Temporary Star Effect semantics.
-- Do not change the later legal no-effect case where a Formation granted by a
-  Temporary Star Effect tries to break a same-named Star its Team does not own.
+- `Break(star)` 可指定目前存在的任意星辰，包括任一隊伍擁有的星辰。
+- 提交時所選星辰若已不存在，回傳驗證失敗且正規事件為零，不翻開或消耗錦囊。
+- `Gain(star)` 保留既有暫時星辰效果語意。
+- 不改變後續合法無效果情況：暫時星辰效果授予的陣法嘗試破除己方未擁有的同名星辰。
 
 ### Retreat (`走為`)
 
-- `Clear` is legal when no Environment exists. Reveal and consume the Pouch,
-  but emit no Environment-clearing event.
-- `TransferByDiscard(card)` requires a current Card Instance in the triggering
-  Player's hand and reads its printed element.
-- An Exposed Foreign Card is a legal discard and returns to its Card Origin
-  Discard Pile.
-- Transfer is legal when no Environment exists and when the target element is
-  the same as the current Environment.
-- Preserve the current transfer event semantics and validate before reveal.
+- 沒有環境時 `Clear` 仍合法。翻開並消耗錦囊，但不發出破除環境事件。
+- `TransferByDiscard(card)` 要求觸發玩家目前手牌中的實體牌，並讀取其牌面屬性。
+- 公開的外來牌是合法棄牌，並返回其牌來源的棄牌堆。
+- 沒有環境或目標屬性與目前環境相同時，轉移仍合法。
+- 保留目前轉移事件語意，並在翻開前驗證。
 
 ### Sheep Stealing (`牽羊`)
 
-- The initial Decision begins the deferred flow and contains no Deck or Discard
-  Pile Card selections.
-- If fewer than two Cards are in the Deck and the Discard Pile is nonempty,
-  preserve the preliminary Discard Shuffle and its replayable continuation.
-- Preserve the later typed Sheep Stealing Pending Choice with exactly two Deck
-  selections followed by exactly two selections from the projected Discard
-  Pile.
-- Preserve ordered Deck-to-Discard projection before validating the return
-  selection, including the ability to return newly discarded Cards.
-- Keep the source Card set aside and ineligible until the exchange and Deck
-  Shuffle finish.
-- Preserve the rule that Sheep Stealing's Deck Shuffle satisfies Chain's
-  post-search shuffle requirement.
+- 初始決策開始延後流程，不包含牌堆或棄牌堆選牌。
+- 牌堆少於兩張且棄牌堆非空時，保留預先洗棄牌及其可重播續接。
+- 保留後續具型別牽羊待選擇事項：先恰選兩張牌堆牌，再從投影後棄牌堆恰選兩張。
+- 驗證放回選擇前，保留依序從牌堆至棄牌堆的投影，包括允許放回剛捨棄的牌。
+- 交換及牌堆洗牌完成前，來源牌保持置於一旁且不能被選取。
+- 保留牽羊洗牌滿足連環檢索後洗牌要求的規則。
 
 ## Canonical Lifecycle And Ordering
 
-- Direct valid immediate resolution: `PouchRevealed`, strategy effect events,
-  then `PouchConsumed`.
-- Chain `PlaceAndTrigger`: `ChoiceMade`, `PouchPlaced`, `PouchRevealed`, strategy
-  effect events, then `PouchConsumed`, followed by the ordinary post-search
-  shuffle when required.
-- Chain `PlaceOnly`: preserve the existing placement and post-search lifecycle
-  without constructing a Secret Strategy Decision.
-- Deferred 牽羊 reveals before its continuation and consumes only after the
-  exchange and trusted Deck Shuffle complete.
-- Preserve Card Origin behavior for direct Pouches, Chain trigger Cards,
-  replaced Pouches, and Exposed Foreign Cards.
-- Replay must project the same state and event order as direct execution.
+- 直接有效立即結算依序為 `PouchRevealed`、秘計效果事件、`PouchConsumed`。
+- 連環 `PlaceAndTrigger` 依序為 `ChoiceMade`、`PouchPlaced`、`PouchRevealed`、秘計效果事件、`PouchConsumed`，必要時再進行正常檢索後洗牌。
+- 連環 `PlaceOnly` 保留既有放置及檢索後生命週期，不建構秘計決策。
+- 延後牽羊在續接前翻開，交換及可信任牌堆洗牌完成後才消耗。
+- 保留直接錦囊、連環觸發牌、被取代錦囊及公開外來牌的牌來源行為。
+- 重播必須投影與直接執行相同的狀態及事件順序。
 
 ## Web Boundary
 
-- TypeScript owns only a browser-local draft-to-Decision adapter and display of
-  answer-shaped options.
-- Do not reproduce strategy eligibility, target legality, printed-value checks,
-  or stale-state validation in TypeScript.
-- Replace the old wide action and Chain-answer payloads with exhaustive tagged
-  DTO variants. Handle every variant exhaustively in the Web adapter.
-- Preserve current player-facing Pouch and Chain interactions unless the new
-  typed shape requires a presentation-only adjustment.
+- TypeScript 只負責瀏覽器本機草稿至決策的介面卡，以及符合答案結構的選項顯示。
+- TypeScript 不重作秘計資格、目標合法性、牌面值檢查或過期狀態驗證。
+- 以窮舉帶標籤 DTO 變體取代舊寬泛行動及連環答案 payload；Web 介面卡須窮舉處理各變體。
+- 保留目前玩家錦囊及連環互動，除非新具型別結構需要僅影響呈現的調整。
 
-## Hard Cutover
+## Data And Architecture Boundaries
 
-- Remove the old optional-field Secret Strategy command, option, action draft,
-  and Chain answer shapes in the same change.
-- Add no dual reads, deprecated variants, fallback parsing, saved-draft
-  migration, or canonical replay compatibility branch for those noncanonical
-  Decisions.
-- Preserve existing canonical event shapes unless a proven implementation need
-  requires a semantic event change. Do not serialize the Decision into events.
-- Do not create a new ADR. Decision 42 in `docs/rules-engine-decisions.md` owns
-  this implementation decision.
+- 除非已證明實作需要語意事件變更，否則保留既有正規事件結構；不將決策序列化進事件。
+- 不建立新 ADR。`docs/rules-engine-decisions.md` 的決策 42 擁有此實作決定。
 
 ## Testing Decisions
 
-- Before deleting or consolidating an existing Pouch test, inventory every
-  assertion claim and name its replacement evidence as required by ADR-0032.
-- Preserve `tests/pouch_strategy_interaction_matrix.rs` and the other Pouch
-  interaction matrices. Extend them where the refactor crosses an existing
-  interaction boundary.
-- Add focused Rust tests for each of the five Decision families, direct and
-  Chain envelopes, source/strategy mismatch, irrelevant-input
-  unrepresentability, stale targets, atomic failure, canonical event order,
-  Card Origin, and direct-versus-replay equivalence.
-- Add a regression test proving 瞞天 `Break` of a nonexistent Star is a
-  Validation Failure with no events, reveal, or consume.
-- Add 走為 coverage for `Clear` without Environment, transfer without
-  Environment, same-element transfer, ordinary hand Card, and Exposed Foreign
-  Card returning to Card Origin.
-- Preserve and extend 牽羊 coverage for preliminary Discard Shuffle, ordered
-  projected selection, returning newly discarded Cards, source exclusion,
-  Chain shuffle reuse, consumption timing, and replay.
-- Add Rust serialization contract tests for every changed tagged DTO and exact
-  camelCase multiword field.
-- Update Web unit/integration tests for answer-shaped options, exhaustive draft
-  conversion, direct submission, and both Chain envelopes.
-- Retain representative Pouch Playwright coverage; it must not become the sole
-  Rules Engine evidence.
-- Run focused Rust and Web tests first, then full `cargo test`, relevant Web
-  tests, type checking, formatting, and diff checks.
+- 刪除或合併既有錦囊測試前，依 ADR-0032 逐項盤點所有斷言主張，並指定替代證據。
+- 保留 `tests/pouch_strategy_interaction_matrix.rs` 及其他錦囊互動矩陣；重構跨越既有互動邊界時予以擴充。
+- 新增 Rust 重點測試，涵蓋五種決策類別、直接及連環外層變體、來源／秘計不符、無關輸入不可表示、過期目標、原子失敗、正規事件順序、牌來源及直接執行與重播等價。
+- 新增回歸測試，證明瞞天 `Break` 不存在星辰屬驗證失敗，且沒有事件、翻開或消耗。
+- 新增走為測試，涵蓋無環境時 `Clear`、無環境時轉移、同屬性轉移、一般手牌，以及公開外來牌回到牌來源。
+- 保留並擴充牽羊測試，涵蓋預先洗棄牌、有序投影選擇、放回剛捨棄的牌、排除來源牌、重用連環洗牌、消耗時點及重播。
+- 為每個變更後帶標籤 DTO 及精確 camelCase 多詞欄位新增 Rust 序列化契約測試。
+- 更新 Web 單元／整合測試，涵蓋符合答案結構的選項、窮舉草稿轉換、直接提交及兩種連環外層變體。
+- 保留代表性錦囊 Playwright 覆蓋；它不得成為規則引擎的唯一證據。
+- 先執行重點 Rust 與 Web 測試，再執行完整 `cargo test`、相關 Web 測試、型別檢查、格式及 diff 檢查。
 
 ## Out Of Scope
 
-- Changing any Secret Strategy's published effect beyond the confirmed 瞞天
-  validation correction and preservation of 走為 no-change cases.
-- Moving reveal, placement, consumption, direct-versus-Chain lifecycle, or
-  Chain post-search shuffle ownership out of the Pouch Rule Module.
-- Replacing 牽羊's later typed Pending Choice with initial command fields.
-- Publishing Decisions in Public State or the Public Event Feed.
-- Adding a public extension or plug-in system for Secret Strategies.
-- Redesigning generic Pending Choice, trusted randomness, Pouch knowledge, or
-  Card Origin.
-- Creating a new ADR.
+- 除已確認的瞞天驗證修正及保留走為無變化情況外，改變任何秘計的公開效果。
+- 將翻開、放置、消耗、直接觸發與連環生命週期，或連環檢索後洗牌的擁有權移出錦囊規則模組。
+- 以初始命令欄位取代牽羊後續具型別待選擇事項。
+- 在公開狀態或公開事件動態發布決策。
+- 為秘計新增公開擴充或外掛系統。
+- 重新設計通用待選擇事項、可信任隨機性、錦囊知情權或牌來源。
+- 建立新 ADR。
 
 ## Governing Context
 
-- `CONTEXT.md` defines Secret Strategy Decision, Secret Strategy Option, Pouch,
-  Card Origin, Pending Choice, and related ubiquitous language.
-- `docs/rule.md` owns Secret Strategy legality and observable consequences.
-- Decision 39 owns the Pouch execution model; decision 42 owns this deep-module
-  cutover.
-- ADR-0014 owns trusted randomness and deterministic replay.
-- ADR-0026 owns typed Pending Choice lifecycle boundaries.
-- ADR-0032 requires claim-by-claim interaction-test preservation.
-- The repository `AGENTS.md` requires exact camelCase Rust-to-TypeScript
-  contracts for new multiword action fields.
+- `CONTEXT.md` 定義 Secret Strategy Decision、Secret Strategy Option、Pouch、Card Origin、Pending Choice 及相關通用語言。
+- `docs/rule.md` 擁有秘計合法性及可觀察結果。
+- 決策 39 擁有錦囊執行模型；決策 42 擁有本深度模組切換。
+- ADR-0014 擁有可信任隨機性及確定性重播。
+- ADR-0026 擁有具型別待選擇生命週期邊界。
+- ADR-0032 要求逐項保留互動測試主張。
+- 儲存庫 `AGENTS.md` 要求新增多詞行動欄位使用精確 camelCase Rust 至 TypeScript 契約。
 
 ## Blocked by
 
-- none
+- 無

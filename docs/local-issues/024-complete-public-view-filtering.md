@@ -6,22 +6,21 @@ AFK
 
 ## Parent
 
-Derived from `docs/rules-engine-decisions.md` sections 7 and 25, and closed GitHub issue #21.
+源自 `docs/rules-engine-decisions.md` 第 7、25 和已結案 GitHub 議題 #21。
 
 ## What to build
 
-Expand viewer-filtered public state and event views from covered passives and pending choices into a complete boundary suitable for external consumers. Canonical state and events must remain complete for replay, while public views must not leak hidden hands, initial deal cards, draw choices, covered cards, or effect-choice options to unauthorized viewers.
+將依觀看者過濾的公開狀態及事件視圖，從蓋牌與待選擇事項擴充為適合外部使用端的完整邊界。正規狀態與事件須保持完整以供重播；公開視圖不得向未授權觀看者洩漏隱藏手牌、初始發牌、抽牌選擇、蓋牌或效果選項。
 
 ## Acceptance criteria
 
-- [ ] Public state view includes the key game state needed by clients: phase, current player, turn number, teams/HP, hand sizes or own hand, discard, covered passives, pending choice, shields, statuses, and game status.
-- [ ] A player can see their own hand and hidden choice/card options where authorized.
-- [ ] Other players and observers see hidden-card counts rather than hidden card ids.
-- [ ] Event views filter `CardsDealt`, turn draw choices, covered passive events, and effect-choice events consistently.
-- [ ] Canonical `GameState`, `GameEvent`, and `GameRecord` remain unchanged as replay sources.
-- [ ] Tests cover owner view, opponent view, observer view, initial deal filtering, turn draw filtering, covered passive filtering, effect choice filtering, and canonical replay preservation.
+- [ ] 公開狀態視圖包含客戶端所需主要狀態：階段、目前玩家、回合編號、隊伍／生命值、手牌數量或自己的手牌、棄牌、蓋牌、待選擇事項、防護罩、狀態及遊戲狀態。
+- [ ] 玩家在獲授權時可看見自己的手牌與隱藏選項／牌選項。
+- [ ] 其他玩家及觀戰者看到隱藏牌數量，而非隱藏牌 ID。
+- [ ] 事件視圖一致地過濾 `CardsDealt`、回合抽牌選擇、蓋牌事件及效果選擇事件。
+- [ ] 正規 `GameState`、`GameEvent` 及 `GameRecord` 作為重播來源保持不變。
+- [ ] 測試涵蓋擁有者、對手及觀戰者視圖、初始發牌過濾、回合抽牌過濾、蓋牌過濾、效果選擇過濾及正規重播保全。
 
 ## Blocked by
 
-- None - can start immediately
-
+- 無，可立即開始

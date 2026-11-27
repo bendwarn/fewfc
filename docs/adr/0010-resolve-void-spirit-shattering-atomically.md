@@ -4,20 +4,6 @@ status: accepted
 
 # Resolve Void Spirit-Shattering atomically
 
-Void Spirit-Shattering Technique resolves every affected Spirit's two-point
-power loss before applying the 20-point HP loss for each Spirit owner, and all
-resulting deltas form one canonical resolution before the Game Outcome is
-evaluated. Automatic 綻放 eligibility observes the reduced Spirit Power, so a
-six-power Wood Spirit reduced to four cannot answer HP loss caused by the same
-Technique. Interleaved per-owner events were rejected because their serialized
-order could change Spirit breaking, 綻放 eligibility, or the winner.
+虛空碎靈術先結算所有受影響精靈各扣除兩點靈力，再對每位精靈擁有者扣除 20 點生命；所有變化構成一次正規結算，之後才判定遊戲結果。自動綻放的條件以扣減後靈力為準，因此六點靈力降為四點的木精靈，不能回應同一次虛空碎靈術造成的生命值扣減。不交錯記錄各擁有者的事件，因為序列化順序可能改變精靈破除、綻放條件或勝者。
 
-Dark Glimmer extends the same atomic resolution. The Technique snapshots its
-initial Spirit owners for the per-owner HP deductions, reduces every Spirit's
-power, breaks zero-power Spirits, resolves 魔靈復甦, and resolves Shared Fate
-from each surviving Death Spirit whose owner's Team HP was actually deducted by
-this Formation effect before evaluating the Game Outcome. This is not an
-Affected Player Set rule and does not include Attack damage. A Death Spirit
-broken because the Technique reduced it to zero does not trigger Shared Fate,
-and a replacement Spirit summoned by 魔靈復甦 neither adds another HP deduction
-nor triggers retroactively.
+黑暗微光擴充同一次原子結算。此術先快照原有精靈擁有者以計算各人的生命值扣減，接著扣除所有精靈的靈力、破除靈力歸零的精靈、結算魔靈復甦，並結算每個仍存活、且其擁有者所屬隊伍確實因本陣法效果扣除生命的死精靈之同命，最後才判定遊戲結果。這不是受影響玩家集合規則，也不包含攻擊傷害。被此術扣至零靈力而破除的死精靈不觸發同命；魔靈復甦召喚的替代精靈不增加一次生命值扣減，也不回溯觸發同命。

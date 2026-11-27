@@ -4,22 +4,6 @@ status: accepted
 
 # Record trusted midgame shuffle decisions
 
-When a rule such as 商調‧鳴金 shuffles a Deck during play, a trusted application
-adapter supplies the shuffled remainder through a dedicated randomness decision
-boundary, and the canonical event records the complete resulting order. Player
-commands select only rule-authorized choices and never supply shuffled order;
-replay consumes the recorded order instead of rerunning a PRNG, preserving a
-pure deterministic rules core without making persisted games depend on one
-random algorithm. After the Player selects the searched Card, the unresolved
-shuffle is persisted as Pending Randomness and blocks further resolution until
-the adapter submits a validated permutation, allowing safe retry across Worker
-errors or restarts.
+遊戲中因商調‧鳴金等規則洗牌時，可信任的應用程式介面卡透過專用的隨機性決策邊界提供洗後剩餘牌序，正規事件則記錄完整結果順序。玩家命令只選擇規則允許的選項，不提供洗牌順序；重播讀取記錄的順序，不重新執行偽隨機數產生器。如此可維持純粹且確定性的規則核心，並避免已儲存遊戲依賴特定隨機演算法。玩家選定檢索牌後，尚未完成的洗牌會儲存為待隨機處理（Pending Randomness），並暫停後續結算，直到介面卡提交經驗證的排列，使 Worker 出錯或重啟後可安全重試。
 
-Every trusted shuffle also records its pile operation independently from its
-continuation. A Deck Shuffle reorders Cards already in the target Deck; a
-Discard Shuffle (`洗棄牌`) shuffles the complete applicable Discard Pile and
-places every result at the bottom of that same Deck. The continuation states
-only what resumes after randomness resolves and never determines the source
-pile or destination. This structural distinction keeps replay validation and
-順風回復使用次數 consistent across Turn Draw, Profession Abilities,
-Formations, Echoes, and Pouch strategies.
+每次可信任洗牌也會獨立於續接記錄牌堆操作。牌堆洗牌重新排列目標牌堆中已有的牌；`洗棄牌` 則洗勻完整且適用的棄牌堆，並將全部結果放到同一牌堆底部。續接僅說明隨機處理後恢復什麼流程，從不決定來源堆或目的地。這項結構區分使回合抽牌、職業能力、陣法、迴響及錦囊秘計的重播驗證與順風使用次數回復保持一致。

@@ -2,43 +2,29 @@
 
 ## Context
 
-The Confluence Generation Tuner profession system currently diverges from the
-confirmed domain model around Residual Element/Level lifecycle, 調律 obligation
-reachability, formation role distinctness, and resonance continuation ordering.
+匯流世代調律師職業系統目前在餘行／餘級生命週期、調律義務的可達性、陣法角色區別及共鳴續接順序上，與已確認領域模型不一致。
 
 ## Scope
 
-- Persist Residual Element and Residual Level as turn-scoped facts independent
-  of whether the source Card remains retrievable.
-- Keep 調律 and 天響 dependent on the physical Retrievable Discard, while
-  Profession Changes and Formations read the residual facts.
-- Enforce 調律 as an authoritative rules-engine obligation:
-  - offer 調律 only when at least one legal completion path exists;
-  - hide/reject voluntary options that consume the 調律牌 or remove every
-    remaining completion path;
-  - require the 調律牌 in an allowed Profession Change or, under 易弦, an
-    available inherited Profession Formation.
-- Require distinct physical Card Instances for distinct Formation roles,
-  including the five-resonance element and residual-level slots.
-- Resolve 千鳴 and 萬鳴 in the confirmed order and defer Game Outcome until
-  all pending resonance choices complete.
-- Treat 煌鳴 affected players and 森鳴/萬鳴 recovery restrictions according to
-  the confirmed affected-player and performer-scoped semantics.
+- 將餘行與餘級持久化為回合內事實，不依賴來源牌是否仍可回收。
+- 調律與天響仍依賴實際可回收棄牌；轉職及陣法讀取餘行與餘級事實。
+- 以規則引擎的權威義務執行調律：
+  - 至少存在一條合法完成路徑時才提供調律；
+  - 隱藏／拒絕消耗調律牌或移除全部剩餘完成路徑的自願選項；
+  - 要求調律牌用於允許的轉職，或在易弦下用於可用的繼承職業陣法。
+- 不同陣法角色要求不同實體牌，包括五鳴屬性及餘級位置。
+- 依確認順序結算千鳴及萬鳴，待所有共鳴選擇完成後才判定遊戲結果。
+- 依確認的受影響玩家及施展者範圍語意處理煌鳴受影響玩家與森鳴／萬鳴回復限制。
 
 ## Acceptance
 
-- [x] Residual Element/Level remain usable after the source Card moves, until
-      the current Player reaches Turn Draw.
-- [x] 調律/天響 require the physical Retrievable Discard to still be available.
-- [x] Five-resonance Formations reject a single Card satisfying both required
-      slots.
-- [x] 易弦 allows the 調律牌 in all currently available inherited Profession
-      Formations.
-- [x] Commands and playable action queries cannot strand an active 調律牌
-      obligation.
-- [x] 千鳴/萬鳴 continuation and outcome timing match the decision document.
-- [x] 煌鳴 direct affected-player behavior and 森鳴/萬鳴 recovery restriction
-      behavior are covered by tests.
+- [x] 來源牌移動後，餘行／餘級仍可使用，直到目前玩家進入回合抽牌。
+- [x] 調律／天響要求實際可回收棄牌仍可取得。
+- [x] 五鳴陣法拒絕以同一張牌滿足兩個必要位置。
+- [x] 易弦允許調律牌用於所有目前可用的繼承職業陣法。
+- [x] 命令及可執行行動查詢不能使有效的調律牌義務無法完成。
+- [x] 千鳴／萬鳴續接及結果時點符合決策文件。
+- [x] 測試涵蓋煌鳴直接受影響玩家行為及森鳴／萬鳴回復限制行為。
 
 ## References
 

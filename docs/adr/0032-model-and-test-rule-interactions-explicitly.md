@@ -4,41 +4,12 @@ status: accepted
 
 # Model and test rule interactions explicitly
 
-Rules behavior uses interaction matrices as its primary test evidence because an
-isolated effect test can prove that one rule works alone while missing failures
-at scope, timing, commitment, prevention, and no-effect boundaries. Each matrix
-contains independently failing baseline, modifier, and combined-interaction
-cases, establishes the effects under test through legal Commands, and checks
-the canonical outcome, affected and expressly unaffected consequences, costs,
-Card movement, and replay. Narrow tests for invariants, matchers, catalogs,
-serialization, and atomic failure remain because they prove different contracts
-more precisely.
+規則行為以互動矩陣為主要測試證據：獨立效果測試雖可證明單條規則自行運作，卻可能漏掉範圍、時點、施展成立、防止及無效邊界的錯誤。每個矩陣都包含可獨立失敗的基準、修正及組合互動案例，透過合法命令建立待測效果，並檢查正規結果、受影響及明確不受影響的結果、代價、牌移動與重播。針對不變條件、匹配器、目錄、序列化及原子失敗的窄範圍測試仍然保留，因為它們更精確地證明不同契約。
 
-Interaction coverage is selected by distinct typed hook, scope, source, or
-lifecycle rather than by a complete Cartesian product of rules. Effects that
-make another effect ineffective, immune, prevented, countered, suppressed,
-ignored, copied, substituted, delayed, or only partly effective require a
-reasonable within-module and cross-module interaction when those paths exist.
-Existing Rust rules tests must be inventoried claim by claim before any is
-removed; a test may be deleted only after every unique claim has named
-replacement evidence. Playwright retains representative Web seams and does not
-become the sole evidence for Rules Engine behavior.
+互動覆蓋依不同的具型別鉤子、範圍、來源或生命週期選擇，不要求規則的完整笛卡兒積。使其他效果無效、免疫、被防止、反制、抑制、忽略、複製、替代、延遲或只部分生效的效果，在路徑存在時，須有合理的模組內及跨模組互動測試。移除既有 Rust 規則測試前須逐項盤點主張；每項獨有主張皆有具名替代證據後才能刪除測試。Playwright 保留具代表性的 Web 接點，不成為規則引擎行為的唯一證據。
 
-An applicable effect has one resolution outcome even when several independent
-rules make it have no effect. The canonical no-effect outcome records every
-independently sufficient **No-Effect Ground** without designating a primary
-ground or assigning rule priority to collection order. Applicability is checked
-before grounds are collected, so a rule that could not affect the incoming
-action does not acquire unrelated grounds. The previous single `reason` shape
-is replaced directly by `grounds`; no historical reconstruction or compatibility
-primary field is required because affected canonical records have not been
-created.
+即使多條獨立規則使一個適用效果無效，該效果仍只有一個結算結果。正規無效結果的 `grounds` 記錄每個各自足以造成無效的**無效依據（No-Effect Ground）**，不指定主要依據，也不賦予收集順序規則優先權。先判定適用性才收集依據，因此無法影響傳入行動的規則不會取得無關依據。
 
 ## Consequences
 
-A single audit owner maintains the `refactor/rule-test-inventory.md` inventory
-and reviews it with the primary implementer in batches, surfacing ambiguous
-claims and classification conflicts before continuing. The complete inventory precedes test deletion,
-although confirmed product defects may be fixed earlier. Repository review
-applies the semantic evidence checklist in `docs/rule.md`; CI does not infer
-interaction quality from test names or case counts.
+由單一稽核負責人維護 `refactor/rule-test-inventory.md` 盤點，並與主要實作者分批審查，繼續前先提出有歧義的主張及分類衝突。必須完成盤點才能刪除測試，但已確認的產品缺陷可先修正。儲存庫審查依 `docs/rule.md` 的語意證據清單進行；CI 不從測試名稱或案例數量推斷互動品質。

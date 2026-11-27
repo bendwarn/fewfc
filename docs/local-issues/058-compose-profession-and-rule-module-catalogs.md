@@ -6,24 +6,18 @@ ready-for-agent
 
 ## What to build
 
-Prepare the existing Rules Engine and Online Game Room configuration for
-additional Theme Rule Modules without changing current game behavior. Compose
-one Profession catalog from enabled module-owned definitions, support
-multi-parent cross-module ability inheritance while retaining one Player-owned
-Profession slot, and replace Spirit-specific dependency handling with one
-closed Rule Module dependency graph. Remove the Profession teaching dialog while
-retaining current Profession badges and effective-ability summaries.
+在不改變目前遊戲行為的前提下，為既有規則引擎及線上房間設定準備更多主題規則模組。由已啟用模組擁有的定義組成單一職業目錄，支援跨模組多父節點能力繼承，同時保留玩家單一職業欄位；以封閉規則模組依賴圖取代精靈專屬依賴處理。移除職業教學對話框，保留目前職業徽章與有效能力摘要。
 
 ## Acceptance criteria
 
-- [x] Existing Hero Schools Profession Changes, inherited abilities, Profession Formations, replay, and Public Views remain behaviorally unchanged through the composed catalog.
-- [x] Profession definitions support globally unique IDs, multiple explicit parents, stable ability deduplication, and transition predicates independent of inheritance.
-- [x] Disabled Rule Modules contribute no Professions, Formations, abilities, or playable Actions.
-- [x] Rule Module dependencies are declared in one closed catalog and normalized transitively by the Rust Rules Engine, server validation, shared room model, and waiting-room UI.
-- [x] Every currently available Rule Module remains enabled by default for new games and rooms, while persisted rooms retain their stored module list.
-- [x] The Profession teaching dialog and its trigger are removed; Player Profession badges and effective-ability summaries remain.
-- [x] Focused Rust and Web tests cover catalog composition, dependency normalization, default selection, stored-room compatibility, and the removed teaching control.
+- [x] 透過組合目錄後，既有英雄學派轉職、繼承能力、職業陣法、重播及公開視圖的行為保持不變。
+- [x] 職業定義支援全域唯一 ID、多個明確父節點、穩定能力去重，以及獨立於繼承的轉職條件。
+- [x] 停用的規則模組不提供職業、陣法、能力或可執行行動。
+- [x] 規則模組依賴宣告於單一封閉目錄，並由 Rust 規則引擎、伺服器驗證、共用房間模型及等待室介面進行傳遞正規化。
+- [x] 新遊戲與房間預設啟用目前所有可用規則模組；已持久化房間保留原模組清單。
+- [x] 移除職業教學對話框及其觸發控制；玩家職業徽章與有效能力摘要保留。
+- [x] 重點 Rust 與 Web 測試涵蓋目錄組合、依賴正規化、預設選擇、已儲存房間相容性及已移除的教學控制。
 
 ## Blocked by
 
-None - can start immediately
+無，可立即開始

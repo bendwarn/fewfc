@@ -6,142 +6,116 @@ ready-for-agent
 
 ## Decision Refinement
 
-[ADR-0028](../adr/0028-treat-action-detail-as-contextual-supplement.md) and the
-current glossary refine this issue after its initial design. The closed typed
-Rules Engine ownership and distinct Web presentation module remain
-authoritative. Statements below that require every offer to contain a non-empty,
-independently complete detail, repeat Action identity inside detail, or render
-one sentence per typed consequence are historical and must not guide follow-up
-changes. Follow-up work treats Action Detail as an optional contextual
-supplement and tests the complete decision surface.
+[ADR-0028](../adr/0028-treat-action-detail-as-contextual-supplement.md) 及目前詞彙表在原始設計後修訂本議題。規則引擎擁有封閉具型別資料及獨立 Web 呈現模組的決定仍具權威。下文要求每個選項含非空、可獨立完整理解的詳情、在詳情重複行動身分，或每個具型別結果各呈現一句的敘述均屬歷史紀錄，不得指引後續修改。後續工作將行動詳情視為選用情境補充，並測試完整決策介面。
 
 ## Problem Statement
 
-The explanation shown before a Player commits an Action is currently assembled
-from several shallow and overlapping sources. Rules Engine action candidates
-mostly copy Formation Catalog `rule_text` into a generic `summary`, while the
-Web appends Formation-ID policies, Star substitution prose, and separate Secret
-Strategy text. Discard Retrieval has another dedicated presentation path.
+玩家提交行動前看到的說明目前由多個淺層且重疊的來源組合。規則引擎行動候選多半將陣法目錄 `rule_text` 複製到通用 `summary`，Web 再附加陣法 ID 政策、星辰替代文字及獨立秘計文字。棄牌回收另有專屬呈現路徑。
 
-As a result, the Rules Engine can change a cost, follow-up choice, trusted
-random result, delayed effect, or Rule Module exception without forcing the
-Player-facing explanation to change. Catalog prose can appear complete while
-omitting consequences that matter to the current decision. Echo and Chain make
-this drift especially visible because their main effects, optional costs,
-delayed schedules, and nested choices cross several rule lifecycles.
+因此規則引擎可能改變代價、後續選擇、可信任隨機結果、延遲效果或規則模組例外，卻不必同步改變玩家說明。目錄文字看似完整，卻可能遺漏目前決策的重要結果。迴響與連環特別容易暴露此落差，因為其主效果、選用代價、延遲排程及巢狀選擇跨越多個規則生命週期。
 
 ## Solution
 
-Represent player-visible rule consequences as a closed typed Rules Engine
-contract and compose them into a required, Player-scoped, state-specific
-`PlayerFacingActionDetail` embedded in each pre-commit Action offer. Rule
-behavior supplies reusable consequence descriptors next to execution logic; a
-central Player-Facing Action Detail module assembles and checks the complete
-snapshot. The Web exhaustively renders those facts as localized player-facing
-content without selecting rule prose by Formation or Secret Strategy identity.
+將玩家可見規則結果表示為封閉、具型別的規則引擎契約，組合成每個提交前行動選項內必填、限定玩家及狀態的 `PlayerFacingActionDetail`。規則行為在執行邏輯旁提供可重用結果描述；中央玩家行動詳情模組組裝並檢查完整快照。Web 將這些事實窮舉呈現為本地化玩家內容，不依陣法 ID 或秘計身分選取規則文字。
 
-Keep Formation Catalog prose, Pending Choice lifecycle data, canonical Game
-Events, command payloads, and final-state simulation separate. Pending Choice
-descriptors may reuse typed Rule Consequences without turning Action Detail into
-choice state. Existing Action workflows retain their distinct command shapes
-and collections while sharing the same detail contract.
+陣法目錄文字、待選擇生命週期資料、正規遊戲事件、命令 payload 及最終狀態模擬保持分離。待選擇描述可重用具型別規則結果，但不使行動詳情成為選擇狀態。既有行動流程保留不同命令結構與集合，並共用同一詳情契約。
 
 ## User Stories
 
-1. As a Player, I want every offered Formation to explain all consequences of committing it, so that I can make an informed decision.
-2. As a Player, I want Action Detail to reflect the current Game State, so that displayed costs and exceptions match the Action I can commit now.
-3. As a Player, I want Star Element Substitution shown for the exact Card it affects, so that I understand why the Formation is legal.
-4. As a Player, I want optional costs shown before committing, so that I know which later benefits require another decision.
-5. As a Player, I want automatic costs and schedules distinguished from optional ones, so that I know what I am committing to.
-6. As a Player, I want follow-up choices identified before committing, so that the Action does not surprise me with an unexplained decision.
-7. As a Player, I want trusted randomness identified before committing, so that I can distinguish a guaranteed result from a random one.
-8. As a Player, I want delayed effects and their timing shown, so that I understand consequences beyond the current resolution.
-9. As a Player, I want Rule Module exceptions shown with the main effect, so that enabled modules do not silently alter an Action.
-10. As a Player, I want guaranteed, conditional, random, follow-up, and scheduled consequences distinguished, so that wording does not overpromise a final outcome.
-11. As a Player, I want known commitments described without hidden opponent information, so that Action Detail cannot leak private state.
-12. As a Player, I want undecided random outcomes to remain hidden, so that explanation does not become a prediction channel.
-13. As a Player, I want Profession Change details to follow the same completeness rules as Formation details, so that decision aids are consistent.
-14. As a Player, I want Activated Profession Ability details to include their current cost, target, declarations, and limits, so that I understand the exact offer.
-15. As a Player, I want Spirit Skill details to include their current Spirit Power cost and declared inputs, so that I understand the exact offer.
-16. As a Player, I want direct Pouch Secret Strategy options to explain their effects and required input, so that I can choose a strategy knowingly.
-17. As a Player, I want Discard Retrieval to explain its current HP cost and resulting Card movement, so that it does not require a separate mental model.
-18. As a Player, I want Pass to remain concise, so that a trivial control is not burdened by unnecessary detail machinery.
-19. As a Player answering Chain, I want the selected Secret Strategy explained consistently with direct Pouch triggering, so that the same rule has one meaning.
-20. As a Player answering a Pending Choice, I want its canonical options and Choice ID owned by the choice lifecycle, so that explanatory content cannot be submitted as an answer.
-21. As an observer, I want Action Detail to obey the existing viewer policy, so that observing never reveals private Cards or action constraints.
-22. As a reconnecting Player, I want each detail to come from the same snapshot as its Action offer, so that it cannot race a separate detail request.
-23. As a rules maintainer, I want rule consequences declared through closed typed variants, so that arbitrary prose cannot hide missing semantics.
-24. As a rules maintainer, I want consequence descriptors near the behavior they describe, so that changing a rule makes its Player-facing impact visible locally.
-25. As a rules maintainer, I want common consequences reusable across Formations, Abilities, Skills, Secret Strategies, and choices, so that shared mechanics do not become identity-based copies.
-26. As a rules maintainer, I want Action Detail assembly centralized, so that ordering, visibility, and completeness invariants have one owner.
-27. As a Rule Module maintainer, I want adding a new consequence variant to require an explicit Web renderer, so that an incomplete UI fails during development.
-28. As a Web maintainer, I want localized wording and layout owned by the Web, so that presentation concerns do not enter canonical state or replay.
-29. As a Web maintainer, I want to render domain facts without Formation-ID or Secret-Strategy-ID prose maps, so that the browser does not duplicate Rules Engine behavior.
-30. As a Web maintainer, I want Action Detail embedded in existing Action workflows, so that I do not need another endpoint, cache, or loading state.
-31. As a command maintainer, I want submitted commands to omit Action Detail, so that server-side validation remains authoritative over client snapshots.
-32. As a catalog maintainer, I want Formation Catalog prose to remain concise and independent, so that a catalog entry is not forced to describe every current state.
-33. As an event-feed maintainer, I want event summaries to remain separate, so that this refactor does not conflate pre-commit explanation with historical narration.
-34. As a contract maintainer, I want exact camelCase serialization protected by tests, so that typed Rust fields remain valid TypeScript input.
-35. As a test author, I want rule facts and localized presentation tested at their own seams, so that failures identify the responsible module.
-36. As a future maintainer, I want no silent `rule_text` or `summary` fallback, so that incomplete new Actions cannot appear finished.
-37. As a future maintainer, I want the unreleased shallow contract removed atomically, so that the new modules do not carry duplicate compatibility paths.
+1. 作為玩家，我希望每個陣法選項說明提交後所有結果，以便知情決策。
+2. 作為玩家，我希望行動詳情反映目前遊戲狀態，使顯示的代價及例外符合我現在可提交的行動。
+3. 作為玩家，我希望星辰變牌標示確切受影響牌，以便理解陣法為何合法。
+4. 作為玩家，我希望提交前顯示選用代價，以便知道哪些後續利益需要另行決定。
+5. 作為玩家，我希望區分自動代價及排程與選用項目，以便理解自己承諾的內容。
+6. 作為玩家，我希望提交前指出後續選擇，避免行動產生未說明的決策。
+7. 作為玩家，我希望提交前標示可信任隨機性，以區分保證結果與隨機結果。
+8. 作為玩家，我希望顯示延遲效果及時點，以理解目前結算之外的結果。
+9. 作為玩家，我希望規則模組例外與主效果一同顯示，避免已啟用模組悄悄改變行動。
+10. 作為玩家，我希望區分保證、條件式、隨機、後續及排程結果，避免文字過度保證最終結果。
+11. 作為玩家，我希望已知承諾的描述不包含對手隱藏資訊，避免詳情洩漏私密狀態。
+12. 作為玩家，我希望尚未決定的隨機結果保持隱藏，避免說明成為預測管道。
+13. 作為玩家，我希望轉職詳情遵循與陣法詳情相同的完整性規則，使決策輔助一致。
+14. 作為玩家，我希望發動能力詳情包含目前代價、目標、宣告及限制，以理解確切選項。
+15. 作為玩家，我希望精靈技能詳情包含目前靈力代價及宣告輸入，以理解確切選項。
+16. 作為玩家，我希望直接錦囊秘計選項說明效果及必要輸入，以便知情選擇。
+17. 作為玩家，我希望棄牌回收說明目前生命值代價及結果牌移動，不必另建心智模型。
+18. 作為玩家，我希望略過維持簡短，不讓簡單控制承擔不必要詳情機制。
+19. 作為回答連環的玩家，我希望所選秘計與直接觸發錦囊的說明一致，使相同規則只有一種意義。
+20. 作為回答待選擇事項的玩家，我希望正規選項及 Choice ID 由選擇生命週期擁有，避免說明內容作為答案提交。
+21. 作為觀戰者，我希望行動詳情遵守既有觀看者政策，不暴露私密牌或行動限制。
+22. 作為重新連線的玩家，我希望每份詳情與其行動選項來自同一快照，避免與獨立詳情請求競態。
+23. 作為規則維護者，我希望規則結果以封閉具型別變體宣告，避免任意文字掩蓋缺漏語意。
+24. 作為規則維護者，我希望結果描述靠近所描述行為，讓規則變更時玩家影響可見。
+25. 作為規則維護者，我希望共同結果可跨陣法、能力、技能、秘計及選擇重用，避免依身分複製共同機制。
+26. 作為規則維護者，我希望集中組合行動詳情，讓順序、可見性及完整性不變條件有單一擁有者。
+27. 作為規則模組維護者，我希望新增結果變體時必須明確新增 Web 呈現，使不完整介面在開發期間失敗。
+28. 作為 Web 維護者，我希望本地化文字及版面由 Web 擁有，避免呈現考量進入正規狀態或重播。
+29. 作為 Web 維護者，我希望不依陣法 ID 或秘計 ID 文字映射即可呈現領域事實，避免瀏覽器複製規則引擎行為。
+30. 作為 Web 維護者，我希望行動詳情嵌入既有行動流程，無須額外端點、快取或載入狀態。
+31. 作為命令維護者，我希望提交命令不包含行動詳情，使伺服器驗證對客戶端快照仍具權威。
+32. 作為目錄維護者，我希望陣法目錄文字保持精簡獨立，不必描述每個目前狀態。
+33. 作為事件動態維護者，我希望事件摘要保持獨立，避免重構混淆提交前說明與歷史敘述。
+34. 作為契約維護者，我希望精確 camelCase 序列化受測試保護，使具型別 Rust 欄位仍為有效 TypeScript 輸入。
+35. 作為測試撰寫者，我希望規則事實及本地化呈現在各自接點測試，讓失敗指出負責模組。
+36. 作為未來維護者，我希望不靜默遞補 `rule_text` 或 `summary`，避免不完整新行動看似完成。
+37. 作為未來維護者，我希望以原子方式移除未發布淺層契約，避免新模組攜帶重複相容路徑。
 
 ## Implementation Decisions
 
-- Introduce a closed tagged `RuleConsequence` model owned by the Rules Engine. It must represent costs, immediate effects, follow-up choices, trusted randomness, delayed effects, rule exceptions, substitutions, and the certainty or timing needed to describe them accurately.
-- Treat Rule Consequences as Player-visible semantic facts. They are not localized prose, canonical Game Events, resolver instructions, or simulations of final Game State.
-- Introduce a required `PlayerFacingActionDetail` containing an ordered collection of Rule Consequences for one offered Action snapshot.
-- Generate Action Detail for the querying Player and use only public information plus that Player's own visible information. Do not expose hidden opponent state or undecided random results.
-- Attach detail directly to the existing offer DTOs. Do not add a detail lookup endpoint and do not require a single union for all Action workflows.
-- Keep the detail out of submitted commands. Existing action identity and required command parameters remain the validation input.
-- Have each rule behavior provide reusable consequence descriptors next to its execution semantics. Do not centralize rule knowledge in a Formation-ID or Secret-Strategy-ID presentation table.
-- Have one Rules Engine Player-Facing Action Detail module assemble rule descriptors with current state, establish clause order, apply viewer-safe context, and enforce completeness.
-- Have one Web Action Detail Presentation module exhaustively render typed consequences into localized wording and layout.
-- Cover Formation Use, Profession Change, Activated Profession Ability, Spirit Skill, direct Pouch Secret Strategy offers, and Discard Retrieval. Pass may keep a fixed concise label without rich detail.
-- Model `SecretStrategyOption` as a source Card, eligible Secret Strategy, and immediately required input candidates. It may serve direct Pouch triggering or a Chain Pending Choice and is not universally a standalone Action.
-- Keep Pending Choice canonical identity, options, answer validation, and continuation outside Action Detail. Pending Choice descriptors may reuse Rule Consequences solely for explanation.
-- Describe commitments rather than predict complete resolution. Distinguish guaranteed, conditional, random, follow-up, and scheduled consequences when the distinction affects the Player's decision.
-- Permit Formation Catalog information only as supplementary reference. Catalog prose does not satisfy Action Detail completeness and is never a fallback for a missing typed consequence.
-- Treat an offered Action without complete detail as a development invariant violation. Adding a new rule or consequence variant must require corresponding Rules Engine facts and exhaustive Web rendering.
-- After issue #70 is complete, replace the shallow Web seam atomically: remove playable-action `summary`, Formation presentation `policy`, Formation-ID detail maps, and Secret Strategy prose maps in favor of required typed detail.
-- Keep Formation Catalog summaries and public event summaries unchanged because they serve different domain purposes.
-- Do not add dual-read, dual-write, compatibility, or migration paths for the unreleased Action Detail contract.
+- 引入由規則引擎擁有的封閉帶標籤 `RuleConsequence` 模型。它須表示代價、立即效果、後續選擇、可信任隨機性、延遲效果、規則例外、替代及準確描述所需的確定性或時點。
+- 將規則結果視為玩家可見語意事實，而非本地化文字、正規遊戲事件、解析器指令或最終遊戲狀態模擬。
+- 引入必填 `PlayerFacingActionDetail`，包含一個行動快照的有序規則結果集合。
+- 為查詢玩家產生行動詳情，只使用公開資訊及該玩家自己的可見資訊，不暴露對手隱藏狀態或未定隨機結果。
+- 詳情直接附於既有選項 DTO；不新增詳情查詢端點，也不要求所有行動流程共用單一 union。
+- 提交命令不包含詳情；既有行動身分及必要命令參數仍是驗證輸入。
+- 各規則行為在執行語意旁提供可重用結果描述，不以陣法 ID 或秘計 ID 呈現表集中規則知識。
+- 單一規則引擎玩家行動詳情模組將規則描述與目前狀態組合、確立語句順序、套用觀看權限情境並執行完整性檢查。
+- 單一 Web 行動詳情呈現模組將具型別結果窮舉呈現為本地化文字與版面。
+- 涵蓋陣法施展、轉職、發動能力、精靈技能、直接錦囊秘計選項及棄牌回收；略過可使用固定精簡標籤，不必有豐富詳情。
+- `SecretStrategyOption` 建模為來源牌、符合條件的秘計及立即需要的候選輸入。它可供直接錦囊觸發或連環待選擇事項使用，並非通用獨立行動。
+- 待選擇事項的正規身分、選項、答案驗證及續接留在行動詳情外；待選擇描述只能為說明而重用規則結果。
+- 描述已知承諾而非預測完整結算；若會影響玩家決策，區分保證、條件式、隨機、後續及排程結果。
+- 陣法目錄資訊僅作補充參考；目錄文字不能滿足行動詳情完整性，也不能遞補缺少的具型別結果。
+- 沒有完整詳情的行動選項視為違反開發不變條件。新增規則或結果變體時必須新增對應規則引擎事實及窮舉 Web 呈現。
+- 議題 #70 完成後原子取代淺層 Web 接點：移除可執行行動 `summary`、陣法呈現 `policy`、陣法 ID 詳情映射及秘計文字映射，改用必填具型別詳情。
+- 陣法目錄摘要及公開事件摘要服務不同領域目的，保持不變。
+- 未發布的行動詳情契約不新增雙讀、雙寫、相容或遷移路徑。
 
 ## Testing Decisions
 
-- Test external behavior through the highest relevant module interface rather than asserting private helper calls or source-code structure.
-- Add table-driven Rules Engine tests for the Rule Consequences produced by every Action family and representative Rule Module exceptions.
-- Add completeness tests proving that every generated pre-commit Action offer contains a complete Player-Facing Action Detail and that no catalog-text fallback is used.
-- Add player-scoping tests proving that details include permitted own information while excluding hidden opponent information and undecided random outcomes.
-- Add certainty tests proving that conditional, random, follow-up, and scheduled effects are not serialized as guaranteed final outcomes.
-- Add Pending Choice integration tests proving that choice descriptors may reuse Rule Consequences without exposing canonical continuations or accepting detail as command input.
-- Add serialization contract tests for every Rule Consequence variant and exact camelCase names for multiword Web fields.
-- Add TypeScript tests that exercise the Action Detail Presentation module with fixtures for every consequence variant and fail exhaustiveness when a new variant is introduced.
-- Add representative composition tests for Echo Cost and scheduling, Plant Earth follow-up behavior, Chain Secret Strategy options, Star Element Substitution, limited uses, and Discard Retrieval.
-- Retain focused end-to-end coverage for materially distinct interactions such as Echo and Chain. Do not enumerate every Formation or rule effect through E2E when the same behavior is covered at lower seams.
-- Remove tests whose only purpose is preserving deleted `summary`, Formation presentation `policy`, or Web identity-to-prose maps.
-- Validate with focused Rust tests, Web unit tests, TypeScript checking, relevant representative E2E flows, full `cargo test`, formatting checks, and diff checks.
+- 透過最高相關模組介面測試外部行為，不斷言私有輔助呼叫或原始碼結構。
+- 新增表格驅動的規則引擎測試，涵蓋每個行動種類及具代表性規則模組例外產生的規則結果。
+- 新增完整性測試，證明每個提交前行動選項都含完整玩家行動詳情，且不使用目錄文字遞補。
+- 新增玩家範圍測試，證明詳情包含允許的自身資訊，同時排除對手隱藏資訊及未定隨機結果。
+- 新增確定性測試，證明條件式、隨機、後續及排程效果不被序列化成保證的最終結果。
+- 新增待選擇整合測試，證明選擇描述可重用規則結果，但不暴露正規續接，也不接受詳情作為命令輸入。
+- 為所有規則結果變體及多詞 Web 欄位的精確 camelCase 名稱新增序列化契約測試。
+- 新增 TypeScript 測試，以每種結果變體的測試資料執行行動詳情呈現模組；新增變體時若未窮舉處理應失敗。
+- 新增代表性組合測試，涵蓋迴響代價與排程、變宮‧植土後續、連環秘計選項、星辰變牌、次數限制及棄牌回收。
+- 保留迴響及連環等實質不同互動的重點端到端測試；同一行為已由較低層接點覆蓋時，不以 E2E 枚舉所有陣法或規則效果。
+- 移除僅用於保留已刪除 `summary`、陣法呈現 `policy` 或 Web 身分至文字映射的測試。
+- 執行重點 Rust 測試、Web 單元測試、TypeScript 檢查、相關代表性 E2E 流程、完整 `cargo test`、格式及 diff 檢查。
 
 ## Out of Scope
 
-- Changing Formation, Profession, Spirit Skill, Pouch, Secret Strategy, Discard Retrieval, Echo, or Chain game effects and timing.
-- Redesigning the canonical Pending Choice lifecycle, Choice ID, Choice Continuation, or answer command established by issue #70.
-- Materializing Pending Choice options or canonical choice payloads before an Action is committed.
-- Combining playable Actions, Secret Strategy options, and Discard Retrieval into one universal transport union or command catalog.
-- Moving localization, wording, or visual layout into the Rules Engine.
-- Replacing canonical Game Events, event-feed summaries, or replay data with Rule Consequences.
-- Rewriting Formation Catalog content or requiring catalog descriptions to be state-specific.
-- Building a generic runtime rule-description language, plugin schema, or arbitrary prose extension point.
-- Persisting Action Detail or accepting it back from the browser as authoritative state.
-- Adding backward compatibility for the unreleased `summary` and presentation-policy contract.
+- 改變陣法、職業、精靈技能、錦囊、秘計、棄牌回收、迴響或連環的遊戲效果及時點。
+- 重新設計議題 #70 確立的正規待選擇生命週期、Choice ID、選擇續接或回答命令。
+- 在行動提交前實體化待選擇選項或正規選擇 payload。
+- 將可執行行動、秘計選項及棄牌回收合併為通用傳輸 union 或命令目錄。
+- 將本地化、文案或視覺版面移入規則引擎。
+- 以規則結果取代正規遊戲事件、事件動態摘要或重播資料。
+- 重寫陣法目錄內容或要求目錄描述依狀態變化。
+- 建立通用執行期規則描述語言、外掛 schema 或任意文字擴充點。
+- 持久化行動詳情，或將瀏覽器回傳詳情接受為權威狀態。
+- 為未發布的 `summary` 及呈現政策契約新增向後相容。
 
 ## Further Notes
 
-- Governing decision: `docs/adr/0023-separate-action-detail-from-catalog-rule-text.md`.
-- The glossary definitions for Rule Consequence, Player-Facing Action Detail, Secret Strategy Option, Formation Catalog, Pending Choice, and Game Event are authoritative.
-- Issue #67 fixed Echo's immediate player-facing wording but intentionally remains prior art rather than the target architecture; its Web rule-prose mapping should be removed by this issue.
-- Existing action-detail unit tests and Echo and Pouch end-to-end tests provide prior art for presentation and representative interaction coverage.
-- Existing dirty worktree changes, especially the in-progress issue #70 implementation, belong to the user or another agent and must be preserved.
+- 管轄決策：`docs/adr/0023-separate-action-detail-from-catalog-rule-text.md`。
+- Rule Consequence、Player-Facing Action Detail、Secret Strategy Option、Formation Catalog、Pending Choice 及 Game Event 的詞彙表定義具權威性。
+- 議題 #67 修正迴響目前的玩家文案，但刻意只作為先前依據，而非目標架構；本議題應移除其 Web 規則文字映射。
+- 既有行動詳情單元測試及迴響、錦囊端到端測試，可作為呈現與代表性互動覆蓋的先前依據。
+- 既有未提交工作樹變更，尤其進行中的議題 #70 實作，屬於使用者或其他 agent，必須保留。
 
 ## Blocked by
 

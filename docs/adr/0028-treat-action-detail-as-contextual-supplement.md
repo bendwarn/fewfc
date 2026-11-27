@@ -6,79 +6,26 @@ status: accepted
 
 ## Context
 
-[ADR-0023](./0023-separate-action-detail-from-catalog-rule-text.md) moved
-player-visible rule facts out of Formation Catalog prose and into a closed typed
-Rules Engine contract. Requiring every offer to contain a non-empty,
-independently complete detail then encouraged the implementation to repeat
-Action identity and visible context: Formation and Profession Change Cards were
-copied into `useCards`, a Pouch `sourceCard` was copied into `consumePouch`,
-declared inputs and substitutions appeared both in the Action and its detail,
-and section-wide behavior such as not ending the Action was restated per offer.
-Rendering every typed fact as a sentence also repeated choices, shuffles, and
-Echo behavior while exposing terms such as trusted randomness and engine
-lifecycle boundaries.
+[ADR-0023](./0023-separate-action-detail-from-catalog-rule-text.md) 將玩家可見規則事實由陣法目錄文字移至封閉、具型別的規則引擎契約。但要求每個選項都包含非空、可獨立完整理解的詳情，促使實作重複行動身分與可見情境：陣法及轉職用牌複製到 `useCards`，錦囊 `sourceCard` 複製到 `consumePouch`，宣告輸入及替代同時出現在行動及其詳情中，不結束行動等整個區段共通的行為也在各選項重述。將每個具型別事實都呈現為一句話，還會重複選擇、洗牌及迴響行為，並暴露可信任隨機性、引擎生命週期邊界等術語。
 
-The trade-off is between a detail that reads independently of its interface and
-a concise explanation that relies on the decision context in which it is always
-shown. Choose the contextual explanation: the Action control and accessible
-decision context already own identity, while Action Detail exists only to
-supply missing decision information.
+取捨在於讓詳情脫離介面也能獨立閱讀，或依靠它必然出現的決策情境提供精簡說明。此處選擇後者：行動控制元件及可存取的決策情境已負責身分，行動詳情只補充缺少的決策資訊。
 
 ## Decision
 
-Player-Facing Action Detail is an optional, Player-scoped, state-specific
-supplement to the complete decision context. An offer is complete when its
-accessible Action label, visible state, and optional detail together let the
-Player understand the choice. A detail may therefore be absent; a non-empty
-`consequences` collection is not a completeness invariant.
+玩家行動詳情是依玩家及狀態決定的選用補充，附屬完整決策情境。當可存取的行動標籤、可見狀態及選用詳情共同足以讓玩家理解選擇時，選項即為完整。因此詳情可以不存在；`consequences` 集合非空不是完整性不變條件。
 
-Apply this inclusion test:
+使用下列納入判準：
 
-> If removing a clause still lets the Player correctly understand this offer's
-> additional costs, results, conditions, follow-up timing, and specific
-> exceptions from the Action label, accessible visible state, and official game
-> terms, the clause is redundant.
+> 若刪除某句後，玩家仍能從行動標籤、可存取的可見狀態及官方遊戲術語正確理解此選項的額外代價、結果、條件、後續時點與特定例外，該句即為重複。
 
-The Action owns every input already chosen to identify the offer, including
-Cards, targets, declared elements or levels, Formation roles, substitutions,
-and a Secret Strategy's source Pouch. Those inputs must be distinguishable in
-the Action control and its accessible state rather than recovered from a
-tooltip. A consequence may still state what happens to such an input, but it
-refers to the selected Card, source Pouch, or other game role instead of
-repeating its identity.
+行動擁有為識別選項而已選定的全部輸入，包括牌、目標、宣告屬性或等級、陣法角色、替代及秘計的來源錦囊。這些輸入必須能在行動控制元件及其可存取狀態中區分，而非從提示文字找回。結果仍可說明這些輸入會發生什麼，但應引用已選牌、來源錦囊或其他遊戲角色，不重複身分。
 
-Keep concrete supplemental costs, effects not otherwise presented, necessary
-conditions and follow-up timing, current limits, and material rule exceptions.
-Exclude identity, facts already on the decision surface, universal rules,
-unspecific caveats, and negative engine-lifecycle or diagnostic statements.
-Engine models may retain distinctions such as a printed element or trusted
-random operation, but Player wording uses the shortest official game term
-unless the distinction changes the choice. Thus ordinary wording says
-`屬性`, not `印刷行屬`, and says `洗牌`, not that a trusted random procedure
-performs it.
+保留具體補充代價、其他地方未呈現的效果、必要條件與後續時點、目前限制及重要規則例外。排除身分、決策介面已有的事實、通用規則、不具體的提醒，以及描述引擎生命週期或診斷的否定敘述。引擎模型可保留牌面屬性或可信任隨機操作等區別；除非該區別會改變選擇，玩家文案使用最簡短的官方遊戲術語。因此一般文案使用 `屬性` 而非 `印刷行屬`，使用 `洗牌` 而非描述可信任隨機程序。
 
-The Rules Engine decides which supplemental rule facts hold. The Web composes
-those facts within its concrete decision surface without inventing or removing
-a fact that changes the choice. Typed consequences are normalized semantic data,
-not a sentence outline: related facts may be merged, and each Player-visible
-fact is stated once. Wording expresses certainty naturally through terms such
-as `可`, `若`, `隨機`, and an explicit timing rather than through translated
-enum prefixes. Presentation starts with the main effect, keeps a cost or
-condition beside the result it governs, follows in-game timing, and places a
-current limit or material exception beside the affected fact.
+規則引擎決定哪些補充規則事實成立；Web 在具體決策介面中組合這些事實，不虛構或移除會改變選擇的事實。具型別結果是正規化的語意資料，不是句子大綱：相關事實可以合併，每項玩家可見事實只陳述一次。文案以 `可`、`若`、`隨機` 及明確時點自然表達確定性，不翻譯 enum 前綴。呈現先寫主效果，將代價或條件放在所支配的結果旁，依遊戲時序排列，並將目前限制或重要例外放在受影響事實旁。
 
 ## Consequences
 
-Follow-up implementation should remove Action-identity data from the detail
-contract rather than merely hide it in the renderer. This includes `useCards`,
-duplicate declared inputs and substitutions, and `sourceCard` inside
-`consumePouch` when the containing Secret Strategy option already owns the
-source. It should also remove generic or engine-only detail variants that add no
-decision information. Player-visible operations remain, using references such
-as the selected Card or source Pouch.
+後續實作應從詳情契約移除行動身分資料，而非只在呈現時隱藏。包括 `useCards`、重複的宣告輸入及替代，以及當所屬秘計選項已擁有來源時 `consumePouch` 中的 `sourceCard`。也應移除不增加決策資訊的通用或僅供引擎使用的詳情變體。玩家可見操作仍保留，使用已選牌或來源錦囊等參照。
 
-Rust tests cover which supplemental facts an offer contributes and keep
-player-scoping and serialization guarantees. Web tests cover representative
-complete decision contexts and natural composition while retaining exhaustive
-typed handling; they do not require one sentence per variant. Negative wording
-assertions are optional regression guards, not a general testing requirement.
+Rust 測試涵蓋選項提供哪些補充事實，並維持玩家範圍及序列化保證。Web 測試涵蓋具代表性的完整決策情境及自然組句，同時保留具型別處理的窮舉性；不要求每個變體各成一句。否定文案斷言可作為回歸防護，但不是一般測試要求。

@@ -6,23 +6,19 @@ ready-for-agent
 
 ## What to build
 
-Add the complete Mage School as an end-to-end Hero Schools slice. Implement
-Mage, Mage Guide, and Sage with every official 5.16 transition, inherited
-ability, Formation Proficiency, Profession Formation, point modifier, Counter
-Effect, projection, and Web interaction from the
-[Mage School rules](https://www.cfecards.org/rule/latest/hero/mage).
+將完整法師學派作為英雄學派端到端的一部分加入。依[法師學派規則](https://www.cfecards.org/rule/latest/hero/mage)實作法師、法導及智者的全部官方 5.16 轉職、繼承能力、專精能力、職業陣法、點數修正、反制效果、投影及 Web 互動。
 
 ## Acceptance criteria
 
-- [x] All three Mage School Profession Changes enforce their official prerequisite and Fire-level cost.
-- [x] Every official Automatic Profession Ability and Formation Proficiency is available only through the effective Mage School Profession.
-- [x] Every Mage Profession Formation uses its official pattern, category, point formula, target, and additional effect.
-- [x] Profession point modifiers apply while computing Attack Points before threshold qualifications and damage transformations.
-- [x] Mage Counter Effects use the shared action-start and modifier pipelines rather than a parallel trigger system.
-- [x] Attack events retain Attack Points separately from Counter Effect, elemental, Environment, Shield, and final HP results.
-- [x] Replacing or breaking the Profession immediately removes automatic modifiers while preserving already-established public Counter Effects according to their own lifetime.
-- [x] Direct execution, replay, Public Views, Web DTOs, playable Actions, and ability summaries agree.
-- [x] Tests cover Metamorphosis copies, Shield targets, prevented damage with remaining extra effects, team mode, and Hero-disabled behavior.
+- [x] 法師學派三種轉職均執行官方先決條件及火行等級代價。
+- [x] 每個官方普通能力及專精能力僅能透過有效的法師學派職業取得。
+- [x] 每個法師職業陣法均使用官方組合方式、類別、點數公式、目標及附加效果。
+- [x] 職業點數修正在計算攻擊點數時套用，先於門檻判定與傷害轉換。
+- [x] 法師反制效果使用共用行動開始及修正流程，不另設平行觸發系統。
+- [x] 攻擊事件分別保留攻擊點數、反制效果、五行、環境、防護罩及最終生命值結果。
+- [x] 職業被取代或破除時立即移除自動修正，但依各自生命週期保留已成立的公開反制效果。
+- [x] 直接執行、重播、公開視圖、Web DTO、可執行行動及能力摘要一致。
+- [x] 測試涵蓋幻化複製、防護罩目標、傷害被防止但附加效果仍存在、團隊模式及停用英雄學派行為。
 
 ## Blocked by
 

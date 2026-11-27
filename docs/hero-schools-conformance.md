@@ -28,7 +28,7 @@ helpers.
 | Unaffiliated | Immortal | any second-tier School Profession + 555; does not inherit | Immortal draw bonus; Meditation | Condensed Void Arrow; Sky Bow Roar | `all_school_transitions_and_unaffiliated_routes_are_queryable`, `windwalker_and_unaffiliated_effects_use_shared_pipelines` |
 | Unaffiliated | Saint | any second-tier School Profession + 444; does not inherit | Sacred Art; Revelation | Holy Light Break; Holy Wind | `all_school_transitions_and_unaffiliated_routes_are_queryable`, `windwalker_and_unaffiliated_effects_use_shared_pipelines`, `activated_abilities_require_action_permission_and_revelation_recycles_personal_cards` |
 
-Void Reversion Technique is module-wide rather than owned by one Profession.
+Void Reversion Technique (虛空返璞術) is module-wide rather than owned by one Profession (職業).
 Its low-level Legendary protection, high-level breaking, Card movement, HP cost,
 and outcome ordering are covered by
 `void_reversion_is_atomic_and_protects_low_level_legendary_professions` and

@@ -19,6 +19,16 @@ Skip missing optional background material. If a missing rule, decision, or ticke
 
 When output names a domain concept in an issue title, refactor proposal, hypothesis, or test name, use the term as defined in `CONTEXT.md`. Avoid synonyms that the glossary explicitly rejects.
 
+When writing or updating rule references, ADRs, or local issues, write prose in
+Traditional Chinese and use the verified original Chinese names of official game
+rules, Formations, and abilities. Check the applicable rulebook version and its
+supplements; use `CONTEXT.md` for established mappings and record missing ones
+there. Retain an established English domain term alongside its Chinese name when
+needed to identify a project-specific concept. Distinguish product terminology
+from official wording. If the original cannot be verified, retain the existing
+name and identify the source gap rather than inventing a translation. Preserve
+code identifiers, commands, paths, links, status labels, and historical evidence.
+
 ## Flag decision conflicts
 
 If output contradicts an existing decision in `docs/rules-engine-decisions.md`, surface it explicitly rather than silently overriding it.

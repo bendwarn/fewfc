@@ -1,37 +1,37 @@
 # CFECards Rules Engine Decisions
 
-This document records implementation decisions clarified before the Rust implementation.
+本文件記錄 Rust 實作前釐清的實作決策。
 
 ## Confirmed
 
 ### 1. Implementation Boundary
 
-Build the rules engine as a pure Rust library crate.
+將規則引擎建成純 Rust 函式庫 crate。
 
-The initial implementation is responsible for deterministic game rules only:
+初始實作只負責確定性遊戲規則：
 
-- validating commands
-- advancing turn/phase state
-- resolving formations
-- emitting events
-- supporting snapshot persistence
-- supporting event-log replay
+- 驗證命令；
+- 推進回合／階段狀態；
+- 結算陣法；
+- 發出事件；
+- 支援快照持久化；
+- 支援事件日誌重播。
 
-The initial implementation does not include UI, networking, or a CLI. Those can be added later as adapters around the library.
+初始實作不包含介面、網路或 CLI；日後可在函式庫外加入介面卡。
 
 ### 2. Architecture
 
-Use Clean Architecture boundaries.
+使用 Clean Architecture 邊界。
 
-The domain core owns game concepts and rule invariants. Application services orchestrate commands and replay. Infrastructure code handles serialization, storage, RNG/deck initialization, and any future adapters.
+領域核心擁有遊戲概念及規則不變條件。應用程式服務協調命令與重播；基礎設施處理序列化、儲存、RNG／牌堆初始化及未來介面卡。
 
-The domain layer must not depend on UI, storage, network, or framework concerns.
+領域層不得依賴介面、儲存、網路或框架事項。
 
 ### 3. Crate And Module Shape
 
-Start with a single Rust library crate and enforce Clean Architecture through internal module boundaries.
+從單一 Rust 函式庫 crate 開始，透過內部模組邊界落實 Clean Architecture。
 
-Planned module shape:
+預計模組結構：
 
 ```text
 src/
@@ -42,15 +42,15 @@ src/
   infrastructure/  # serde persistence, deterministic deck/shuffle helpers
 ```
 
-Do not split into a Rust workspace at the start. The module boundaries should make a future split into multiple crates straightforward if the project grows.
+初期不拆成 Rust workspace；若專案擴大，模組邊界應使未來拆成多個 crate 保持容易。
 
 ### 4. Persistence Source Of Truth
 
-Use the event log as the canonical game record. Snapshots are optional cache/checkpoint data for faster loading.
+以事件日誌作為正規遊戲紀錄；快照是加快載入的選用快取／檢查點資料。
 
-Each accepted command emits one or more `GameEvent` values. `GameState` is a projection derived from initial setup plus replayed events.
+每個已接受命令發出一個或多個 `GameEvent`。`GameState` 是由初始設定及重播事件推導的投影。
 
-Primary persisted shape:
+主要持久化結構：
 
 ```rust
 struct GameRecord {
@@ -60,13 +60,13 @@ struct GameRecord {
 }
 ```
 
-Loading may use `latest_snapshot` as an optimization, but replay remains the authoritative behavior. Tests must verify that direct command execution and replay produce the same state.
+載入可用 `latest_snapshot` 最佳化，但重播仍是權威行為。測試必須驗證直接命令執行與重播產生相同狀態。
 
 ### 5. Randomness And Deck Order
 
-Persist the full prepared deck order in the event log. A seed may be stored as metadata/debug context, but replay must not depend on any RNG algorithm.
+在事件日誌持久化完整準備後牌序。種子可儲存為中繼資料／除錯情境，但重播不得依賴任何 RNG 演算法。
 
-Opening event shape:
+開局事件結構：
 
 ```rust
 GameEvent::DeckPrepared {
@@ -74,15 +74,15 @@ GameEvent::DeckPrepared {
 }
 ```
 
-Replay uses `deck_order` directly. Tests may provide fixed deck orders without invoking RNG.
+重播直接使用 `deck_order`；測試可提供固定牌序而不呼叫 RNG。
 
-If seed-based deck generation is added later, it happens only when creating the initial game record. Once `DeckPrepared` is emitted, the event log's deck order is authoritative.
+日後若加入種子式牌堆生成，只在建立初始遊戲紀錄時執行。一旦發出 `DeckPrepared`，事件日誌中的牌序即為權威。
 
 ### 6. Players, Teams, And HP Ownership
 
-Use one target/HP model for both 2-player and team modes.
+雙人及團隊模式使用同一目標／生命值模型。
 
-HP is owned by teams:
+生命值屬於隊伍：
 
 ```rust
 struct Player {
@@ -97,15 +97,15 @@ struct GameState {
 }
 ```
 
-In 2-player mode, each player belongs to their own single-player team. In team mode, multiple players may belong to the same team.
+雙人模式中每位玩家各屬一個一人隊伍；團隊模式中多位玩家可屬同一隊伍。
 
-Turn order is always player-based. Damage targets a player first, then resolves to that player's `TeamId` for HP changes.
+行動順序一律依玩家決定。傷害先以玩家為目標，再結算至該玩家的 `TeamId` 以改變生命值。
 
 ### 7. Hidden Information And Covered Passives
 
-The internal domain state stores complete hidden information. Public/player-specific views filter hidden information at the boundary.
+內部領域狀態儲存完整隱藏資訊；公開／玩家專屬視圖在邊界過濾隱藏資訊。
 
-Internal state example:
+內部狀態範例：
 
 ```rust
 struct PlayerFormationArea {
@@ -125,25 +125,20 @@ enum PublicCardRef {
 }
 ```
 
-Every Player owns one Formation Area and it contains at most one Formation. A
-Covered Passive is the `FaceDownWaiting` state of a Formation in that area, not
-a separate Card container or zone. An incoming Player may therefore have a
-face-up Formation in their own area while the previous Player's Covered Passive
-still occupies the previous Player's area.
+每位玩家擁有一個陣法區，至多包含一個陣法。蓋牌是該區陣法的 `FaceDownWaiting` 狀態，不是獨立牌容器或區域。因此新行動玩家自己的陣法區可有正面陣法，同時上家的蓋牌仍占用上家陣法區。
 
-`FormationCommitted` and `PassiveCovered` events store the real
-`CardInstanceId` values so replay remains deterministic and complete.
+`FormationCommitted` 與 `PassiveCovered` 事件儲存真實 `CardInstanceId` 值，使重播保持確定且完整。
 
-External views are generated per viewer:
+依觀看者產生外部視圖：
 
-- the Formation Area owner can see their own covered cards
-- other players only see hidden card counts
+- 陣法區擁有者可看見自己的覆蓋牌；
+- 其他玩家只看見隱藏牌數量。
 
-Hidden information filtering is an API/presentation concern. It must not weaken the domain state or replay model.
+隱藏資訊過濾是 API／呈現事項，不得削弱領域狀態或重播模型。
 
 ### 8. Passive Reveal Timing
 
-Model covered passive spells with one canonical trigger timing:
+蓋牌以一個正規觸發時點建模：
 
 ```rust
 enum PassiveTriggerTiming {
@@ -151,41 +146,36 @@ enum PassiveTriggerTiming {
 }
 ```
 
-When player A covers a passive on their action, it is checked at the start of the next player's action resolution. If player B is next in turn order, then A is B's previous player (`上家`), so the rulebook's "flip previous player's passive before attack/spell resolution" is this same timing.
+玩家 A 在行動時覆蓋被動術式，下家行動結算開始時檢查。若行動順序中 B 為下家，則 A 是 B 的上家（`上家`）；因此規則書「攻擊／術式結算前翻開上家蓋牌」即為同一時點。
 
-Resolution order:
+結算順序：
 
-1. Validate B's complete Action Command. Validation failure emits no events and
-   changes no state.
-2. If the command is `PerformFormation`, emit `FormationCommitted` to move its
-   physical Cards from B's hand to B's Formation Area. A successful Action
-   Command enters `Action`; commitment is not rolled back later.
-3. The engine checks A's Formation Area for a Covered Passive.
-4. If present, the passive flips and attempts to affect B's Action.
-5. The passive moves from A's Formation Area to the applicable origin Discard
-   Pile or Piles whether or not its effect applies.
-6. B's Action continues unless the passive changes or prevents its result.
+1. 驗證 B 的完整行動命令。驗證失敗不發出事件，也不改變狀態。
+2. 命令為 `PerformFormation` 時，發出 `FormationCommitted`，將實體牌從 B 的手牌移至 B 的陣法區。成功行動命令進入 `Action`；成立之後不回滾。
+3. 引擎檢查 A 的陣法區是否有蓋牌。
+4. 若有則翻開，並嘗試影響 B 的行動。
+5. 不論效果是否適用，蓋牌均從 A 的陣法區移至適用的來源棄牌堆。
+6. 除非蓋牌改變或防止結果，否則 B 的行動繼續。
 
-Do not implement separate passive trigger systems for attacks and active spells.
+不為攻擊與主動術式分別實作蓋牌觸發系統。
 
 ### 9. Validation Failure Versus Resolution Outcome
 
-Validation failure is not a game event.
+驗證失敗不是遊戲事件。
 
-If a command fails validation, the engine returns an error and does not change state, consume the action, or append to the event log.
+命令驗證失敗時，引擎回傳錯誤，不改變狀態、不消耗行動，也不附加事件日誌。
 
-Validation failures include:
+驗證失敗包括：
 
-- wrong phase
-- wrong player
-- missing cards
-- invalid formation
-- illegal target declaration
+- 階段錯誤；
+- 玩家錯誤；
+- 缺少牌；
+- 陣法無效；
+- 非法目標宣告。
 
-Once validation succeeds and action resolution begins, the action is part of the game history and consumes the turn's action even if the final outcome is prevented or has no effect.
+驗證成功且行動結算開始後，行動即成為遊戲歷史並消耗該回合行動，即使最終結果被防止或無效果亦然。
 
-Resolution outcomes are recorded inside the semantic resolution that actually
-occurred, for example an Attack Resolution:
+結算結果記錄在實際發生的語意結算中，例如攻擊結算：
 
 ```rust
 struct AttackResolution {
@@ -200,33 +190,19 @@ enum ActionOutcome {
 }
 ```
 
-An applicable effect produces exactly one outcome. `grounds` contains every
-independently sufficient No-Effect Ground; it has a deterministic serialized
-order only, never a primary cause or domain priority. Check applicability before
-collecting grounds, so an inapplicable Defense facing a Spell records only
-`NotAnAttack` rather than unrelated immunity grounds.
+適用效果恰產生一個結果。`grounds` 包含每個各自足以造成無效的依據；其順序僅為確定性序列化順序，絕非主要原因或領域優先權。收集依據前先檢查適用性，因此防禦面對術式而不適用時只記錄 `NotAnAttack`，不記錄無關免疫依據。
 
-This preserves exactly-one-action turn semantics without treating invalid
-commands as historical facts. Do not add an abstract `FormationUseCompleted`
-event: normal Formation completion is the real `FormationCardsDiscarded` or
-`PassiveCovered` fact, while terminal resolution ends with `GameEnded`.
+這保留每回合恰好一次行動的語意，而不把無效命令當成歷史事實。不新增抽象 `FormationUseCompleted` 事件：陣法正常完成以實際 `FormationCardsDiscarded` 或 `PassiveCovered` 事實表示，終局結算則以 `GameEnded` 結束。
 
 ### 10. Turn Draw Pending Choice
 
-Source basis: official rule 4-2.4d draws one more Card than the number that will
-be added to hand, has the Player choose one of those Cards to Discard, and only
-then adds the remaining Cards to hand.
+來源依據：官方規則 4-2.4d 抽取比將加入手牌數量多一張的牌，玩家選其中一張捨棄，之後才將其餘牌加入手牌。
 
-Implementation interpretation: the pre-discard Cards need a canonical zone
-that is neither hand nor Discard Pile, and waiting for this choice is state
-inside the official Turn Draw stage rather than a sixth Turn phase.
+實作解讀：捨棄前的牌需要既非手牌也非棄牌堆的正規區域；等待選擇是官方回合抽牌階段內的狀態，而非第六個回合階段。
 
-Turn Draw requires a Pending Choice because the Player draws `N + 1` Cards and
-chooses one of those newly drawn Cards to discard. It remains entirely within
-the canonical `TurnDraw` phase; waiting for the choice is state within that
-phase, not another phase.
+回合抽牌需要待選擇事項，因為玩家抽取 `N + 1` 張牌並選其中一張捨棄。此流程完全位於正規 `TurnDraw` 階段；等待選擇是該階段內狀態，不是另一階段。
 
-Use one game-scoped Turn Draw Pool:
+使用整局共用的一個回合抽牌區：
 
 ```rust
 struct GameState {
@@ -246,74 +222,48 @@ enum PendingChoiceKind {
 }
 ```
 
-Flow:
+流程：
 
-1. Enter `TurnDraw`.
-2. Emit `CardsDrawnForTurnDiscardChoice` to move `N + 1` Cards from the
-   applicable Deck into the Turn Draw Pool and create its discard Pending
-   Choice. The Cards are not in the Player's hand.
-3. Accept `ChooseTurnDiscard` while the phase remains `TurnDraw`.
-4. Emit one atomic `TurnDrawResolved { discard, kept_cards }`. The selected Card
-   enters its applicable origin Discard Pile first; the remaining Cards then
-   enter the Player's hand. There is no Player input or canonical replay state
-   between those movements.
-5. Clear the Pool and enter `TurnEnd`.
+1. 進入 `TurnDraw`。
+2. 發出 `CardsDrawnForTurnDiscardChoice`，將 `N + 1` 張牌從適用牌堆移入回合抽牌區並建立棄牌待選擇事項。這些牌不在玩家手牌中。
+3. 階段仍為 `TurnDraw` 時接受 `ChooseTurnDiscard`。
+4. 發出一個原子 `TurnDrawResolved { discard, kept_cards }`。所選牌先進入適用的來源棄牌堆，其餘牌再加入玩家手牌；兩次移動之間不存在玩家輸入或正規重播狀態。
+5. 清空抽牌區並進入 `TurnEnd`。
 
-This supports mid-draw save/load, UI waiting states, online play, and deterministic replay.
+這支援抽牌途中儲存／載入、介面等待狀態、線上遊戲及確定性重播。
 
-`TurnDrawResolved` replaces `TurnDiscardChosen` for the new canonical record
-version. Implementing this decision requires the explicit persisted-record
-migration already required for canonical event changes; snapshots are caches
-and may be rebuilt from migrated events.
+快照為快取，可從正規事件重建。
 
 ### 11. Draw Limits, Hand Limit, And Discard Shuffles
 
-Hand limit is 5.
+手牌上限為五張。玩家手牌已達上限時，略過回合抽牌，不建立待選擇事項。
 
-If the player's hand is already at the hand limit, skip turn draw and do not create a pending choice.
+否則回合抽牌依「抽 `N + 1` 張，再選一張剛抽的牌捨棄」的規則意圖進行，其中 `N = min(base_draw, available_hand_space)`。
 
-Otherwise, turn draw uses the rule intent "draw `N + 1`, then choose 1 newly drawn card to discard", where `N = min(base_draw, available_hand_space)`.
+因此玩家至少有一個手牌空位時，回合抽牌區可有 `N + 1` 張牌等待，而既有手牌不變；玩家不會暫時持有超過上限的手牌。
 
-This means a Player with at least one available hand slot can have `N + 1` Cards
-waiting in the Turn Draw Pool while the existing hand remains unchanged. The
-Player never temporarily holds a Card above the hand limit.
+`allowed_discards` 只能包含回合抽牌區中的牌；抽牌前已在玩家手中的牌不能作為 `ChooseTurnDiscard` 合法選項。
 
-`allowed_discards` must contain only the Cards in that Turn Draw Pool. Cards
-that were already in the Player's hand before the draw are not legal choices
-for `ChooseTurnDiscard`.
+牌堆不足時先**洗棄牌**：洗勻完整適用棄牌堆，將所有洗後牌放到同一牌堆底，再繼續抽牌。牌堆即使非空，只要少於抽牌所需張數仍須洗棄牌。
 
-When the Deck is insufficient, perform a **Discard Shuffle (洗棄牌)** first:
-shuffle the complete applicable Discard Pile and place every shuffled Card at
-the bottom of that same Deck. Then continue drawing. A non-empty Deck still
-requires a Discard Shuffle when it contains fewer Cards than the draw requires.
+牌堆方向：
 
-Deck direction:
+- `deck[0]` 是牌堆頂及下一張抽取的牌。
+- `deck.last()` 是牌堆底。
 
-- `deck[0]` is the top of the deck and the next card drawn.
-- `deck.last()` is the bottom of the deck.
+洗棄牌使用可信任隨機性決策邊界。正規請求及結果區分將完整棄牌堆洗入牌堆底，與重新排列牌堆中已有的牌；重播使用記錄順序，不重新執行 RNG。續接描述洗牌後恢復什麼，不分類發生的是哪種洗牌。
 
-Discard Shuffles use the trusted randomness decision boundary. The canonical
-request and result distinguish shuffling the complete Discard Pile into the
-bottom of its Deck from reordering Cards already in a Deck, and replay consumes
-the recorded order without rerunning RNG. The continuation describes what
-resumes after the shuffle; it does not classify which kind of shuffle occurred.
+依牌目前區域判定是否可參與洗棄牌：
 
-Cards are eligible for a Discard Shuffle based on their current zone.
+- `TurnDraw` 前已移入棄牌堆的陣法牌可參與同次回合抽牌期間的洗棄牌；
+- 回合抽牌區中的牌不在棄牌堆中，不能參與同次洗棄牌；
+- `ChooseTurnDiscard` 所選牌只在套用 `TurnDrawResolved` 時進入適用的來源棄牌堆。
 
-- Formation Cards that already moved to a Discard Pile before `TurnDraw` may
-  participate in a Discard Shuffle during that same Turn Draw
-- Cards in the Turn Draw Pool are not in a Discard Pile and cannot participate
-  in that same Discard Shuffle
-- the Card selected by `ChooseTurnDiscard` enters its applicable origin Discard
-  Pile only when `TurnDrawResolved` applies
-
-If the player has available hand space but the Deck plus its applicable Discard
-Pile cannot satisfy the required draw count, report an engine error. Do not
-perform a partial draw and do not create a pending choice.
+玩家手牌仍有空位，但牌堆加上適用棄牌堆不足以滿足所需抽牌數時，回報引擎錯誤；不部分抽牌，也不建立待選擇事項。
 
 ### 12. Passing The Action Phase
 
-Do not automatically skip the `Action` phase. Use an explicit command:
+不自動略過 `Action` 階段，使用明確命令：
 
 ```rust
 Command::PassAction {
@@ -326,42 +276,35 @@ enum PassActionReason {
 }
 ```
 
-Validation:
+驗證：
 
-- if the player can perform a legal action, `PassAction` fails validation
-- if the player has no cards in hand, `PassAction { reason: NoCardsInHand }` is legal
-- if the player has a `CannotAct` status, `PassAction { reason: CannotActByStatus }` is legal
+- 玩家能進行合法行動時，`PassAction` 驗證失敗；
+- 玩家沒有手牌時，`PassAction { reason: NoCardsInHand }` 合法；
+- 玩家具有 `CannotAct` 狀態時，`PassAction { reason: CannotActByStatus }` 合法。
 
-A successful pass enters `Action`, consumes the Turn's action, processes and
-discards the previous Player's Covered Passive, and emits
-`ActionPassed { player, reason }`. It advances to `TurnDraw` unless that Action
-ends the game.
+成功略過會進入 `Action`、消耗回合行動、處理並捨棄上家蓋牌，並發出 `ActionPassed { player, reason }`。除非該行動使遊戲結束，否則推進至 `TurnDraw`。
 
 ### 13. Active Effects Completion
 
-Do not require or event-log an explicit `EndActiveEffects` command.
+不要求也不在事件日誌記錄明確 `EndActiveEffects` 命令。
 
-`ActiveEffects` accepts zero or more Active-Effect Commands. The first valid
-Action Command ends `ActiveEffects` and enters `Action`.
+`ActiveEffects` 接受零個或多個主動效果命令；第一個有效行動命令結束 `ActiveEffects` 並進入 `Action`。
 
-Implications:
+其結果：
 
-- successful active effects emit their own events
-- failed active-effect validation emits no events
-- there is no `ActiveEffectsEnded` event
-- replay derives completion from the first Action event in that Turn
-- `PassAction` is also an Action Command and therefore enters `Action`
+- 成功主動效果發出各自事件；
+- 主動效果驗證失敗不發出事件；
+- 不存在 `ActiveEffectsEnded` 事件；
+- 重播從該回合第一個行動事件推導完成；
+- `PassAction` 也是行動命令，因而進入 `Action`。
 
 ### 14. Public Phase Model
 
-Source basis: official rule 4-2 defines the Turn as Turn Start, Active Effects,
-Action, Turn Draw, and Turn End in that order.
+來源依據：官方規則 4-2 依序定義回合開始、主動效果、行動、回合抽牌及回合結束。
 
-Implementation interpretation: expose those five rule stages directly as the
-canonical Phase values; a Pending Choice pauses its owning stage rather than
-creating a new stage.
+實作解讀：直接將五個規則階段公開為正規 Phase 值；待選擇事項暫停所屬階段，不建立新階段。
 
-Use the official five-stage Turn flow as the canonical public phase model:
+使用官方五階段回合流程作為正規公開階段模型：
 
 ```rust
 enum Phase {
@@ -373,27 +316,22 @@ enum Phase {
 }
 ```
 
-`ActiveEffects` allows:
+`ActiveEffects` 允許：
 
-- zero or more Active-Effect Commands
-- the first accepted Action Command, which enters `Action`
+- 零個或多個主動效果命令；
+- 第一個已接受行動命令，它會進入 `Action`。
 
-`Action` carries that accepted command through previous-passive handling, all
-effects, and every effect-generated Pending Choice. It does not advance to
-`TurnDraw` until the Action completes or the game ends. Action Commands include
-`PerformFormation`, Profession Change, and `PassAction`.
+`Action` 使已接受命令經過上家蓋牌處理、全部效果及每個效果產生的待選擇事項；行動完成或遊戲結束前不推進至 `TurnDraw`。行動命令包含 `PerformFormation`、轉職及 `PassAction`。
 
-The Turn Draw discard Pending Choice remains in `TurnDraw`. Neither that choice
-nor an effect-generated choice adds a phase.
+回合抽牌棄牌待選擇事項留在 `TurnDraw`；此選擇及效果產生的選擇均不新增階段。
 
 ### 15. Automatic Advancement Through Non-Decision Phases
 
-The public API should stop only when player input is needed.
+公開 API 只在需要玩家輸入時停止。
 
-Non-decision work inside `TurnStart`, `ActiveEffects`, `Action`, `TurnDraw`, and
-`TurnEnd` is advanced by the engine automatically while still emitting events.
+引擎自動推進 `TurnStart`、`ActiveEffects`、`Action`、`TurnDraw` 及 `TurnEnd` 中的非決策工作，並持續發出事件。
 
-Suggested API:
+建議 API：
 
 ```rust
 fn apply_command(
@@ -406,21 +344,18 @@ fn advance_until_decision(
 ) -> Result<Vec<GameEvent>, EngineError>;
 ```
 
-Engine stops at:
+引擎停止於：
 
-- `ActiveEffects`, when the current Player may use Active Effects or perform an
-  Action
-- `Action`, when its Pending Choice requires Player input
-- `TurnDraw`, when its discard Pending Choice requires Player input
-- the terminal `Finished` state
+- `ActiveEffects`：目前玩家可使用主動效果或進行行動；
+- `Action`：其待選擇事項需要玩家輸入；
+- `TurnDraw`：其棄牌待選擇事項需要玩家輸入；
+- 終局 `Finished` 狀態。
 
-After `ChooseTurnDiscard`, the engine may automatically process `TurnEnd`,
-advance Turn order, run the next Player's `TurnStart`, and stop at the next
-decision point.
+`ChooseTurnDiscard` 後，引擎可自動處理 `TurnEnd`、推進行動順序、執行下一玩家的 `TurnStart`，並停在下一個決策點。
 
 ### 16. Command Handling And Event Application
 
-Tentatively use an event-sourcing command flow:
+暫定使用事件溯源命令流程：
 
 ```rust
 fn decide(
@@ -445,22 +380,17 @@ fn handle_command(
 }
 ```
 
-Command handling validates and decides events. State mutation happens through `apply_event`, so live execution and replay share the same state transition path.
+命令處理驗證並決定事件。狀態透過 `apply_event` 修改，使即時執行與重播共用狀態轉換路徑。
 
-Validation failures return errors, emit no events, and do not mutate state.
+驗證失敗回傳錯誤，不發出事件，也不修改狀態。
 
-The online adapter stores a pending command draft only when
-`PerformFormation` produces an `EffectGenerated` choice that suspends its
-owning `Action`. The draft preserves the original command context until the
-choice continuation completes. A Turn Draw discard choice belongs to
-`TurnDraw`, so it must not create or continue the preceding Action Command
-draft.
+只有 `PerformFormation` 產生 `EffectGenerated` 選擇並暫停所屬 `Action` 時，線上介面卡才儲存待處理命令草稿。草稿保留原命令情境，直到選擇續接完成。回合抽牌棄牌選擇屬於 `TurnDraw`，因此不得建立或延續前一行動命令草稿。
 
 ### 17. Formation Matching
 
-Use data-driven formation patterns where practical, with custom matcher hooks for formations that cannot be represented cleanly as data.
+可行情況下使用資料驅動陣法組合方式；無法清楚表示為資料的陣法使用自訂匹配鉤子。
 
-Suggested model:
+建議模型：
 
 ```rust
 enum FormationPattern {
@@ -480,17 +410,17 @@ struct FormationDef {
 }
 ```
 
-`SequentialGenerating` means a continuous five-element generating sequence, such as `木 -> 火 -> 土`.
+`SequentialGenerating` 表示連續五行相生順序，例如 `木 -> 火 -> 土`。
 
-`SequentialOvercoming` means a continuous five-element overcoming sequence, such as `木 -> 土 -> 水`.
+`SequentialOvercoming` 表示連續五行相剋順序，例如 `木 -> 土 -> 水`。
 
-For player convenience, formation matching does not require submitted cards to be in sequence order. The matcher should treat submitted cards as a set/multiset and determine whether any valid ordering satisfies the pattern.
+為方便玩家，陣法匹配不要求提交牌依順序排列。匹配器應將提交牌視為集合／多重集合，判定是否存在符合組合方式的合法順序。
 
-Matcher logic only decides whether cards form a valid formation. Effect planning/resolution is dispatched separately through `effect_id`.
+匹配邏輯只判定牌是否組成合法陣法；效果規劃／結算另由 `effect_id` 分派。
 
 ### 18. Formation Declaration
 
-If the same cards can match multiple formations, the player or upper layer must explicitly declare which formation is being performed.
+同一組牌可匹配多個陣法時，玩家或上層必須明確宣告施展哪個陣法。
 
 ```rust
 Command::PerformFormation {
@@ -501,58 +431,39 @@ Command::PerformFormation {
 }
 ```
 
-The engine validates that the submitted cards can form the declared `formation_id`. It does not infer or auto-select a formation for the player.
+引擎驗證提交牌可組成宣告的 `formation_id`，不代替玩家推測或自動選取陣法。
 
-This keeps replay, UI behavior, and AI behavior deterministic when multiple legal interpretations exist.
+這使存在多個合法解讀時，重播、介面及 AI 行為維持確定性。
 
 #### 18.1 Formation Commitment And Completion
 
-Source basis: official rules 5-2 and 5-3 display an accepted Formation before
-its effects resolve and Discard the Formation Cards after ordinary completion;
-rule 5-4 instead leaves a performed Passive Spell covered for the next Player's
-Action.
+來源依據：官方規則 5-2 與 5-3 在效果結算前展示已接受陣法，正常完成後捨棄陣法牌；規則 5-4 則使已施展被動術式覆蓋，等待下家行動。
 
-Implementation interpretation: each Player owns one Formation Area and
-successful Formation validation commits the physical Cards to it before any
-incoming Counter Effect is processed.
+實作解讀：每位玩家擁有一個陣法區；陣法驗證成功後，在處理任何傳入反制效果前先將實體牌提交至該區。
 
-Complete all `PerformFormation` validation before committing any state. When
-validation succeeds, emit `FormationCommitted` to atomically move every
-submitted physical Card from the performing Player's hand into that Player's
-Formation Area and enter `Action`. Attacks and immediate Spells commit face-up;
-covered Passive Spells commit face-down.
+提交任何狀態前完成全部 `PerformFormation` 驗證。驗證成功時發出 `FormationCommitted`，以原子方式將所有提交實體牌從施展玩家手牌移至其陣法區並進入 `Action`。攻擊及立即術式正面提交；被動術式反面覆蓋提交。
 
-Commitment is irreversible within that Action. A Counter Effect, prevention,
-or no-effect result does not return the Cards to hand. Effect-generated Pending
-Choices suspend the same `Action` while the committed Formation remains in its
-area.
+成立在該行動中不可逆。反制、防止或無效果不會將牌退回手牌。效果產生的待選擇事項暫停同一 `Action`，已成立陣法仍留在其區域。
 
-After a non-passive Formation and all of its sequential choices and effects
-finish, emit `FormationCardsDiscarded` to move its physical Cards from the
-Formation Area directly to their applicable origin Discard Pile or Piles, then
-enter `TurnDraw`. A covered Passive instead emits `PassiveCovered`, remains
-face-down in its Formation Area, and enters `TurnDraw`. Do not add an abstract
-`FormationUseCompleted` event.
+非被動陣法及其所有依序選擇與效果完成後，發出 `FormationCardsDiscarded`，將其實體牌從陣法區直接移至適用的來源棄牌堆，接著進入 `TurnDraw`。蓋牌則發出 `PassiveCovered`，在陣法區保持反面覆蓋並進入 `TurnDraw`。不新增抽象 `FormationUseCompleted` 事件。
 
-If the Action emits `GameEnded`, neither of those ordinary completion paths
-runs. The committed Formation stays in the Formation Area because the rules
-stop further processing rather than performing terminal cleanup.
+若行動發出 `GameEnded`，上述兩條一般完成路徑均不執行。已成立陣法留在陣法區，因為規則停止後續處理，而非執行終局清理。
 
 ### 19. Attack Base Damage Target
 
-Attack formation base damage always targets the previous player (`上家`) as resolved from turn order.
+攻擊陣法基本傷害一律以依行動順序解析的上家（`上家`）為目標。
 
-Players do not declare the base damage target for attacks. The engine derives it:
+玩家不宣告攻擊基本傷害目標，引擎自行推導：
 
 ```rust
 let damage_target = previous_player(current_player, turn_order);
 ```
 
-`declared_targets` on `PerformFormation` are reserved for extra effects that require choices. The engine validates target count and target type against the declared `FormationDef`.
+`PerformFormation` 的 `declared_targets` 僅保留供需要選擇的附加效果使用。引擎依宣告的 `FormationDef` 驗證目標數量及類型。
 
 ### 20. Declared Targets
 
-`declared_targets` stores only concrete player choices:
+`declared_targets` 只儲存具體玩家選擇：
 
 ```rust
 enum TargetDecl {
@@ -562,38 +473,25 @@ enum TargetDecl {
 }
 ```
 
-Rule-derived semantic targets such as previous player, next player, self, own side, or opponent side are not submitted by players. They are resolved by formation/effect logic from current state.
+上家、下家、自己、我方或對方等由規則推導的語意目標不由玩家提交，而由陣法／效果邏輯從目前狀態解析。
 
-This keeps the event log focused on actual player choices while allowing rule-defined targets to remain deterministic projections of state.
+這使事件日誌聚焦實際玩家選擇，同時讓規則定義的目標維持為狀態的確定性投影。
 
 ### 21. Previous-Turn Formation Query
 
-Source basis: rule 5-2.4b conditions Five-Element interaction on the Previous
-Player having performed a Five-Element Attack during the immediately completed
-Previous Turn. Basic rule 2-2.2 and 2-2.4 give Metamorphosis the same turn scope
-for its copy target. Jianghu rule 4-7 uses that scope for Water-Dotting Fan.
+來源依據：規則 5-2.4b 要求上家在剛結束的上回合施展五行攻擊，才適用五行生剋。基礎規則 2-2.2 與 2-2.4 對幻化複製目標採相同回合範圍；江湖規則 4-7 以相同範圍判定點水扇。
 
-Implementation interpretation: `last_formation_by_player` is retained as replay
-state, but these three rules query it only when `resolved_turn == turn_number - 1`.
-No record qualifies after Pass, Profession Change, or a turn without a Formation.
-Triggering an existing Formation's effect at Turn Start does not create a new
-Formation use. A covered Passive belongs to the turn when it was covered.
+實作解讀：`last_formation_by_player` 保留為重播狀態，但這三條規則只在 `resolved_turn == turn_number - 1` 時查詢。上回合略過、轉職或沒有陣法時，沒有紀錄符合條件。回合開始觸發既有陣法效果不建立新的陣法施展；蓋牌屬於覆蓋的回合。
 
-The last-formation state stores the performed formation identity and its resolved
-category/effect separately. When Metamorphosis performed during the immediately
-completed Previous Turn copied a Five-Element Attack, Five-Element interaction
-reads that copied element while the Formation identity remains `幻化`.
+最近陣法狀態分別儲存施展陣法身分與已結算類別／效果。剛結束的上回合施展之幻化若複製五行攻擊，五行生剋讀取複製後屬性，但陣法身分仍為 `幻化`。
 
-Five-element attack attributes are not sealed. If a legal five-element attack is performed, its element remains available for five-element interaction tracking even if other parts of the action are affected by defensive effects.
+五行攻擊屬性不會被封印。合法五行攻擊施展後，即使行動其他部分受防禦效果影響，其屬性仍供五行生剋追蹤。
 
-Damage prevention, shield absorption, or other defensive effects do not change
-the resolved formation category.
-
-Validation failure still does not update it because no game event occurred.
+防止傷害、防護罩吸收或其他防禦效果不改變已結算陣法類別。驗證失敗不更新該狀態，因為沒有遊戲事件發生。
 
 ### 22. Attack Point Breakdown
 
-Represent five-element point modification explicitly instead of hiding it in final damage.
+明確表示五行點數修正，不將其隱藏在最終傷害中。
 
 ```rust
 enum ElementInteraction {
@@ -618,8 +516,7 @@ enum DamageTransform {
 }
 ```
 
-An Attack Resolution includes the point breakdown together with all of its
-resolved consequences:
+攻擊結算將點數明細與所有已結算結果一同包含：
 
 ```rust
 struct AttackResolution {
@@ -630,40 +527,34 @@ struct AttackResolution {
 }
 ```
 
-This supports deterministic replay, focused tests, and UI/debug display of how final damage was derived.
+這支援確定性重播、重點測試，以及介面／除錯畫面顯示最終傷害的推導方式。
 
 ### 23. Five-Element Interaction Rules
 
-Five-element interaction is resolved from the current attack element against the
-element of the Five-Element Attack performed by the Previous Player during the
-immediately completed Previous Turn.
+以目前攻擊屬性對照上家剛結束的上回合所施展五行攻擊屬性，結算五行生剋。
 
-Official relationships:
+官方關係：
 
-- generating order: `金 -> 水 -> 木 -> 火 -> 土 -> 金`
-- overcoming order: `金 -> 木 -> 土 -> 水 -> 火 -> 金`
-- same element: resisting/same (`相抵`)
+- 相生順序：`金 -> 水 -> 木 -> 火 -> 土 -> 金`；
+- 相剋順序：`金 -> 木 -> 土 -> 水 -> 火 -> 金`；
+- 同屬性為相抵（`相抵`）。
 
-When the current attack element generates the previous player's last attack element, the attack does not deal damage and instead heals the target for the attack amount.
+目前攻擊屬性生上家上回合攻擊屬性時，攻擊不造成傷害，改為回復目標與攻擊點數相等的生命。
 
-When the current attack element overcomes the previous player's last attack element, damage is doubled.
+目前攻擊屬性剋上家上回合攻擊屬性時，傷害加倍。兩者相同時，傷害減半並無條件進位。
 
-When both elements are the same, damage is halved and rounded up.
+範例：
 
-Examples:
+- 上回合 `金`、本次 `火`：相剋，傷害加倍；
+- 上回合 `金`、本次 `土`：相生，回復目標；
+- 上回合 `金`、本次 `金`：相抵，傷害減半並無條件進位；
+- 上回合 `金`、本次 `木` 或 `水`：無生剋互動。
 
-- previous `金`, current `火`: overcoming, damage doubled
-- previous `金`, current `土`: generating, heal target
-- previous `金`, current `金`: same, damage halved and rounded up
-- previous `金`, current `木` or `水`: no interaction
-
-If the target has a shield, skip five-element interaction entirely.
-
-Five-element interaction changes the damage/healing result, not the attack points.
+目標有防護罩時完全略過五行生剋。五行生剋改變傷害／回復結果，不改變攻擊點數。
 
 ### 24. Shield Ownership And Damage Absorption
 
-Shields are attached to players, not teams.
+防護罩附屬於玩家，而非隊伍。
 
 ```rust
 shield_by_player: HashMap<PlayerId, Shield>
@@ -673,30 +564,25 @@ struct Shield {
 }
 ```
 
-Attack base damage still targets the previous player. HP damage resolves to that player's team, but shield lookup happens on the target player.
+攻擊基本傷害仍以上家為目標。生命值傷害結算至該玩家隊伍，但防護罩查詢依目標玩家進行。
 
-Shields have no duration. They persist until depleted or explicitly changed by another effect.
+防護罩沒有持續時間，會一直存在直到耗盡或被其他效果明確改變。
 
-If the target player has a shield:
+目標玩家有防護罩時：
 
-- skip five-element interaction
-- apply attack damage to the shield
-- excess damage does not pierce through to player/team HP
+- 略過五行生剋；
+- 將攻擊傷害套用至防護罩；
+- 超額傷害不穿透至玩家／隊伍生命值。
 
-Physical attacks deal double damage to shields. Special attacks and five-element
-attacks use their otherwise resolved damage amount.
+物理攻擊對防護罩造成雙倍傷害；特殊攻擊及五行攻擊使用其餘規則結算後的傷害數值。
 
-The shield absorbs the attack as a separate defensive layer, even if the incoming damage exceeds the shield amount.
+即使傳入傷害超過防護罩點數，防護罩仍作為獨立防禦層吸收該次攻擊。防護罩點數降至零或以下時立即移除。
 
-When shield amount reaches 0 or lower, remove it immediately.
-
-If a player who already has a shield gains a new shield, the new shield amount replaces the old amount. Shield values do not stack.
+已有防護罩的玩家獲得新防護罩時，新點數取代舊點數，防護罩不疊加。
 
 ### 25. Passive Action Modifications
 
-Passive spells do not hard-code a single "counter means cancel everything" behavior in the core pipeline.
-
-Each passive effect returns one or more action modifications:
+核心流程不將被動術式硬編碼為「反制即取消一切」的單一行為。每個被動效果回傳一個或多個行動修正：
 
 ```rust
 enum ActionModification {
@@ -708,42 +594,24 @@ enum ActionModification {
 }
 ```
 
-Passive resolution flow:
+被動效果結算流程：
 
-1. At next player's action start, flip the previous player's covered passive.
-2. The passive effect checks whether it applies to the incoming action.
-3. The effect returns action modifications.
-4. The incoming action resolution applies those modifications.
+1. 下家行動開始時翻開上家的蓋牌。
+2. 被動效果檢查是否適用於傳入行動。
+3. 效果回傳行動修正。
+4. 傳入行動的結算套用這些修正。
 
-Within an Attack Resolution, damage and every attached effect without another
-specified timing are one atomic, simultaneous result from the Players'
-perspective. They belong to one `AttackResolved` event so implementation,
-replay, and Public Views cannot invent an observable order. An explicitly timed
-effect remains outside that event, while a required intermediate choice is
-collected before emitting it.
+在攻擊結算中，玩家所見的傷害及未另指定時點的全部附帶效果是單一原子、同時的結果。它們屬於一個 `AttackResolved` 事件，使實作、重播及公開視圖不能虛構可觀察順序。明確指定時點的效果留在事件外；必要中間選擇在發出事件前收集。
 
-Countershock (`反震`) splits an incoming attack before defensive layers absorb
-damage. The attacking side receives its reflected share directly. The defending
-player's share then resolves against that player's shield, if present, under the
-normal shield rules. A shield must not suppress Countershock's split. If either
-side reaches 0 HP while applying the split, resolution continues until both shares
-have been applied; game-over evaluation uses the fully resolved state and may
-therefore produce a draw.
+反震（`反震`）在防禦層吸收傷害前分攤傳入攻擊。攻擊方直接承受反彈份額；防守玩家的份額再依正常防護罩規則由其防護罩承受（若有）。防護罩不得抑制反震分攤。套用分攤期間若任一方生命值歸零，仍繼續處理直到雙方份額均套用；遊戲結束判定使用完整結算狀態，因此可能平局。
 
-Five-element interaction determines the attack's result mode before Countershock
-distributes its amount. Countershock divides the resulting amount but does not
-change that mode. Therefore, when generating interaction makes an attack restore
-HP, both the attacking and defending sides restore their respective shares.
-Overcoming, same-element, and unrelated interactions likewise apply their modified
-amount before it is divided.
+五行生剋先決定攻擊結果模式，反震再分配其數值。反震分攤結果數值，但不改變模式。因此相生使攻擊回復生命時，攻擊與防守雙方各回復自己的份額；相剋、相抵及無關屬性亦先套用修正數值再分攤。
 
-Fractional formation points always round up. Countershock calculates each side's
-share independently with ceiling division, so an attack amount of 7 produces 4
-points for the attacking side and 4 points for the defending side.
+陣法點數的小數一律無條件進位。反震以無條件進位除法分別計算雙方份額，因此 7 點攻擊使攻擊方與防守方各分得 4 點。
 
-Seal (`封印`) applies only to spells (`術式`). Do not model it as a broad "spell or effect" cancellation rule.
+封印（`封印`）只適用術式（`術式`），不建模為廣泛的「術式或效果」取消規則。
 
-If seal flips against an incoming attack, it is discarded with no effect because the incoming action is not a spell.
+封印翻開時若傳入行動是攻擊，因該行動不是術式而無效果並捨棄：
 
 ```rust
 GameEvent::PassiveFlipped {
@@ -756,78 +624,41 @@ GameEvent::PassiveFlipped {
 }
 ```
 
-Defense (`防禦`) applies only to incoming attacks. If it flips against an incoming spell, pass action, or other non-attack action, it is discarded with no effect.
+防禦（`防禦`）只適用傳入攻擊；面對傳入術式、行動略過或其他非攻擊行動時，翻開後無效果並捨棄。
 
-Defense prevents only the attack's damage. Other effects of the performed attack
-still resolve; in particular, Five Streams Unite still grants its turn-draw bonus.
+防禦只防止攻擊傷害。已施展攻擊的其他效果仍結算；特別是五流歸一仍提供回合抽牌加成。
 
-If seal applies to an incoming passive spell cover action, it does not immediately discard or reveal the incoming covered passive cards.
+封印作用於傳入被動術式覆蓋行動時，不立即捨棄或翻開新覆蓋牌。新被動術式仍覆蓋並標記為已封印；日後於其觸發時點翻開、無效果並正常捨棄。
 
-Instead, the incoming passive remains covered and is marked sealed. When that covered passive later flips at its own trigger timing, it resolves as no effect and is then discarded normally.
+這避免提前揭露蓋牌，也使下家可在不知道蓋牌身分下作決策，例如選擇幻化（`幻化`）。
 
-This prevents a covered passive from being revealed early and preserves the next player's ability to make decisions, such as choosing Metamorphosis (`幻化`), without knowing the covered card identity.
+已封印蓋牌的公開視圖行為與一般蓋牌相同。引擎在內部儲存封印標記供日後結算，但公開／玩家視圖除正常蓋牌可見性規則外，不另公開封印標記。
 
-The sealed covered passive uses the same public view behavior as a normal covered passive. The engine stores the sealed marker internally for later resolution, but public/player views do not expose a separate sealed marker beyond the normal covered-card visibility rules.
+每位玩家的陣法區至多容納一個陣法。正常回合流程下，玩家蓋牌在其能提交另一陣法前，於下家的 `Action` 翻開。
 
-Each Player's Formation Area can contain at most one Formation. Under normal
-Turn flow, a Player's Covered Passive flips during the next Player's `Action`
-before its owner can commit another Formation.
+命令嘗試在玩家陣法區已有陣法時再提交陣法，應回報錯誤，不發出事件，也不消耗行動。
 
-If a command attempts to commit a Formation while that Player's Formation Area
-is already occupied, report an error. Emit no event and do not consume the
-Action.
+空城（`空城`）是沒有額外行動修正的蓋牌。它仍消耗陣法牌與回合行動、占用玩家唯一陣法區、在正常觸發時點翻開並將牌捨棄。其無效果結果是刻意設計，不是未知被動效果的遞補；以 `PassiveNoEffectGround::EmptyCity` 明確表示。玩家紀錄只應說 `空城翻開`，不得多加無效果的重複文案。
 
-Empty City (`空城`) is a covered passive with no additional action modification.
-It still consumes the formation cards and turn action, occupies the player's one
-Formation Area, flips at the normal trigger timing, and moves its cards
-to discard. Its no-effect outcome is intentional rather than an unknown-passive
-fallback. Represent that outcome explicitly as
-`PassiveNoEffectGround::EmptyCity`. User-facing records should say only
-`空城翻開`; they must not add redundant wording about producing no effect.
+幻化（`幻化`）是基礎陣法，不是特殊獨立行動命令，也不是特殊陣法類別／標籤。
 
-Metamorphosis (`幻化`) is a basic formation, not a special standalone action command and not a special formation category/tag.
+它與其他陣法一樣透過正常 `PerformFormation` 流程處理，消耗回合行動，在正常下家行動時點觸發蓋牌，並依陣法類別／效果規則判定是否適用任何被動效果。
 
-It should be handled through the normal `PerformFormation` pipeline like other formations. It consumes the turn action, triggers covered passives at the usual next-player action timing, and uses formation category/effect rules to determine whether any passive applies.
+持有蓋牌的玩家必然以上回合陣法施展了該被動術式。因此下家的幻化不能同時觸發該蓋牌，又複製同一玩家更早的攻擊；此組合視為不可到達，不新增互動規則或測試。
 
-A player with a covered passive necessarily used that passive as their
-Previous-Turn Formation. Therefore, a next-player Metamorphosis cannot both
-trigger that passive and copy an older attack from the same player. Treat that
-combination as unreachable rather than adding an interaction rule or test for it.
+幻化複製上回合陣法已結算類別及效果，同時保留自己的陣法身分與名稱。因此最近陣法狀態必須分別儲存陣法身分與已結算效果計畫。後續幻化複製該已結算類別與效果，使幻化連鎖持續重現最初複製的行為，即使每一環仍顯示並記錄為 `幻化`。
 
-Metamorphosis preserves its own formation identity and name while copying the
-Previous-Turn Formation's resolved category and effect. The last-formation state
-must therefore store formation identity separately from the resolved effect plan.
-A later Metamorphosis copies that resolved category and effect, so Metamorphosis
-chains continue to reproduce the original copied behavior even though every
-link is still displayed and recorded as `幻化`.
+幻化不複製術式的主動／被動類型，因為該類型控制陣法如何施展。幻化仍為主動術式：兩張土牌正面展示，並依主動術式程序捨棄。複製防禦、封印、反震或其他延遲反制效果時，複製效果仍等待並修改下家行動，但它是公開的且沒有覆蓋牌。因此延遲反制狀態必須與蓋牌狀態分開建模。
 
-Metamorphosis does not copy a spell's active/passive type because that type controls
-how the formation is performed. Metamorphosis remains an active spell: its two
-Earth cards are shown face up and discarded through the active-spell procedure.
-When it copies Defense, Seal, Countershock, or another delayed counter effect, the
-copied effect still waits for and modifies the next player's action, but it is
-public and has no covered cards. Delayed counter state must therefore be modeled
-separately from covered-passive card state.
+複製空城時，記錄空城為已結算效果，但不建立延遲反制，因為空城沒有可建立的效果。
 
-Copying Empty City records Empty City as the resolved effect but creates no
-delayed counter because Empty City has no effect to establish.
+複製效果使用基於牌的公式時，每次幻化以自己提交的兩張土牌計算公式。它複製公式、類別及效果行為，不複製上回合陣法已算出的數值。複製單張五行擊術時，`level + 4` 指所提交幻化牌的等級總和加四，不得只讀兩張土牌其中之一。
 
-When the copied effect uses a card-based formula, each Metamorphosis evaluates that
-formula from its own two submitted Earth cards. It copies the formula, category,
-and effect behavior, not the Previous-Turn Formation's already calculated amount.
-For a copied single-card elemental strike, `level + 4` means the submitted
-Metamorphosis cards' level sum plus 4; it must not read only one of the two
-Earth cards.
+複製五流歸一（`五流歸一`）包含其完整效果：依目標目前手牌數結算傷害，並給幻化玩家該陣法的下次抽牌加成。加成不限於直接提交原本五張陣法。
 
-Copying Five Streams Unite (`五流歸一`) includes its complete effect. Resolve its
-damage from the target's current hand count and grant the Metamorphosis player the
-formation's next-draw bonus. The bonus is not limited to directly submitting the
-original five-card formation.
+不為幻化新增獨立 `ChangeClass` 命令；轉職是對應規則模組引入的獨立行動。
 
-Do not add a separate `ChangeClass` command for Metamorphosis. Profession Change
-is a distinct Action introduced by the corresponding rule modules.
-
-Formation category is limited to the official two categories:
+陣法類別限官方兩類：
 
 ```rust
 enum FormationCategory {
@@ -836,11 +667,11 @@ enum FormationCategory {
 }
 ```
 
-Passive spells are represented as spells whose `effect_id` points to an `EffectDef` with a delayed/covered plan, not as a separate top-level category.
+被動術式表示為其 `effect_id` 指向具延遲／覆蓋計畫的 `EffectDef` 之術式，不是獨立頂層類別。
 
-Do not add separate categories or tags such as `ClassChange`, `PhysicalAttack`, or `ElementalAttack` unless they are needed by a concrete rule. Differences such as elemental attack interactions, passive spell covering, or Metamorphosis behavior should be represented by effect definitions under the official `Attack`/`Spell` category model.
+除非具體規則需要，不新增 `ClassChange`、`PhysicalAttack` 或 `ElementalAttack` 等獨立類別或標籤。五行攻擊互動、被動術式覆蓋及幻化行為等差異，應在官方 `Attack`／`Spell` 類別模型下以效果定義表示。
 
-Use `effect_id + EffectDef.plan` rather than `FormationBehavior`:
+使用 `effect_id + EffectDef.plan` 而非 `FormationBehavior`：
 
 ```rust
 struct EffectDef {
@@ -855,9 +686,9 @@ enum EffectPlanDef {
 }
 ```
 
-`FormationDef` identifies what the formation is and how it is matched. `EffectDef.plan` identifies how the formation executes.
+`FormationDef` 識別陣法是什麼及如何匹配；`EffectDef.plan` 識別陣法如何執行。
 
-Attack plan details may distinguish attack subtypes without changing the official formation category:
+攻擊計畫細節可區分攻擊子類型，不改變官方陣法類別：
 
 ```rust
 enum AttackPlanDef {
@@ -867,9 +698,9 @@ enum AttackPlanDef {
 }
 ```
 
-Five-element interaction only applies to `AttackPlanDef::Elemental`. Defense applies to all `EffectPlanDef::Attack` plans.
+五行生剋只適用 `AttackPlanDef::Elemental`；防禦適用所有 `EffectPlanDef::Attack` 計畫。
 
-Attack points use formulas instead of only fixed values:
+攻擊點數使用公式，而不只固定值：
 
 ```rust
 enum PointFormula {
@@ -880,11 +711,11 @@ enum PointFormula {
 }
 ```
 
-Fixed point attacks use `PointFormula::Fixed`. Variable point attacks add a formula resolver without changing the formation schema.
+固定點數攻擊使用 `PointFormula::Fixed`；可變點數攻擊新增公式解析器，不改變陣法 schema。
 
-Custom matchers, point formulas, and effect resolvers must be deterministic pure resolvers.
+自訂匹配器、點數公式及效果解析器必須是確定性的純解析器。
 
-Example:
+範例：
 
 ```rust
 trait PointFormulaResolver {
@@ -892,23 +723,23 @@ trait PointFormulaResolver {
 }
 ```
 
-Allowed:
+允許：
 
-- read formation cards
-- read card definitions
-- read the current state snapshot
-- return validation results, computed points, or effect intents
+- 讀取陣法牌；
+- 讀取牌定義；
+- 讀取目前狀態快照；
+- 回傳驗證結果、計算點數或效果意圖。
 
-Not allowed:
+不允許：
 
-- mutate `GameState`
-- move cards between zones directly
-- append `GameEvent` directly
-- use non-deterministic RNG, wall-clock time, or IO
+- 修改 `GameState`；
+- 直接在區域間移牌；
+- 直接附加 `GameEvent`；
+- 使用非確定性 RNG、牆上時鐘時間或 IO。
 
-Any randomness or player choice must be represented explicitly through commands and events.
+任何隨機性或玩家選擇均須透過命令與事件明確表示。
 
-Immediate spell, passive spell, and attack effect resolvers all return declarative intents. The pipeline converts intents into events, and `apply_event` mutates state.
+立即術式、被動術式及攻擊效果解析器均回傳宣告式意圖。流程將意圖轉為事件，`apply_event` 修改狀態。
 
 ```rust
 struct EffectIntent {
@@ -921,18 +752,15 @@ struct EffectIntent {
 }
 ```
 
-Formation-use baseline zone movement is owned by the pipeline, not by
-individual effect resolvers. It is emitted as `FormationCommitted` before
-effects and `FormationCardsDiscarded` after ordinary face-up completion.
+陣法施展的基本區域移動由流程而非個別效果解析器負責：效果前發出 `FormationCommitted`，一般正面完成後發出 `FormationCardsDiscarded`。
 
-Effect intents describe additional consequences only, such as drawing cards, discarding selected cards, changing shields, changing statuses, modifying actions, or requesting further choices.
+效果意圖只描述額外結果，例如抽牌、捨棄所選牌、改變防護罩或狀態、修改行動或請求後續選擇。
 
-Effect-generated pending choices are required in the first version because base formations use them.
+基礎陣法會產生選擇，因此第一版即須支援效果產生的待選擇事項。
 
-Only one pending choice may be active at a time. When an effect creates a pending choice, the engine stops until the required player submits the corresponding choice command.
+同時只能有一個待選擇事項作用中。效果建立待選擇事項時，引擎停止，直到所需玩家提交對應選擇命令。
 
-Effect choices and randomness requests carry one serializable resolution owner. The input
-objects themselves remain only input requirements:
+效果選擇與隨機性請求攜帶一個可序列化結算擁有者；輸入物件本身仍僅為輸入要求：
 
 ```rust
 enum PendingResolution {
@@ -942,10 +770,9 @@ enum PendingResolution {
 }
 ```
 
-`PendingResolution` must be serializable and replay-safe. It cannot contain closures, trait
-objects, borrowed references, or non-deterministic runtime state.
+`PendingResolution` 必須可序列化且能安全重播，不能包含閉包、trait 物件、借用參照或非確定性執行期狀態。
 
-Pending input invariant:
+待輸入不變條件：
 
 ```rust
 pending_choice: Option<PendingChoice>
@@ -953,13 +780,11 @@ pending_randomness: Option<PendingRandomness>
 pending_resolution: Option<PendingResolution>
 ```
 
-At most one input requirement and exactly its matching `PendingResolution` may exist at a
-time. The public view never exposes `PendingResolution`.
+同時至多存在一個輸入要求，且必須恰有與之匹配的 `PendingResolution`。公開視圖絕不暴露 `PendingResolution`。
 
-If a resolution needs multiple choices, it presents them sequentially. After an answer or a
-randomness result, the engine resumes from `PendingResolution` and may request the next input.
+結算需要多次選擇時依序呈現；收到答案或隨機結果後，引擎從 `PendingResolution` 恢復，並可請求下一輸入。
 
-Creating and answering an effect-generated Pending Choice are both Game Events:
+建立及回答效果產生的待選擇事項均為遊戲事件：
 
 ```rust
 GameEvent::ChoiceRequested {
@@ -974,44 +799,27 @@ GameEvent::ChoiceMade {
 }
 ```
 
-`ChoiceRequested` must include enough serialized data to reconstruct both the pending choice
-and its resolution owner during replay. `RandomnessRequested` follows the same pattern.
+`ChoiceRequested` 必須包含足夠序列化資料，使重播能同時重建待選擇事項與其結算擁有者。`RandomnessRequested` 遵循相同模式。
 
-Turn Draw retains its specific Card-movement events while using the ordinary
-Pending Choice lifecycle. `CardsDrawnForTurnDiscardChoice` creates the Pool,
-then `ChoiceRequested` creates its Pending Choice. The answering Command emits
-`ChoiceMade` before `TurnDrawResolved`, which records the answer's Discard and
-kept-Card movements atomically. No Player input or replay state exists between
-those two movements inside `TurnDrawResolved`.
+回合抽牌使用一般待選擇生命週期，同時保留專屬牌移動事件。`CardsDrawnForTurnDiscardChoice` 建立抽牌區，接著 `ChoiceRequested` 建立待選擇事項。回答命令先發出 `ChoiceMade`，再發出 `TurnDrawResolved`，以原子方式記錄答案的棄牌及保留牌移動。`TurnDrawResolved` 內兩次移動之間不存在玩家輸入或重播狀態。
 
-Canonical events may contain hidden information required for deterministic replay, including
-hidden card ids, complete choice options, and serialized resolutions.
+正規事件可包含確定性重播所需隱藏資訊，包括隱藏牌 ID、完整選項及序列化結算。
 
-External event feeds must be viewer-filtered:
+外部事件動態必須依觀看者過濾：
 
-- the choice player can see the options they are allowed to choose from
-- non-choice players see only public information, such as that a player is making a choice
-- replay uses canonical events, never filtered public events
+- 選擇玩家可看見允許其選擇的選項；
+- 非選擇玩家只看見公開資訊，例如某位玩家正在選擇；
+- 重播使用正規事件，絕不使用過濾後公開事件。
 
-Radiance (`光芒`) also inspects the next player's hand when it resolves. Record a
-canonical snapshot of that hand at resolution time. Only the formation player may
-see the snapshot in the filtered event; the inspected player, other players, and
-observers receive only the public fact that Radiance resolved. This is a snapshot,
-not ongoing permission to observe later hand changes. Keep that snapshot available
-to the formation player in their private event history so reconnect and replay do
-not lose information they already inspected.
+光芒（`光芒`）結算時也檢視下家手牌，須記錄當時手牌的正規快照。過濾後事件只有陣法施展玩家可看見快照；被檢視玩家、其他玩家及觀戰者只收到光芒已結算的公開事實。這是快照，不代表持續觀察後續手牌變化的權限。該快照須保留在施展玩家私密事件歷史中，使重新連線及重播不遺失已檢視資訊。
 
 ### 26. Game Over
 
-Source basis: official rule 7-3 ends the Game immediately when its end
-condition is established and stops unfinished effect processing.
+來源依據：官方規則 7-3 在遊戲結束條件成立時立即結束遊戲，並停止尚未完成的效果處理。
 
-Implementation interpretation: finish only the simultaneous semantic
-resolution currently being applied, record an explicit terminal conclusion,
-and run no later effect or cleanup step.
+實作解讀：只完成目前正在套用的同時語意結算，記錄明確終局結論，不執行後續效果或清理步驟。
 
-The game ends when a Team's HP reaches 0 or lower or another enabled rule
-produces a direct terminal outcome. Store an independent Game Conclusion:
+隊伍生命值降至零或以下，或其他已啟用規則產生直接終局結果時，遊戲結束。儲存獨立遊戲結論：
 
 ```rust
 enum GameStatus {
@@ -1039,46 +847,27 @@ GameEvent::GameEnded {
 }
 ```
 
-`causes` is non-empty by invariant; the concrete Rust representation may use a
-non-empty collection type. `GameEnded` explicitly records the final outcome and
-reason instead of asking replay or presentation to infer them from an earlier
-damage, victory, Formation Area, or Last Formation event.
+依不變條件，`causes` 不可為空；具體 Rust 表示可使用非空集合型別。`GameEnded` 明確記錄最終結果與原因，不要求重播或呈現從先前傷害、勝利、陣法區或最近陣法事件推測。
 
-2-player mode still uses Teams: each Player belongs to their own single-player
-Team. If one Team's HP reaches 0 or lower, the other Team wins.
+雙人模式仍使用隊伍：各玩家屬於各自的一人隊伍。一隊生命值降至零或以下時，另一隊獲勝。
 
-If the same simultaneous resolution causes all opposing Teams to reach 0 or
-lower, the result is `GameOutcome::Draw`. Apply every delta in that simultaneous
-semantic resolution, including rule-defined automatic responses that precede
-Game Outcome evaluation, before deciding the conclusion.
+若同一次同時結算使所有對立隊伍生命值降至零或以下，結果為 `GameOutcome::Draw`。決定結論前先套用該同時語意結算中的每項變化，包括依規則在判定遊戲結果前發生的自動回應。
 
-Emit `GameEnded { conclusion }` immediately after that evaluation and make it
-the last canonical event. Do not start a later sequential effect, discard a
-Formation merely as cleanup, enter `TurnDraw`, or enter `TurnEnd`. The Card
-zones already established remain unchanged, so a terminal current Formation
-can remain in its Player's Formation Area.
+判定後立即發出 `GameEnded { conclusion }`，並使其成為最後正規事件。不開始後續依序效果、不僅為清理而捨棄陣法、不進入 `TurnDraw` 或 `TurnEnd`。已建立的牌區域保持不變，因此造成終局的目前陣法可留在玩家陣法區。
 
-The finished-table presentation is derived separately from the recorded
-decision that contains `GameEnded`, after applying the viewer's event
-redaction. A Formation commit or resolved Attack can provide its player,
-Formation, and cards; discard retrieval and automatic effects have their own
-presentations. This display is the terminal decision, not an end cause, and it
-never falls back to `last_formation_by_player`.
+完成牌桌的呈現在依觀看者遮蔽事件後，另由包含 `GameEnded` 的已記錄決策推導。陣法成立或已結算攻擊可提供玩家、陣法及用牌；棄牌回收及自動效果各有呈現方式。此顯示是終局決策而非結束原因，也絕不遞補使用 `last_formation_by_player`。
 
-Once `GameStatus::Finished` is reached, gameplay commands are rejected.
+到達 `GameStatus::Finished` 後拒絕遊戲命令。
 
-HP state is clamped to 0 and never stored as a negative value.
+生命值狀態下限為零，絕不儲存負值。
 
 ```rust
 new_hp = max(0, old_hp - damage)
 ```
 
-Team HP is also capped at that match's initial HP. Every recovery source uses the
-same cap, including Generating Formation, Return to Origin, generating elemental
-attacks, and generating attacks divided by Countershock.
+隊伍生命值上限為該局初始生命值。所有回復來源共用此上限，包括生陣、歸元、相生五行攻擊及經反震分攤的相生攻擊。
 
-Every HP change fact should preserve enough detail for audit/debug, whether it
-is nested in an `AttackResolved` event or emitted by a non-Attack source:
+每個生命值變化事實均應保留足夠稽核／除錯細節，不論它巢狀位於 `AttackResolved` 事件，或由非攻擊來源發出：
 
 ```rust
 struct HpChangeDelta {
@@ -1090,18 +879,18 @@ struct HpChangeDelta {
 }
 ```
 
-`new_hp` is clamped. `effective_delta` records the actual state change after clamping.
+`new_hp` 已受界限限制；`effective_delta` 記錄限制後實際狀態變化。
 
 ### 27. Initial Deal
 
-Initial hands are dealt by the engine from the prepared deck order and emitted as events.
+引擎依已準備牌序發初始手牌並發出事件。
 
-Rule:
+規則：
 
-- first player receives 4 cards
-- all other players receive 5 cards
+- 先手取得四張牌；
+- 其他玩家各取得五張牌。
 
-Suggested events:
+建議事件：
 
 ```rust
 GameEvent::DeckPrepared {
@@ -1115,9 +904,9 @@ GameEvent::CardsDealt {
 }
 ```
 
-`GameSetup` should define players, teams, turn order, HP setup, and ruleset. It should not directly contain starting hands.
+`GameSetup` 應定義玩家、隊伍、行動順序、生命值設定及規則集，不應直接包含起始手牌。
 
-Initial HP is provided by `GameSetup`, not hard-coded by the engine.
+初始生命值由 `GameSetup` 提供，不由引擎硬編碼。
 
 ```rust
 struct GameSetup {
@@ -1128,34 +917,34 @@ struct GameSetup {
 }
 ```
 
-Official default builders may populate HP:
+官方預設建構器可填入生命值：
 
 ```rust
 GameSetupBuilder::official_2p(players)
 GameSetupBuilder::official_team(players, teams)
 ```
 
-Tests and variants may provide explicit HP values.
+測試及變體可提供明確生命值。
 
 ### 28. Team Setup Validation
 
-Team mode setup must be validated by the engine, even if helper builders generate legal setups.
+即使輔助建構器產生合法設定，引擎仍必須驗證團隊模式設定。
 
-Validation rules:
+驗證規則：
 
-- at least 4 players
-- exactly 2 teams
-- every player belongs to a team
-- both teams have the same number of players
-- `turn_order` contains every player exactly once
-- adjacent players in `turn_order` cannot belong to the same team
-- circular adjacency is checked, so the last and first players also cannot belong to the same team
+- 至少四位玩家；
+- 恰好兩隊；
+- 每位玩家均屬於一隊；
+- 雙方玩家人數相同；
+- `turn_order` 包含每位玩家恰好一次；
+- `turn_order` 中相鄰玩家不可同隊；
+- 檢查循環相鄰，因此最後及第一位玩家也不可同隊。
 
-Setup builders may help produce valid alternating seating, but invalid setup data must still be rejected.
+設定建構器可協助產生合法交錯座位，但仍必須拒絕無效設定資料。
 
 ### 29. Card Instances And Definitions
 
-Zones store card instances, not card definitions.
+區域儲存實體牌，不儲存牌定義。
 
 ```rust
 struct CardInstance {
@@ -1168,16 +957,15 @@ struct GameSetup {
 }
 ```
 
-Decks, hands, Discard Piles, Formation Areas, the Turn Draw Pool, and other Card
-zones store `CardInstanceId`.
+牌堆、手牌、棄牌堆、陣法區、回合抽牌區及其他牌區域儲存 `CardInstanceId`。
 
-Rules and matchers resolve `CardInstanceId -> CardDefId -> CardDef` through setup data and the card definition registry.
+規則及匹配器透過設定資料與牌定義登錄表解析 `CardInstanceId -> CardDefId -> CardDef`。
 
-The instance-to-definition mapping is immutable after game setup. Replay relies on stable `CardInstanceId` values.
+實體牌至定義的映射在遊戲設定後不可變；重播依賴穩定 `CardInstanceId` 值。
 
 ### 30. Card Definition Shape
 
-Use the minimal card definition shape for the first version:
+第一版使用最小牌定義結構：
 
 ```rust
 struct CardDef {
@@ -1188,27 +976,23 @@ struct CardDef {
 }
 ```
 
-`level` is a stable printed-card attribute used by base attack point formulas such as `level + 4` and `sum(level) * N`.
+`level` 是穩定牌面屬性，供 `level + 4` 及 `sum(level) * N` 等基礎攻擊點數公式使用。
 
-Do not add `card_kind` or optional elements until a concrete rule requires non-element cards.
+除非具體規則需要無屬性牌，否則不新增 `card_kind` 或選用屬性。
 
 ### 31. Base Formation Registry
 
-Create the full registry for the 25 base formations in the first implementation.
+第一版即建立 25 種基礎陣法的完整登錄表。
 
-Each base formation should have:
+每個基礎陣法應有：
 
-- `FormationDef`
-- `EffectDef`
-- matcher coverage
+- `FormationDef`；
+- `EffectDef`；
+- 匹配器覆蓋。
 
-Effect resolvers may be implemented incrementally. A known but unimplemented effect may return `RuleError::EffectNotImplemented(effect_id)` until implemented.
+效果解析器可逐步實作。已知但未實作的效果在完成前可回傳 `RuleError::EffectNotImplemented(effect_id)`，使驗證、schema 及匹配器測試能先於所有效果完成而穩定。
 
-This lets validation, schema, and matcher tests stabilize before every effect is complete.
-
-An unimplemented effect is not a validation failure.
-
-If the player submits a legal command for a known formation whose effect resolver is not implemented, return an implementation error and do not emit events or mutate state.
+未實作效果不是驗證失敗。玩家對已知陣法提交合法命令，但其效果解析器尚未實作時，回傳實作錯誤，不發出事件或修改狀態。
 
 ```rust
 enum CommandError {
@@ -1217,11 +1001,11 @@ enum CommandError {
 }
 ```
 
-`EffectNotImplemented(effect_id)` belongs to `RuleImplementationError`.
+`EffectNotImplemented(effect_id)` 屬於 `RuleImplementationError`。
 
 ### 32. Status Duration
 
-Use explicit expiry timing for status durations:
+狀態持續時間使用明確到期時點：
 
 ```rust
 enum Duration {
@@ -1232,21 +1016,13 @@ enum Duration {
 }
 ```
 
-Do not include `UntilNextAction` in the first version. Next-Action Passive
-behavior is modeled by the Covered Passive in a Player's Formation Area, not by
-generic status duration.
+第一版不包含 `UntilNextAction`。下次行動時的被動行為由玩家陣法區的蓋牌建模，不使用一般狀態持續時間。
 
-Avoid generic `remaining_turns` / `remaining_rounds` counters as the core model because they are ambiguous in multiplayer and team mode. Rule resolvers can translate rule text into explicit expiry timing.
+核心模型避免通用 `remaining_turns`／`remaining_rounds` 計數器，因為它們在多人及團隊模式下有歧義。規則解析器可將規則文字轉為明確到期時點。
 
-Rules 6-1 and 6-2 give the presentation units distinct owner-relative timing:
-a Turn elapses at the affected Player's Turn End, while a Round elapses at that
-Player's Turn Start. Therefore Web presentation counts only that Player's
-matching boundaries. It must not subtract the current global `turn_number`
-from an expiry ordinal and label that difference as remaining Turns. A status
-with `UntilTurnStart` displays its duration in Rounds; 天陽罡 uses this duration
-because its published duration is one Round.
+規則 6-1 與 6-2 依受影響者時點區分呈現單位：一回合在受影響玩家回合結束時經過，一輪在其回合開始時經過。因此 Web 呈現只計算該玩家對應邊界，不得以到期序號減目前全域 `turn_number`，並將差值標成剩餘回合。`UntilTurnStart` 狀態以輪顯示持續時間；天陽罡因公開持續時間為一輪而使用此時點。
 
-Status expiration is event-logged:
+狀態到期記入事件日誌：
 
 ```rust
 GameEvent::StatusExpired {
@@ -1256,47 +1032,37 @@ GameEvent::StatusExpired {
 }
 ```
 
-`advance_until_decision` checks expiry at `TurnStart` and `TurnEnd` timing. Expired statuses are removed through events, not silent state mutation.
+`advance_until_decision` 在 `TurnStart` 及 `TurnEnd` 時點檢查到期狀態；已到期狀態透過事件移除，不靜默修改狀態。
 
 ### 33. Replay Versus Verification
 
-Pure replay only applies recorded events. It does not re-run command decision logic or recompute automatic events.
+純重播只套用已記錄事件，不重新執行命令決策邏輯，也不重新計算自動事件。
 
-Modes:
+模式：
 
-- live execution: commands and automatic advancement decide events, then apply them
-- replay: apply the canonical event log exactly as recorded
-- verification: optionally rerun commands/automatic advancement and compare produced events with the canonical event log
+- 即時執行：命令及自動推進決定事件後套用；
+- 重播：完全依記錄套用正規事件日誌；
+- 驗證：可選擇重新執行命令／自動推進，並比較產生事件與正規事件日誌。
 
-The canonical event log already contains automatic events such as initial deal,
-Discard Shuffles, choice requests, and status expiration. Recomputing them
-during replay could duplicate events or diverge across ruleset versions.
+正規事件日誌已包含初始發牌、洗棄牌、選擇請求及狀態到期等自動事件。重播時重新計算可能重複事件，或因規則集版本不同而產生分歧。
 
-Canonical `GameEvent` and `PendingChoice` payloads participate in replay verification. Data needed only by a client, such as an effect choice's required card count or a terminal-decision display, belongs in the Web projection and is derived from canonical records and public state.
+正規 `GameEvent` 及 `PendingChoice` payload 參與重播驗證。僅客戶端需要的資料，例如效果選擇要求牌數或終局決策顯示，屬於 Web 投影，並由正規紀錄及公開狀態推導。
 
 ### 34. Event Granularity
 
-Source basis: official rules 2-5.3c and 5-2.4i make an Attack's damage and every
-attached effect without another specified timing simultaneous and unordered.
+來源依據：官方規則 2-5.3c 及 5-2.4i 使攻擊傷害與所有未指定其他時點的附帶效果同時且無順序。
 
-Implementation interpretation: represent that complete Attack Resolution as
-one atomic `AttackResolved` event. A sequence of otherwise semantic events
-would still impose a canonical before-and-after relationship that the rule
-explicitly denies.
+實作解讀：以一個原子 `AttackResolved` 事件表示完整攻擊結算。即使一系列事件各自有語意，仍會強加規則明確否認的正規先後關係。
 
-Use semantic events that include explicit replayable deltas.
-
-Avoid events that are too vague to replay without recomputing rules:
+使用包含明確可重播變化的語意事件。避免過於模糊、重播時須重新計算規則的事件：
 
 ```rust
 GameEvent::FormationPerformed { formation_id: FormationId }
 ```
 
-Do not add an abstract `FormationUseCompleted` event. Normal completion is the
-next rule-significant fact—`FormationCardsDiscarded` or `PassiveCovered`—and a
-terminal Formation instead ends with `GameEnded`.
+不新增抽象 `FormationUseCompleted` 事件。正常完成由下一個具規則意義的事實表示，即 `FormationCardsDiscarded` 或 `PassiveCovered`；終局陣法則以 `GameEnded` 結束。
 
-Also avoid reducing the whole log to only low-level mutation events with no domain meaning:
+也應避免整份日誌只有沒有領域意義的低層修改事件：
 
 ```rust
 GameEvent::CardMoved { ... }
@@ -1304,7 +1070,7 @@ GameEvent::HpChanged { ... }
 GameEvent::StatusAdded { ... }
 ```
 
-Prefer semantic events with concrete deltas:
+優先使用帶具體變化的語意事件：
 
 ```rust
 GameEvent::AttackResolved {
@@ -1333,45 +1099,19 @@ GameEvent::GameEnded {
 }
 ```
 
-This keeps the log understandable while allowing `apply_event` to mutate state
-directly from recorded facts rather than recomputing rule outcomes. Baseline
-Formation Card movement is represented by `FormationCommitted` and
-`FormationCardsDiscarded`, not duplicated inside each effect event.
+這使日誌容易理解，並允許 `apply_event` 直接從記錄事實修改狀態，而非重新計算規則結果。陣法牌基本移動由 `FormationCommitted` 及 `FormationCardsDiscarded` 表示，不在每個效果事件內重複。
 
-`AttackDamageResolution` contains every HP and Shield consequence of the
-Attack's damage, including split or reflected shares. `ResolvedAttackEffects`
-contains every replayable delta belonging to attached effects at the same
-timing, including additional Team HP or Shield changes, Status application,
-Card or Environment changes, or Turn Draw bonuses as applicable. Applying
-`AttackResolved` applies its complete `AttackResolution` atomically.
+`AttackDamageResolution` 包含攻擊傷害造成的所有生命值及防護罩結果，包括分攤或反彈份額。`ResolvedAttackEffects` 包含相同時點附帶效果的所有可重播變化，包括適用時額外隊伍生命值或防護罩變化、狀態施加、牌或環境變化，及回合抽牌加成。套用 `AttackResolved` 時原子套用完整 `AttackResolution`。
 
-Field layout and any collections inside `AttackResolution` use a stable
-canonical serialization order only. Their position never represents a rule
-processing order.
+`AttackResolution` 的欄位排列及其中集合只使用穩定正規序列化順序，位置絕不代表規則處理順序。
 
-Do not emit separate `HpChanged`, `ShieldChanged`, `StatusAdded`, `CardsMoved`,
-or module-specific effect events for consequences that belong to the same
-Attack Resolution. Such events remain valid for non-Attack sources and for
-Attack effects whose rules explicitly specify another timing.
+屬於同次攻擊結算的結果不得分別發出 `HpChanged`、`ShieldChanged`、`StatusAdded`、`CardsMoved` 或模組專屬效果事件。這些事件仍可用於非攻擊來源及規則明確指定其他時點的攻擊效果。
 
-When an attached effect requires Player input, record its Pending Choice and
-continuation first without applying damage or another simultaneous consequence.
-After the final answer, emit the complete `AttackResolved` event. Game Outcome
-evaluation follows that event, so a lethal damage delta never suppresses
-another consequence in the same Attack Resolution.
+附帶效果需要玩家輸入時，先記錄其待選擇事項及續接，不套用傷害或其他同時結果。最後答案後才發出完整 `AttackResolved`；其後判定遊戲結果，因此致命傷害變化不會抑制同次攻擊結算的其他結果。
 
-This changes a persisted event contract. Implementation requires an explicit
-record migration that folds legacy same-timing Attack consequence events into
-the corresponding `AttackResolved`; snapshots may then be rebuilt.
+`TurnDrawResolved` 明確記錄所選棄牌及所有保留牌。套用此單一事件時，先將棄牌從回合抽牌區移至適用來源棄牌堆，再將保留牌移入手牌；中間不存在正規狀態。
 
-`TurnDrawResolved` explicitly records both the chosen discard and all kept
-Cards. Applying that one event moves the discard from the Turn Draw Pool to its
-applicable origin Discard Pile before moving the kept Cards from the Pool to
-hand; there is no canonical intermediate state.
-
-A single command or automatic advancement may emit multiple semantic events.
-
-Example attack resolution may emit:
+單一命令或自動推進可發出多個語意事件。例如攻擊結算可能發出：
 
 ```rust
 GameEvent::FormationCommitted { ... }
@@ -1381,13 +1121,11 @@ GameEvent::FormationCardsDiscarded { ... }
 GameEvent::CardsDrawnForTurnDiscardChoice { ... }
 ```
 
-If `AttackResolved` produces a terminal conclusion, the sequence emits
-`GameEnded { conclusion }` immediately after it and stops; it does not emit
-`FormationCardsDiscarded`, `CardsDrawnForTurnDiscardChoice`, or any later event.
+`AttackResolved` 產生終局結論時，序列緊接著發出 `GameEnded { conclusion }` 並停止，不發出 `FormationCardsDiscarded`、`CardsDrawnForTurnDiscardChoice` 或其他後續事件。
 
-Do not force all results into one large `CommandResolved` event. Event boundaries should follow meaningful domain moments, especially where resolution can pause for a pending choice.
+不強制將所有結果放進一個大型 `CommandResolved` 事件。事件邊界應遵循有意義的領域時刻，尤其是結算可能因待選擇事項暫停之處。
 
-Wrap domain events in recorded-event metadata:
+以已記錄事件中繼資料包裝領域事件：
 
 ```rust
 struct RecordedEvent {
@@ -1403,17 +1141,15 @@ enum EventSource {
 }
 ```
 
-`GameEvent` remains focused on domain facts. `RecordedEvent` carries ordering and source metadata for debugging, UI acknowledgement, networking, and audit.
+`GameEvent` 持續聚焦領域事實；`RecordedEvent` 攜帶供除錯、介面確認、網路及稽核使用的順序與來源中繼資料。
 
-Replay relies on `sequence` and `event`, not on `command_id`.
+重播依賴 `sequence` 與 `event`，不依賴 `command_id`。不在 `GameRecord` 中持久化獨立命令日誌。
 
-Do not persist a separate command log in `GameRecord`.
-
-`RecordedEvent.source` is enough to correlate accepted commands with their emitted events. Validation failures are API errors and are not part of the canonical game record.
+`RecordedEvent.source` 足以關聯已接受命令及其發出的事件。驗證失敗是 API 錯誤，不屬於正規遊戲紀錄。
 
 ### 35. Error Taxonomy
 
-Use three command error layers:
+使用三個命令錯誤層：
 
 ```rust
 enum CommandError {
@@ -1423,30 +1159,26 @@ enum CommandError {
 }
 ```
 
-Meanings:
+意義：
 
-- `Validation`: player command is illegal and can be shown to UI
-- `RuleImplementation`: rules module or effect implementation is incomplete/incorrect
-- `EngineInvariant`: an impossible state or invariant violation was reached
+- `Validation`：玩家命令不合法，可向介面顯示；
+- `RuleImplementation`：規則模組或效果實作不完整／錯誤；
+- `EngineInvariant`：到達不可能狀態或違反不變條件。
 
-Examples of `EngineInvariant`:
+`EngineInvariant` 範例：
 
-- Deck plus its applicable Discard Pile cannot satisfy a required draw
-- duplicate pending choice
-- duplicate covered passive in a state where turn flow should have prevented it
-- zone ownership inconsistency
+- 牌堆加適用棄牌堆不足以滿足必要抽牌；
+- 重複待選擇事項；
+- 回合流程本應阻止重複蓋牌的狀態下出現重複蓋牌；
+- 區域擁有權不一致。
 
-Command and automatic advancement errors are atomic.
+命令及自動推進錯誤均為原子。`decide` 因任何 `CommandError` 失敗時，不發出事件，也不修改狀態。
 
-If `decide` fails with any `CommandError`, no events are emitted and no state is mutated.
+`handle_command` 只在完整事件清單成功決定後才套用事件。
 
-`handle_command` applies events only after the full event list has been successfully decided.
+`apply_event` 是正規事件上的純投影，信任事件日誌，不重新執行遊戲驗證或不變條件檢查。驗證及不變條件檢查在事件記錄前或明確驗證工具中進行。
 
-`apply_event` is a pure projection over canonical events. It trusts the event log and does not rerun gameplay validation or invariant checks.
-
-Validation and invariant checks happen before events are recorded, or in explicit verification tooling.
-
-Because `apply_event` trusts canonical events, it should be infallible:
+由於 `apply_event` 信任正規事件，應為不可失敗：
 
 ```rust
 fn apply_event(state: &mut GameState, event: &GameEvent);
@@ -1454,1161 +1186,382 @@ fn apply_event(state: &mut GameState, event: &GameEvent);
 
 ### 36. Five Directions Legend Rule Module
 
-Implement the official
-[Five Directions Legend rules](https://www.cfecards.org/rule/latest/field) as
-one independently configurable Advanced Rule Module. Enabling the module adds
-all five Sacred Beasts, one shared Environment, and Void Meridian-Severing
-Technique; none of those features has a separate toggle.
+將官方[五方傳說規則](https://www.cfecards.org/rule/latest/field)實作為一個可獨立設定的進階規則模組。啟用後加入全部五方聖獸、一個共享環境及虛空斷脈術；這些功能均沒有獨立開關。
 
-The Environment is absent at game start and holds at most one `Element`.
-`EnvironmentTransferred` is a semantic canonical event emitted after every
-Sacred Beast attack resolves, including a transfer whose previous and resulting
-elements are equal. The attack uses the previously existing Environment. A
-lethal attack still completes its Environment Transfer before the Formation Use
-and Game Outcome are finalized.
+遊戲開始時沒有環境，環境至多持有一個 `Element`。每次聖獸攻擊結算後均發出具語意的正規 `EnvironmentTransferred` 事件，包括轉移前後屬性相同時。攻擊使用先前存在的環境；致命攻擊在陣法施展與遊戲結果最終確定前，仍須完成環境轉移。
 
-Each Sacred Beast is an 81-point elemental Attack made from five Cards of its
-element:
+每個聖獸均為五張同屬性牌組成、81 點的五行攻擊：
 
-- East Azure Dragon: Wood
-- West White Tiger: Metal
-- South Vermilion Bird: Fire
-- North Black Tortoise: Water
-- Center Yellow Serpent: Earth
+- 東‧青龍：木；
+- 西‧白虎：金；
+- 南‧朱雀：火；
+- 北‧玄武：水；
+- 中‧黃蛇：土。
 
-A Sacred Beast ignores Formation effects. Covered Passives and public Counter
-Effects still trigger and are consumed at their normal timing, but resolve with
-`NoEffect` against it. General Shield rules still apply because a Shield is a
-separate game element rather than an incoming Formation effect.
+聖獸不受陣法效果影響。蓋牌及公開反制效果仍在正常時點觸發並消耗，但對其結算為 `NoEffect`。一般防護罩規則仍適用，因為防護罩是獨立遊戲要素，而非傳入陣法效果。
 
-Environment Effects apply to all Players:
+環境效果適用於所有玩家：
 
-- damage matching the Environment's element is doubled and stacks with
-  five-element interaction
-- damage whose element generates the Environment's element becomes HP recovery
-- simultaneous overcoming doubles that recovery, while same-element
-  interaction halves it and rounds up
-- the Attack breakdown records the Environment Effect separately from
-  `ElementInteraction` and the final amount
+- 傷害屬性與環境相同時傷害加倍，並與五行生剋疊加；
+- 傷害屬性生環境屬性時轉為回復生命；
+- 同時相剋使該回復加倍，相抵則使其減半並無條件進位；
+- 攻擊明細分別記錄環境效果、`ElementInteraction` 及最終數值。
 
-A Shield receives an incoming Attack before its owner. Five-element interaction
-does not apply while the Shield receives the Attack. An Environment Effect that
-would convert damage into HP recovery therefore does not apply because a Shield
-has no HP, while same-Environment damage doubling still changes the damage
-received by the Shield.
+防護罩先於擁有者承受傳入攻擊；由防護罩承受時不適用五行生剋。由於防護罩沒有生命值，將傷害轉為回復生命的環境效果因此不適用；但同屬性環境加倍仍改變防護罩承受的傷害。
 
-Each Environment makes two named Formations ineffective:
+每種環境使兩個具名陣法無效：
 
-- Metal: Defense and Barrier
-- Wood: Metamorphosis and Chaos
-- Water: Countershock and Shock Burst
-- Fire: Weapon and Radiance
-- Earth: Seal and Return to Origin
+- 金：防禦及氣壁；
+- 木：幻化及混沌；
+- 水：反震及震暴；
+- 火：武器及光芒；
+- 土：封印及歸元。
 
-An ineffective Formation remains legal to perform, consumes the action
-opportunity, and follows its normal Card movement procedure, but its effect
-resolves with `NoEffect`. Attacks and Active Spells emit
-`FormationEffectIgnored` with the current Environment as the reason; Covered
-Passives retain the ineffectiveness established when performed and report it
-in their later flip outcome, rather than reevaluating a changed Environment.
-See section 45 for the confirmed timing and current implementation gap.
-Invalidation checks the
-performed Formation's identity, not an effect copied by Metamorphosis. Existing
-persistent state is not removed; for example, an ineffective Barrier does not
-replace or clear an existing Shield.
+無效陣法仍可合法施展、消耗行動機會並遵循正常牌移動程序，但效果結算為 `NoEffect`。攻擊及主動術式以目前環境為原因發出 `FormationEffectIgnored`；蓋牌保留施展時確立的無效狀態，並在日後翻開結果中回報，不重新判定已改變的環境。已確認時點及目前實作缺口見第 45 節。無效判定檢查實際施展陣法身分，不檢查幻化複製的效果。既有持續狀態不被移除；例如無效氣壁不取代或清除現有防護罩。
 
-Void Meridian-Severing Technique is an Active Spell formed from three same-level
-Cards. With no Environment it performs normally but does not change HP. When an
-Environment exists and the Spell is not otherwise made ineffective, it clears
-that Environment and changes each Team's HP by -20 exactly once, regardless of
-Player count. Shield values are irrelevant. Record the Environment Clearing and
-all Team HP deltas in one `EnvironmentCleared` event, apply every delta, and
-only then evaluate the Game Outcome so simultaneous defeat produces a Draw.
+虛空斷脈術是三張同級牌組成的主動術式。沒有環境時正常施展但不改變生命值。有環境且術式未因其他原因無效時，破除該環境並使每隊生命值恰好減少 20，與玩家人數無關；防護罩數值不影響。以一個 `EnvironmentCleared` 事件記錄破除環境及所有隊伍生命值變化，套用全部變化後才判定遊戲結果，使同時敗北成為平局。
 
-Official setup HP follows the current rulebook instead of the previous
-20-point placeholder:
+官方設定生命值遵循目前規則書，不使用先前 20 點佔位值：
 
-- Base-only two-player and four-player games use 100 and 150 Team HP
-  respectively
-- games with an Advanced Rule Module use 200 and 250 Team HP respectively
+- 僅基礎規則的雙人及四人遊戲，隊伍生命值分別為 100 及 150；
+- 使用進階規則模組的遊戲，分別為 200 及 250。
 
-The module configuration, current Environment, canonical events, attack
-breakdowns, and Game Outcome must replay deterministically and project through
-Public State View, Public Event Feed, Web DTOs, and the online battlefield.
+模組設定、目前環境、正規事件、攻擊明細及遊戲結果必須確定性重播，並投影至公開狀態視圖、公開事件動態、Web DTO 及線上戰場。
 
 ### 37. Hero Schools Rule Module
 
-Implement the official
-[Hero Schools rules](https://www.cfecards.org/rule/latest/hero) as one
-independently configurable Advanced Rule Module, including all Professions,
-Profession Abilities, Profession Formations, Profession Changes, and Void
-Reversion Technique. New official games enable the complete module by default; the Web
-room configuration exposes only one Hero Schools toggle.
+將官方[英雄學派規則](https://www.cfecards.org/rule/latest/hero)實作為一個可獨立設定的進階規則模組，包含所有職業、職業能力、職業陣法、轉職及虛空返璞術。新官方遊戲預設啟用完整模組；Web 房間設定只提供一個英雄學派開關。
 
-Every Player starts without a Profession. A Profession is acquired only through
-a successful Profession Change, including First Wanderer.
+每位玩家開始時沒有職業。包括初行客在內，職業只能透過成功轉職取得。
 
-Profession Change is a distinct Action Command rather than a Formation Use. It
-validates the declared Profession, prerequisite Profession, and submitted Card
-Instances; then it enters `Action` and processes the Previous Player's Covered
-Passive. The selected Cards remain canonically in hand during that preceding
-passive handling. If the change proceeds, one semantic `ProfessionChanged`
-event atomically records both the new Profession and direct movement of those
-Cards from hand to their applicable origin Discard Pile or Piles. There is no
-temporary Profession-Change Card zone. The command consumes the current
-Player's Action. Do not represent Profession Change as `PerformFormation` or
-confuse it with Metamorphosis.
+轉職是獨立行動命令，不是陣法施展。它驗證宣告職業、先決職業及提交實體牌，接著進入 `Action` 並處理上家蓋牌。處理先前蓋牌期間，所選牌在正規狀態中仍留在手牌。轉職繼續時，一個語意 `ProfessionChanged` 事件以原子方式同時記錄新職業，並將這些牌直接從手牌移至適用來源棄牌堆；沒有暫存轉職牌區。命令消耗目前玩家行動。不得將轉職表示為 `PerformFormation`，也不得與幻化混淆。
 
-Game State stores only each Player's current `ProfessionId`, or no Profession,
-rather than copying the Profession's effective abilities into state.
-`ProfessionChanged` records the previous and resulting Profession identities.
-The official Profession catalog derives effective abilities through explicit
-inheritance links for the five Schools. Immortal and Saint have no inheritance
-link, so changing to either removes the previous Profession's abilities.
+遊戲狀態只儲存每位玩家目前的 `ProfessionId` 或無職業，不複製職業有效能力。`ProfessionChanged` 記錄前後職業身分。官方職業目錄透過五大學派明確繼承連結推導有效能力；仙者及聖者沒有繼承連結，轉為任一職業時移除前一職業能力。
 
-All Activated Profession Abilities use one
-`ActivateProfessionAbility` Active-Effect Command and one shared allowance per
-Player turn. A successful activation consumes that allowance without consuming
-the action opportunity. Validation failure consumes neither. Profession Change
-does not reset the allowance, so acquiring a different Activated Profession
-Ability during the same turn never permits a second activation.
+所有職業發動能力使用同一個 `ActivateProfessionAbility` 主動效果命令，以及每位玩家回合共用的一次發動次數。成功發動消耗次數但不消耗行動機會；驗證失敗兩者均不消耗。轉職不重設次數，因此同回合取得不同發動能力絕不允許第二次發動。
 
-`rules::profession::activated` is the single lifecycle owner for these
-Commands. Its Base-facing interface has only offer generation and activation.
-It resolves the external string ID once into one nested closed enum, delegates
-to statically dispatched Hero Schools, Jianghu, Confluence Generation, or Dark
-Glimmer providers, and rejects unknown IDs without prefix fallback or runtime
-registration. The shared module validates the effective Profession Ability
-Set, Temporary Ability Loss, the shared turn allowance, and a private validated
-Action Card Selection in that order.
+`rules::profession::activated` 是這些命令的單一生命週期擁有者，對基礎規則的介面只有選項產生與發動。它將外部字串 ID 解析一次為巢狀封閉 enum，委派給靜態分派的英雄學派、江湖、匯流世代或黑暗微光提供者；未知 ID 直接拒絕，不使用前綴遞補或執行期註冊。共用模組依序驗證有效職業能力集合、暫時失去能力、共用回合次數，以及私有且已驗證的行動選牌。
 
-Each provider returns an offer plan with one completion contract and declarative
-player-facing metadata. The same offer authority is rebuilt for Command
-validation. Target Card, declared element, and declared level must each be
-absent, equal to the offered fixed value, or belong to the offered required
-values exactly; unrelated fields and fallback omissions are Validation
-Failures. Dark Spirit therefore accepts only the selected Card's offered
-effective element and cannot change that element through a direct Command.
+各提供者回傳包含一個完成契約及宣告式玩家中繼資料的選項計畫；命令驗證重新建立相同選項權威。目標牌、宣告屬性及宣告等級各自必須不存在、等於選項固定值，或恰屬提供的必要值；無關欄位及遞補式省略均為驗證失敗。因此暗靈只接受所選牌提供的有效屬性，不能透過直接命令改變該屬性。
 
-Effect planning uses one scratch projection. The common builder records exactly
-one `ProfessionAbilityActivated` event first, then ordered provider
-consequences, then at most one final Choice or Randomness continuation whose
-medium matches its `PendingResolution`. Providers cannot record the activation
-event themselves. This permits a cost to enter its origin Discard Pile before
-Deck Supply is planned. Revelation and Azure Cloud Step therefore include the
-just-Discarded cost Card in a required Discard Shuffle.
+效果規劃使用單一暫用投影。共用建構器先恰好記錄一個 `ProfessionAbilityActivated` 事件，再依序記錄提供者結果，最後至多有一個媒介符合其 `PendingResolution` 的選擇或隨機性續接。提供者不能自行記錄發動事件。這使代價可在規劃牌堆供給前進入來源棄牌堆；因此啟示及青雲步會將剛捨棄的代價牌納入必要洗棄牌。
 
-Azure Cloud Step uses two typed continuations. An insufficient Deck waits on
-the Randomness-only `JianghuAzureCloudStepDraw`; after the Discard Shuffle it
-draws two Cards and creates the existing Choice-only
-`JianghuAzureCloudStepReturnOne`. Do not migrate or reinterpret an older invalid
-record that used the Choice resolution as its Randomness resolution.
+青雲步使用兩個具型別續接。牌堆不足時等待僅隨機性的 `JianghuAzureCloudStepDraw`；洗棄牌後抽兩張牌，並建立既有僅選擇的 `JianghuAzureCloudStepReturnOne`。
 
-Formation Proficiencies add Player-scoped alternative matchers to an existing
-Formation. They do not register duplicate Formations or replace the original
-Formation definition. A Formation Use matched through a Proficiency retains the
-original Formation identity, category, effect, point formula, card movement,
-and canonical event semantics. The alternative matcher is available only while
-the performing Player's current Profession grants it; Public Formation queries
-may label the matching Proficiency as presentation metadata.
+專精能力為現有陣法增加玩家範圍的替代匹配器，不註冊重複陣法，也不取代原陣法定義。透過專精匹配的陣法施展保留原陣法身分、類別、效果、點數公式、牌移動及正規事件語意。只有施展玩家目前職業授予該匹配器時才可用；公開陣法查詢可將匹配專精標作呈現中繼資料。
 
-Formation matching returns distinct `FormationMatchOption` values whenever the
-same submitted Card Instances have multiple legal role assignments that change
-the result. `PerformFormation` must declare one of those options rather than
-letting the engine maximize or otherwise choose an outcome. The accepted
-Formation event records the resolved role binding and calculation. Formation
-queries expose the legal options and result previews; a single unambiguous
-option requires no additional Web interaction.
+同一組提交實體牌若有多種合法角色分配且會改變結果，陣法匹配回傳不同 `FormationMatchOption`。`PerformFormation` 必須宣告其中一個選項，不讓引擎最大化或自行選擇結果。已接受陣法事件記錄結算後角色綁定與計算；查詢公開合法選項及結果預覽。只有一個無歧義選項時不需額外 Web 互動。
 
-Void Reversion Technique resolves as one atomic semantic
-`VoidReversionResolved` event. It records the performing Player's Team HP delta
-of -20, every Profession actually broken, every Legendary Profession retained
-because the Cards were below level three, and the Formation's Card movement.
-Apply all deltas before evaluating the Game Outcome. Reaching zero HP from the
-cost does not stop Profession Breaking or expose an intermediate state.
+虛空返璞術以一個原子語意 `VoidReversionResolved` 事件結算，記錄施展玩家隊伍生命值減少 20、所有實際被破除職業、因用牌低於三級而保留的傳說職業，以及陣法牌移動。判定遊戲結果前套用所有變化；代價使生命值歸零不會中止破除職業或暴露中間狀態。
 
-Automatic Profession Abilities and Formation Proficiencies integrate through
-typed Rule Module hooks at explicit rule stages. Hooks may extend
-Formation matching, modify costs or Attack calculation, determine immunity,
-modify Counter Effect applicability, or return post-Formation intents. They
-return declarative values for the shared pipeline and never mutate Game State
-or emit Game Events directly. Do not encode Profession Abilities as generic
-Status Effects or scatter Profession identity checks through Base resolvers.
-Activated Profession Ability providers instead return effect plans for a new
-Player-selected Active Effect; they are not stage hooks and do not bypass the
-shared activation lifecycle.
+普通能力及專精能力透過明確規則階段的具型別模組鉤子整合。鉤子可擴充陣法匹配、修改代價或攻擊計算、判定免疫、修改反制效果適用性或回傳陣法後意圖；它們為共用流程回傳宣告值，不直接修改遊戲狀態或發出事件。不得將職業能力編碼為一般狀態效果，也不得在基礎解析器中散布職業身分檢查。發動能力提供者則為玩家新選擇的主動效果回傳效果計畫；它們不是階段鉤子，也不繞過共用發動生命週期。
 
-Cross-module Attack resolution uses one explicit stage order:
+跨模組攻擊結算使用明確階段順序：
 
-1. Apply legal Card interpretations and select a Formation Match Option.
-2. Compute Attack Points, including Profession point modifiers.
-3. Evaluate Attack-Point qualifications such as Windwalking and Star Summoning.
-4. Resolve applicable Counter Effects.
-5. Apply five-element interaction, Environment Effects, and Shields to obtain
-   the final damage or recovery result.
-6. Resolve post-Formation Profession intents.
+1. 套用合法牌解讀並選擇陣法匹配選項。
+2. 計算攻擊點數，包括職業點數修正。
+3. 判定風行術及召喚星辰等攻擊點數資格。
+4. 結算適用反制效果。
+5. 套用五行生剋、環境效果及防護罩，得到最終傷害或回復結果。
+6. 結算陣法後職業意圖。
 
-Windwalking's 15-point threshold therefore reads Attack Points before
-Environment damage modification. Canonical Attack events record Attack Points
-separately from the final result.
+因此風行術 15 點門檻讀取環境傷害修正前的攻擊點數。正規攻擊事件分別記錄攻擊點數與最終結果。
 
-Physical-Card preparations and virtual Formation components use different
-domain concepts. Blazing Yang Art and Dark Spirit create a serializable
-physical Card Interpretation for one Card Instance. Illusion and Phantasm
-instead discard two physical Cards and create a `VirtualFormationCard` with a
-fixed source ability, element, and level; neither ability targets or
-reinterprets a third Card Instance.
+實體牌準備與虛擬陣法組件是不同領域概念。烈陽訣與暗靈為一張實體牌建立可序列化的實體牌解讀；幻術與幻朧則捨棄兩張實體牌，建立來源能力、屬性及等級固定的 `VirtualFormationCard`，不指定或重新解讀第三張實體牌。
 
-The physical preparation's ability identity and interpreted facts are public,
-while its target Card Instance remains visible only to its owner until ordinary
-Card movement makes it public. Illusion and Phantasm cost Cards are ordinary
-public Discards, and the created virtual element and level are public as soon as
-the ability resolves.
+實體準備的能力身分及解讀後事實公開，但目標實體牌在正常牌移動使其公開前只對擁有者可見。幻術與幻朧的代價牌是一般公開棄牌；產生的虛擬屬性及等級在能力結算後立即公開。
 
-The Virtual Formation Card is public immediately, belongs to no Card zone, and
-has no Card Instance or Card Origin. Card Interpretation Layers, Pouch bonuses,
-and Star Element Substitution apply only to physical Card Instances and cannot
-change the virtual component. Formation matching, preview calculation, point
-formulas, effect resolution, and rules that count Formation components consume
-one resolved `FormationComposition`; Card movement, hand size, covering, and
-effects requiring a Card Instance consume only its physical Cards.
+虛擬牌立即公開、不屬於任何牌區域，且沒有實體牌或牌來源。牌解讀層、錦囊加成及星辰變牌只適用實體牌，不能改變虛擬組件。陣法匹配、預覽計算、點數公式、效果結算及計算陣法組件的規則，均使用同一個已結算 `FormationComposition`；牌移動、手牌數、覆蓋及要求實體牌的效果只使用其中實體牌。
 
-Illusion creates a `FormationRequirement` whose only allowed completion is the
-corresponding Base Ruleset five-element strike. Phantasm creates the same kind
-of requirement but permits any Base Ruleset Formation; a one-component
-five-element strike means every legal element-and-level declaration has a
-completion path. The server automatically adds the virtual component only for
-Formation queries and submissions. The Player's selected Card set remains
-physical, so non-action-ending Spirit Skills and other abilities do not treat
-the virtual component as selected.
+幻術建立 `FormationRequirement`，唯一允許的完成方式是對應基礎規則五行擊術。幻朧建立相同種類要求，但允許任意基礎規則陣法；單組件五行擊術使每個合法屬性及等級宣告均有完成路徑。伺服器只在陣法查詢與提交時自動加入虛擬組件。玩家選牌集合仍是實體牌，因此不結束行動的精靈技能及其他能力不會將虛擬組件視為已選牌。
 
-Before activation, a playable-action query exposes one Illusion or Phantasm
-offer with a typed Action Input Requirement containing the legal Virtual
-Formation Card elements and levels. It does not enumerate one complete offer
-per element-and-level pair. Selecting those inputs remains pre-commit browser
-state; only an accepted `ActivateProfessionAbility` command creates the Virtual
-Formation Card, consumes the activation allowance, and establishes the
-Formation Requirement. This pre-commit input is not a Pending Choice and does
-not survive reconnect.
+發動前，可執行行動查詢對幻術或幻朧各公開一個選項，附帶包含合法虛擬牌屬性及等級的具型別行動輸入要求，不為每個屬性／等級組合枚舉完整選項。選擇這些輸入仍是提交前瀏覽器狀態；只有已接受的 `ActivateProfessionAbility` 命令才建立虛擬牌、消耗發動次數並確立陣法要求。此提交前輸入不是待選擇事項，也不在重新連線後保留。
 
-Dark Spirit creates both a physical level interpretation and a Formation
-Requirement for its selected Card. It may declare level one or two only when
-that value lowers the Card's current effective level, and the server
-automatically includes the required Card once in Formation queries and
-submissions. Pass, Profession Change, and Formations that cannot satisfy an
-active Formation Requirement are illegal. Non-action-ending effects may occur
-first only while they preserve a completion path. An invalid submission leaves
-the requirement active; an accepted allowed Formation fulfills it even when
-the Formation is later cancelled, prevented, sealed, or ineffective.
+暗靈為所選牌同時建立實體等級解讀與陣法要求。只有一級或二級值低於該牌目前有效等級時才能宣告；伺服器在陣法查詢及提交中自動將必要牌恰好納入一次。略過、轉職及無法滿足有效陣法要求的陣法均不合法。不結束行動的效果只有在保留完成路徑時才能先發生。無效提交使要求繼續有效；已接受的允許陣法即使之後被取消、防止、封印或無效，仍滿足要求。
 
-Blazing Yang Art raises its selected Wood or Fire Card by two, capped at five,
-without creating a Formation Requirement. If the Player uses that Card during
-the turn, its raised level is the only level available, it may participate only
-in a Base Ruleset Formation, and it may not be used for Profession Change or a
-Formation from another Rule Module. The Player may instead take an action that
-does not use the prepared Card.
+烈陽訣將所選木或火牌提高兩級，上限五級，不建立陣法要求。玩家該回合若使用該牌，提高後等級是唯一可用等級；它只能參與基礎規則陣法，不能用於轉職或其他規則模組陣法。玩家也可選擇不使用準備牌的行動。
 
-Physical Card Interpretation Layers compose by dimension and effect order.
-Pouch, Fire Spirit, Blazing Yang Art, Dark Spirit, and Star effects therefore
-resolve one effective element and level for each physical component. Formation
-matching does not create separate printed and prepared candidates, and accepted
-Formation resolution does not fall back to printed or globally cached Card
-facts. The canonical Formation Requirement completion records the full
-Formation Composition so replay and audit do not infer virtual facts from an
-earlier activation event.
+實體牌解讀層依維度及效果順序組合。因此錦囊、火精靈、烈陽訣、暗靈及星辰效果為每個實體組件解析單一有效屬性與等級。陣法匹配不建立分離的牌面與準備候選；已接受陣法結算不遞補使用牌面或全域快取牌資訊。正規陣法要求完成事件記錄完整陣法組成，使重播及稽核不從先前發動事件推測虛擬事實。
 
-The Web does not fabricate a Card presentation, status badge, or Formation-name
-annotation for a Virtual Formation Card. The public event feed records its
-creation and requirement completion. When Phantasm covers a Passive Spell, the
-Formation identity and physical Cards retain the existing Covered Passive
-redaction, while the already-public virtual facts remain public.
+Web 不為虛擬牌虛構牌面呈現、狀態徽章或陣法名稱註記。公開事件動態記錄其建立及要求完成。幻朧覆蓋被動術式時，陣法身分及實體牌保留既有蓋牌遮蔽，而已公開虛擬事實仍公開。
 
-Formation matching distinguishes physical Card Instances from match slots.
-Sacred Art may expand one physical Card Instance into two slots for Formation
-matching, but Card movement and ordinary level-sum point formulas count that
-Card Instance only once. A `FormationMatchOption` records both slots as
-originating from the same Card Instance. The Web presents this only as a `×2`
-match annotation and keeps discard count and point previews based on the
-physical Card.
+陣法匹配區分實體牌與匹配位置。聖術可將一張實體牌展開成兩個陣法匹配位置，但牌移動與一般等級總和公式只計算該牌一次。`FormationMatchOption` 將兩個位置都記錄為源自同一實體牌。Web 只以 `×2` 匹配註記呈現，棄牌數及點數預覽仍依實體牌計算。
 
-Sacred Art multiplicity is applied after resolving physical Card Interpretation
-Layers. It is not another element or level transformation, and it remains
-incompatible with Star Element Substitution. Its duplicate match slots share
-one physical Card's effective facts, while Card movement and ordinary physical
-Card counts still include that Card Instance only once.
+聖術視為兩張在實體牌解讀層解析後套用，不是另一種屬性或等級轉換，且仍不相容星辰變牌。重複匹配位置共用同一實體牌的有效事實；牌移動及一般實體牌數仍只計一次。
 
-The normal Web interaction remains Card-selection first. The existing playable
-Formation query deepens into a playable-Action query that returns both
-Formation candidates and Profession Change candidates matching the exact
-selected Card Instances; it does not enumerate every possible hand combination
-or choose Cards for the Player. A separate teaching-mode projection may show
-the full Profession progression graph, requirements, and ability changes.
+正常 Web 互動仍先選牌。既有可施展陣法查詢深化為可執行行動查詢，同時回傳恰好匹配所選實體牌的陣法及轉職候選；它不枚舉所有可能手牌組合，也不替玩家選牌。獨立教學模式投影可顯示完整職業進階圖、條件及能力變化。
 
-The battlefield's context-sensitive Formation control surface keeps **Ability**
-and **Action** distinguishable. The **Ability** group contains Active-Effect
-Commands and states that they do not enter `Action`. The **Action** group contains
-Formation Uses, Profession Changes, and Pass Action, and states that choosing
-one enters `Action`. The presentation follows the
-[battlefield UI design](../apps/web/docs/ui-battlefield-design.md), replacing the earlier
-requirement for two permanently stacked panels at every viewport size.
-Do not add a separate Profession panel. Automatic
-Profession Abilities and Formation Proficiencies appear through legal options
-and their explanations rather than as controls.
+戰場依情境調整的陣法控制介面保持**能力**與**行動**可區分。**能力**群組包含主動效果命令並說明它們不進入 `Action`；**行動**群組包含陣法施展、轉職及行動略過，並說明選擇後進入 `Action`。呈現遵循[戰場介面設計](../apps/web/docs/ui-battlefield-design.md)，取代先前要求所有視窗尺寸永久垂直堆疊兩個面板的要求。不新增獨立職業面板。普通能力及專精能力透過合法選項與說明呈現，不作為控制。
 
-Each Player seat with a current Profession shows a public Profession badge.
-Selecting the badge opens a read-only summary of that Player's effective
-abilities; activation controls remain in the central Ability panel. A Player
-without a Profession shows no badge.
+目前有職業的每個玩家席位顯示公開職業徽章。選取徽章開啟該玩家有效能力的唯讀摘要；發動控制仍位於中央能力面板。沒有職業的玩家不顯示徽章。
 
-Deploying Hero Schools does not rewrite existing room module configuration.
-Existing waiting rooms and active games lack the Hero Schools module ID and
-remain Hero-disabled and replay-compatible. Newly created rooms enable the
-module by default. A waiting-room owner may enable it explicitly, which uses the
-existing Rule Module change behavior to invalidate readiness and locked setup
-inputs.
+英雄學派可依房間所選規則版本及模組設定啟用。等待室房主變更規則模組時，準備狀態及鎖定設定輸入失效。
 
-Hero Schools may be implemented internally in vertical slices: shared
-Profession foundations; one slice for each of the five Schools; Unaffiliated
-Professions plus Void Reversion Technique; then cross-module, Web, teaching,
-and E2E integration. The incomplete module is not added to the available
-official catalog. Only the complete set of 18 Professions and end-to-end
-behavior ships behind the single Hero Schools room toggle.
+英雄學派可在內部分垂直切片實作：共用職業基礎、五個學派各一切片、無學派職業加虛空返璞術，最後進行跨模組、Web、教學及 E2E 整合。未完成模組不加入可用官方目錄；只有完整 18 個職業及端到端行為才透過單一英雄學派房間開關發布。
 
-Validation combines exhaustive rule cases with bounded integration coverage:
+驗證結合窮舉規則案例與有界整合覆蓋：
 
-- Rust conformance tests cover every Profession transition, inherited ability,
-  Automatic Profession Ability, Formation Proficiency, Activated Profession
-  Ability, and Profession Formation.
-- Pairwise integration tests combine Hero Schools separately with Star, Five
-  Directions Legend, Discard Retrieval, and Personal Deck.
-- At least one two-Player and one four-Player browser flow run with every
-  available module enabled.
-- Base-only and Hero-disabled suites remain regression gates.
+- Rust 符合性測試涵蓋所有轉職、繼承能力、普通能力、專精能力、發動能力及職業陣法。
+- 兩兩整合測試分別結合英雄學派與星辰圖記、五方傳說、棄牌回收及個人牌組。
+- 至少一個雙人及一個四人瀏覽器流程啟用所有可用模組。
+- 僅基礎規則及停用英雄學派套件維持回歸閘門。
 
-Do not require the complete Cartesian product of all Rule Module
-configurations.
+不要求所有規則模組設定的完整笛卡兒積。
 
-Hero Schools conformance is pinned to the official 5.16 rules retrieved on
-2026-07-01. The linked official pages remain source references, but changes to
-their mutable `latest` content do not alter this implementation's acceptance
-criteria mid-delivery. A later official revision requires separate rule-upgrade
-work; this change does not introduce a general Rule Module versioning system.
+英雄學派符合性固定於 2026-07-01 取得的官方 5.16 規則。所連官方頁面仍為來源參考，但其可變 `latest` 內容變更不會在交付中途改變本實作驗收條件。後續官方修訂需要獨立規則升級工作；本變更不引入通用規則模組版本系統。
 
 ### 38. Official 5.16 Advanced-Rule Source Reconciliation
 
-On 2026-07-01, all three official Advanced Rule Web pages and all six Hero
-School subpages were compared with printed pages 13-24 of the
-[official 5.16 complete rulebook](https://www.dropbox.com/scl/fi/4cigz3t61p07l5tkgvjyl/5.16.pdf?dl=0&rlkey=m2zx1x5dwb6cw7llyy8wt9xiy&st=mqligrpj).
-The Web pages remain the normal readable source. The following PDF-only details
-are normative supplements because they change matching, timing, or resolution;
-differences that merely restate a rule or add a non-distinguishing example are
-not listed.
+2026-07-01 已將三個官方進階規則網頁及六個英雄學派子頁，與[官方 5.16 完整規則書](https://www.dropbox.com/scl/fi/4cigz3t61p07l5tkgvjyl/5.16.pdf?dl=0&rlkey=m2zx1x5dwb6cw7llyy8wt9xiy&st=mqligrpj)印刷頁 13–24 比較。網頁仍是一般可閱讀來源。下列僅 PDF 有的細節會改變匹配、時點或結算，因此為具規範性的補充；僅重述規則或增加不產生區別之範例的差異不列出。
 
 #### Star Chart
 
-Compared with the
-[Star Chart Web page](https://www.cfecards.org/rule/latest/star), printed page
-13 adds:
+相較[星辰圖記網頁](https://www.cfecards.org/rule/latest/star)，印刷頁 13 增加：
 
-- A qualifying Star summon is mandatory unless that Star already exists or
-  another rule makes the summon impossible.
-- Star element substitution changes a Card only while testing Formation
-  composition. At every other time the Card retains its printed element.
-- When element substitution is used to cover a Passive Spell, the Player must
-  declare the substitution and identify the affected face-down Card when
-  covering it. The Card is not revealed.
+- 除非該星辰已存在或其他規則使召喚不可能，符合條件的星辰召喚為強制。
+- 星辰變牌只在判定陣法組成時改變牌屬性；其他時間該牌維持牌面屬性。
+- 以變牌覆蓋被動術式時，玩家必須在覆蓋時宣告變牌並指出受影響的反面牌；該牌不翻開。
 
-The Web page already states that substitution affects only one Card and only
-Base Rule Formations, so it cannot be used for Advanced or Theme Formations or
-Profession Changes.
+網頁已說明變牌只影響一張牌且只適用基礎規則陣法，因此不能用於進階或主題陣法，也不能用於轉職。
 
 #### Five Directions Legend
 
-Compared with the
-[Five Directions Legend Web page](https://www.cfecards.org/rule/latest/field),
-printed page 15 adds:
+相較[五方傳說網頁](https://www.cfecards.org/rule/latest/field)，印刷頁 15 增加：
 
-- A Sacred Beast changes the Environment after resolving its damage, so its
-  own damage is modified by the previous Environment.
-- Immunity to Formation effects does not imply immunity to non-Formation
-  rules. Profession resistance still applies to Sacred Beast damage.
-- Environment damage doubling occurs before five-element generation,
-  overcoming, or neutralization.
-- When Environment conversion and five-element generation would both turn the
-  same damage into recovery, recovery occurs once rather than twice.
-- Void Meridian Severing deducts HP only if it actually clears an Environment.
-  No HP is deducted when there is no Environment or another effect prevents
-  the clear.
+- 聖獸結算傷害後才改變環境，因此其自身傷害受先前環境修正。
+- 不受陣法效果影響不代表不受非陣法規則影響；職業抗性仍適用於聖獸傷害。
+- 環境傷害加倍發生於五行相生、相剋或相抵之前。
+- 環境轉換與五行相生都會使同一傷害轉為回復時，只回復一次而非兩次。
+- 虛空斷脈術只有實際破除環境時才扣除生命；沒有環境或其他效果阻止破除時不扣除生命。
 
 #### Hero Schools: General Rules
 
-Compared with the
-[Hero Schools Web page](https://www.cfecards.org/rule/latest/hero) and its
-school subpages, printed pages 17-18 add:
+相較[英雄學派網頁](https://www.cfecards.org/rule/latest/hero)及其學派子頁，印刷頁 17–18 增加：
 
-- Profession Change resolves in this order: declare the Profession, reveal the
-  required Cards, reveal and resolve the Previous Player's covered Passive,
-  change Profession, then discard the required Cards.
-- Profession Change is an Action but is not a Formation. Effects that apply to
-  Formation Uses do not apply to it.
-- Automatic Profession Abilities cannot be declined. An Activated Profession
-  Ability cannot be used while the Player Cannot Act or when its complete
-  effect cannot be achieved.
-- Unaffiliated Professions are not one School. Even two Players with the same
-  Unaffiliated Profession do not count as sharing a School.
-- Elemental resistance makes the damage invalid. Consequently, five-element
-  generation from that damage does not recover HP.
+- 轉職依序宣告職業、展示必要牌、翻開並結算上家蓋牌、轉職，最後捨棄必要牌。
+- 轉職是行動但不是陣法；適用陣法施展的效果不適用轉職。
+- 普通能力不能拒絕。玩家無法行動或能力完整效果無法達成時不能發動能力。
+- 無學派職業不構成同一學派；即使兩名玩家持有同一無學派職業，也不算同學派。
+- 屬性抗性使傷害無效，因此該傷害的五行相生不回復生命。
 
-The Warrior Web page already contains the PDF's Shield clarification:
-resistance and Unloading apply only when the Player receives damage, so a
-Shield receives the unreduced damage.
+戰士網頁已包含 PDF 的防護罩釐清：抗性及卸勁只在玩家承受傷害時適用，因此防護罩承受未減少傷害。
 
 #### Hero Schools: School-Specific Rules
 
-- **Warrior:** printed page 19 and the
-  [Warrior Web page](https://www.cfecards.org/rule/latest/hero/warrior)
-  conflict on how physical Card placement distinguishes Defense from
-  Countershock when Wood and Fire are covered together. The PDF prefers the
-  left Card when they do not overlap and uses the Card nearer the Player only
-  when left/right is unavailable; the Web page prefers the nearer Card first
-  and uses the Player's left only when near/far is unavailable. The online
-  engine does not infer physical layout. It requires the covering Player to
-  select Defense or Countershock when both are legal and records that
-  selection.
-- **Seeker:** printed page 20 adds one distinguishing Reincarnation example
-  absent from the
-  [Seeker Web page](https://www.cfecards.org/rule/latest/hero/seeker). With
-  Wood 2, Wood 3, Fire 3, and Earth 4, only Wood 2 may be the standalone Wood
-  Card because Wood 2 + Fire 3 + Earth 4 totals only 9. There is one legal
-  option recovering 50 HP. A choice is required only when multiple role
-  assignments are legal.
-- **Mesmer:** printed page 21 defines the result of Illusion and Phantasm as a
-  `虛擬牌` created after discarding two hand Cards, not as a third physical hand
-  Card receiving a new interpretation. It also explicitly states that Phantasm
-  and Illusion are different Activated Abilities, so Phantasm does not trigger
-  Illusion Refinement (`幻術精研`). This is consistent with, but not stated
-  directly by, the
-  [Mesmer Web page](https://www.cfecards.org/rule/latest/hero/mesmer).
-- **Windwalker:** printed page 23 classifies Instant Shadow Death's halving as
-  an HP deduction. Resolve it by setting the target Team's HP to
-  `floor(original HP / 2)` and record the resulting negative HP delta. The
-  [Windwalker Web page](https://www.cfecards.org/rule/latest/hero/windwalker)
-  states the round-down rule but omits the HP-deduction classification.
-- **Mage and Unaffiliated:** no additional semantic rule remains after
-  combining the general Hero Schools page with the respective
-  [Mage](https://www.cfecards.org/rule/latest/hero/mage) and
-  [Unaffiliated](https://www.cfecards.org/rule/latest/hero/others)
-  subpages.
+- **戰士：**印刷頁 19 與[戰士網頁](https://www.cfecards.org/rule/latest/hero/warrior)對同時覆蓋木與火時如何依實體牌位置區分防禦及反震有所衝突。PDF 在牌不重疊時優先左牌，無法判斷左右時才用較近玩家的牌；網頁優先較近的牌，無法判斷遠近時才用玩家左側。線上引擎不推測實體排列；兩者均合法時要求覆蓋玩家選擇防禦或反震，並記錄選擇。
+- **尋道者：**印刷頁 20 新增[尋道者網頁](https://www.cfecards.org/rule/latest/hero/seeker)沒有的一個具區別性轉生術範例：木 2、木 3、火 3、土 4 中，只有木 2 可作為獨立木牌，因為木 2 加火 3、土 4 總和只有 9。只有一個合法選項，回復 50 點生命；只有多種角色分配均合法時才需選擇。
+- **幻術師：**印刷頁 21 將幻術及幻朧結果定義為捨棄兩張手牌後產生的 `虛擬牌`，而非重新解讀第三張實體手牌。它也明確指出幻朧與幻術是不同發動能力，因此幻朧不觸發幻術精研（`幻術精研`）。這與[幻術師網頁](https://www.cfecards.org/rule/latest/hero/mesmer)一致，但網頁未直接說明。
+- **風行者：**印刷頁 23 將刃影瞬殺生命減半分類為扣除生命。結算時將目標隊伍生命值設為 `floor(original HP / 2)`，並記錄所得負生命值變化。[風行者網頁](https://www.cfecards.org/rule/latest/hero/windwalker)說明無條件捨去，但未分類為扣除生命。
+- **法師及無學派：**一般英雄學派頁面與各自的[法師](https://www.cfecards.org/rule/latest/hero/mage)及[無學派](https://www.cfecards.org/rule/latest/hero/others)子頁合併後，沒有額外語意規則。
 
 ### 39. Theme Rule Module Delivery Scope And Defaults
 
-The global-catalog default policy below is superseded by
-[ADR-0038](adr/0038-bind-games-to-rule-versions.md): available themes come from
-the selected Rule Version, independently of the game's enabled module subset.
-The remaining execution decisions in this section continue to apply.
+下方全域目錄預設政策已由 [ADR-0038](adr/0038-bind-games-to-rule-versions.md) 取代：可用主題由所選規則版本決定，與遊戲啟用的模組子集分開。本節其餘執行決策繼續適用。
 
-Add Jianghu, Confluence Generation, and Dark Glimmer as three independently
-selectable Theme Rule Modules, delivered in that order. Each delivery is a
-complete vertical slice through the Rust rules engine, canonical replay,
-viewer-filtered projections, Online Game Room configuration, UI, and automated
-tests.
+將江湖、匯流世代及黑暗微光加入為三個可獨立選用的主題規則模組，依此順序交付。每次交付均是完整垂直切片，貫穿 Rust 規則引擎、正規重播、依觀看者過濾的投影、線上房間設定、介面及自動化測試。
 
-The normative source is the supplied `cfecards-5.16.pdf`. Implement the complete
-rules for those three Theme Rule Modules and their interactions with the Base
-Ruleset, all three Advanced Rule Modules, and the Spirit Rule Module. References
-to unimplemented Theme Rule Modules, such as Delayed Spells, remain inert until
-those modules are separately added; do not invent placeholder behavior.
+規範來源為提供的 `cfecards-5.16.pdf`。實作這三個主題模組的完整規則，以及它們與基礎規則集、三個進階規則模組及精靈規則模組的互動。對延時術式等未實作主題模組的引用保持不生效，直到那些模組另行加入；不得虛構佔位行為。
 
-Every Theme Rule Module is independently selectable and may be combined with
-the others. Like Spirit, Jianghu and Confluence Generation require Star, Five
-Directions Legend, and Hero Schools. Dark Glimmer additionally requires Spirit
-because its Evil and Death Spirits use the Spirit rules. Selecting a Theme Rule
-Module automatically selects its transitive dependencies; removing a dependency
-removes every Theme Rule Module that requires it.
+每個主題規則模組均可獨立選用，並可與其他模組組合。與精靈一樣，江湖及匯流世代依賴星辰圖記、五方傳說及英雄學派；黑暗微光的惡精靈與死精靈使用精靈規則，因此另依賴精靈。選用主題模組自動選用傳遞依賴；移除依賴會移除所有依賴它的主題模組。
 
-New games and Online Game Rooms enable every available Rule Module by default,
-including Spirit, Jianghu, Confluence Generation, and Dark Glimmer. Persisted
-rooms retain their explicitly stored Rule Module list rather than gaining newly
-released modules implicitly.
+新遊戲及線上房間預設啟用所有可用規則模組，包括精靈、江湖、匯流世代及黑暗微光。已持久化房間保留明確儲存的模組清單，不隱含取得新發布模組。
 
-Pouch follows the same default after its release despite adding Initial Pouch
-Selection to Game Preparation. Existing rooms retain their stored module list;
-only newly created rooms receive Pouch by default.
+錦囊發布後遵循相同預設，即使它為遊戲準備增加初始錦囊選擇。既有房間保留儲存模組清單；只有新建房間預設啟用錦囊。
 
 #### Pouch execution model
 
-Sheep Stealing carries both Card selections in one command, but the two sets
-do not share one validation snapshot. Validate the first set against the
-pre-effect Personal Deck, project those ordered Deck-to-Discard moves, and only
-then validate the return set against the performing Player's projected Discard
-Pile. This permits the same physical Card Instance to move from Deck to Discard
-and back to Deck during one resolution only for a Card with that Player's
-origin; an Exposed Foreign Card returns to its origin owner's pile and is not a
-return candidate. The canonical `CardsMoved` event records those deltas in
-resolution
-order and replay applies them sequentially.
+牽羊以一個命令攜帶兩組選牌，但兩組不共用單一驗證快照。先對效果前個人牌組驗證第一組，投影依序由牌堆至棄牌堆的移動，再對施展玩家投影後棄牌堆驗證放回組。只有來源屬於該玩家的實體牌，才能在一次結算中由牌堆移至棄牌堆再回牌堆；公開外來牌回到來源擁有者的堆，不是可放回候選。正規 `CardsMoved` 事件依結算順序記錄這些變化，重播依序套用。
 
-Private interaction options expose the current Discard Pile together with
-Personal Deck Cards that would enter that Player's Discard Pile when selected
-for the first step. The UI presents a prospective Deck Card as a return choice
-only after the Player selects it for discard. This is an interaction projection
-of the ordered effect, not a new canonical Pending Choice.
+私密互動選項同時公開目前棄牌堆，以及第一步選取後會進入該玩家棄牌堆的個人牌組牌。只有玩家選該預期牌堆牌作為棄牌後，介面才將其呈現為放回選項。這是有序效果的互動投影，不是新的正規待選擇事項。
 
-Chain's ownerless `PouchRevealed` event sets the triggering source Card aside
-from its Player's Deck. The selected Pouch Card is removed by `PouchPlaced` in
-the same event batch. Chain then projects the selected Secret Strategy before
-requesting its post-search Deck Shuffle; the later `PouchConsumed` event moves
-the set-aside source Card to its origin Discard Pile. The shuffle's recorded
-`currentOrder` therefore excludes both selected Cards and still matches the
-Deck when trusted randomness is resolved. Sheep Stealing is the exception to
-the additional Chain request: its own post-exchange Deck Shuffle is reused, so
-the Chain flow does not issue a duplicate shuffle.
+連環不帶擁有者的 `PouchRevealed` 事件將觸發來源牌從其玩家牌堆置於一旁；所選錦囊牌在同一事件批次由 `PouchPlaced` 移除。連環接著投影所選秘計，再請求檢索後牌堆洗牌；後續 `PouchConsumed` 事件將置於一旁的來源牌移至其來源棄牌堆。因此洗牌記錄的 `currentOrder` 不含兩張所選牌，並在可信任隨機性結算時仍與牌堆相符。牽羊是連環額外洗牌請求的例外：重用其交換後牌堆洗牌，因此連環不發出重複洗牌。
 
-離山 deliberately replaces official 5.16's ineffective-result interpretation
-with **Temporary Ability Loss**. Official rule 4-7's broad
-「該職業之能力」boundary is authoritative: the affected Player retains their
-Profession identity but temporarily lacks its complete Profession Ability Set,
-including Automatic, Formation Proficiency, and Activated Profession Abilities,
-Profession Formations, inherited rules, and other Profession rules. The Spirit
-scope likewise removes active, automatic, and persistent Spirit Skills and
-continues to prevent Spirit Power gain. See
-[ADR-0033](adr/0033-treat-lure-as-temporary-ability-loss.md).
+離山刻意以**暫時失去能力**取代官方 5.16 的效果無效解讀。官方規則 4-7 廣泛的「該職業之能力」邊界具權威性：受影響玩家保留職業身分，但暫時失去完整職業能力集合，包括普通、專精及發動能力、職業陣法、繼承規則及其他職業規則。精靈範圍同樣移除主動、自動及常駐精靈技能，並持續禁止增加靈力。見 [ADR-0033](adr/0033-treat-lure-as-temporary-ability-loss.md)。
 
-Playable-action generation and Command validation use the same current-ability
-authority. An option requiring a lost Profession Ability Set or Spirit Skill is
-not offered, and a stale or direct submission is a Validation Failure that
-emits no canonical events or costs. Ordinary Profession Change remains legal
-when its path is independent of the lost set: the 抉擇 and 突破 permissions
-granted by 初行客 are absent, the retained Profession identity may still satisfy
-an ordinary prerequisite, and the absent 暗行 prohibition no longer blocks an
-ordinary Profession Change. Profession Formations and profession-granted
-transitions or acquisition consequences remain unavailable for the duration.
+可執行行動產生及命令驗證共用目前能力的權威來源。需要已失去職業能力集合或精靈技能的選項不提供；過期或直接提交屬驗證失敗，不發出正規事件或產生代價。途徑不依賴已失去集合時，一般轉職仍合法：初行客授予的抉擇及突破許可不存在，保留的職業身分仍可能滿足一般先決條件，已失去的暗行禁止不再阻止一般轉職。職業陣法及職業授予的轉換或取得結果在持續期間仍不可用。
 
-Temporary Ability Loss is prospective rather than retroactive. An already
-accepted ability use retains its Prepared Profession Ability, Formation
-Requirement, Card Interpretation Layer, bonus, Status Effect, cost, and consumed
-usage; neither applying nor expiring 離山 rolls those facts back or resets them.
-Automatic checks during the loss do not use the absent ability, including 綻放
-and 順風回復使用次數. Profession Change, Spirit Summoning, and other
-source replacement do not escape the Player-scoped duration.
+暫時失去能力只影響未來，不溯及既往。已接受能力使用保留其已準備職業能力、陣法要求、牌解讀層、加成、狀態效果、代價及已消耗次數；套用或離山到期均不回滾或重設這些事實。失去期間自動檢查不使用缺失能力，包括綻放與順風次數回復。轉職、召喚精靈及其他來源替換均不能避開此玩家範圍持續時間。
 
-The existing Profession-scope and Spirit-scope 離山 Status Effects remain the
-canonical and Public State representation; no event or Pending Choice shape
-changes. 金蟬 continues to protect only the Player-facing Profession scope, not
-Spirit Skills or Spirit Power gain. Public presentation retains the owned
-Profession, Spirit, and read-only summaries, relies on the existing visible 離山
-Status, and derives actionable controls only from Playable Actions. Pure replay
-continues to apply older canonical events exactly, including an ability use that
-was accepted under the previous interpretation; live decision logic carries no
-compatibility branch for submitting that action now.
+既有職業範圍及精靈範圍離山狀態效果仍是正規及公開狀態表示；事件或待選擇結構不變。金蟬仍只保護面向玩家的職業範圍，不保護精靈技能或靈力增加。公開呈現保留所持職業、精靈及唯讀摘要，依賴既有可見離山狀態，且只從可執行行動推導可操作控制。
 
-The Jianghu term **State (狀態)** is narrower than the engine's established
-generic `StatusEffect` concept. Define a separate typed Jianghu State collection
-containing only 千鋒, 踏雪, and 中毒; do not rename or change the generic model or
-serialized `statuses` contract. New canonical and Public State fields use
-backward-compatible defaults. See ADR 0012.
+江湖術語**狀態（State）**比引擎既有一般 `StatusEffect` 概念狹窄。定義只包含千鋒、踏雪及中毒的獨立具型別江湖狀態集合；不重新命名或改變一般模型及序列化 `statuses` 契約。新增正規及公開狀態欄位使用向後相容預設值。見 ADR 0012。
 
-Remove the existing Profession teaching/catalog dialog rather than expanding it
-for the new Theme Professions. The battlefield retains each Player's current
-Profession badge and read-only effective-ability summary. Public Limited Use
-counts from Confluence Generation appear with the granting Profession or
-ability because they are required current game state, not teaching content.
+移除既有職業教學／目錄對話框，不為新主題職業擴充它。戰場保留各玩家目前職業徽章及唯讀有效能力摘要。匯流世代公開次數限制顯示在授予該次數的職業或能力旁，因為它們是必要目前遊戲狀態，不是教學內容。
 
-All enabled Rule Modules contribute to one composed Profession catalog and one
-Player-owned Profession slot. Module-owned definitions and typed hooks remain
-separate even when a Profession explicitly inherits abilities from a Profession
-defined by another module. See ADR 0013.
+所有已啟用規則模組共同提供一個組合職業目錄及每玩家一個職業欄位。即使職業明確繼承另一模組定義職業的能力，各模組擁有的定義與具型別鉤子仍分離。見 ADR 0013。
 
-Jianghu poison has one structurally unique source: every poison-producing
-Formation affects its performing Player's Next Player, and fixed Turn Order
-gives each poisoned Player exactly one Previous Player. Repeated poison
-applications therefore add to one remaining-turn count; do not introduce
-per-source poison segments. At each poisoned Turn End, Poison Mastery reads the
-unique source Player's then-current Profession, which also covers poison applied
-before that Player changed into 毒聖.
+江湖中毒在結構上只有一個來源：所有造成中毒的陣法均影響施展者下家，而固定行動順序使每個中毒玩家恰有一位上家。因此重複施加中毒只增加單一剩餘回合數，不引入各來源分段。每次中毒回合結束時，毒絕讀取唯一來源玩家當時的職業，也涵蓋該玩家轉為毒聖前已施加的中毒。
 
-The source terms `星行牌` and `環行牌` both read printed Card elements rather
-than temporary Card interpretations. A Star-Element Card matches the Star
-currently owned by the relevant Player's Team; an Environment-Element Card
-matches the Environment current at the rule's check timing. If the corresponding
-Star or Environment does not exist, no Card qualifies.
+來源術語 `星行牌` 與 `環行牌` 均讀取牌面屬性，不讀臨時牌解讀。星行牌符合相關玩家隊伍目前擁有星辰的屬性；環行牌符合規則檢查時的目前環境。相應星辰或環境不存在時沒有牌符合。
 
-Confluence Generation's `上家棄牌` is the existing Retrievable Discard: the
-Previous Player's Turn Draw Discarded Card from the immediately completed
-Previous Turn, provided that same Card Instance remains in any Discard Pile;
-the current Pile Owner does not affect retrieval. Moving it to a Deck, hand, or
-any other non-Discard zone makes the physical Card unavailable. Residual
-Element (`餘行`) and Residual Level (`餘級`) are instead fixed from that Card's
-printed definition when it is Discarded. They remain unchanged until the
-current Player reaches Turn Draw even if the Card moves; moving it only makes
-調律 or 天響 unable to retrieve that physical Card.
+匯流世代的 `上家棄牌` 是既有可回收棄牌：上家剛結束上回合的回合抽牌棄牌，前提是同一實體牌仍在任意棄牌堆；目前堆所有者不影響回收。移至牌堆、手牌或其他非棄牌區會使實體牌不可回收。相對地，餘行（`餘行`）與餘級（`餘級`）在該牌被捨棄時依牌面定義固定，直到目前玩家進入回合抽牌前均不變，即使牌已移動；移動只使調律或天響不能回收該實體牌。
 
-Dark Glimmer's Mischief (`戲鬧`) calculates its HP deduction from the highest
-printed level among the Card Instances actually inspected by the triggering
-effect. Evil Gaze therefore uses only its two randomly inspected Cards, while an
-effect that inspects a complete hand uses that complete hand. Canonical events
-record the inspected set, but viewer filtering reveals it only to the inspecting
-Player and never supplements it with uninspected hidden Cards.
+黑暗微光戲鬧（`戲鬧`）依觸發效果實際檢視實體牌中的最高牌面等級計算扣除生命。因此惡視只使用隨機檢視的兩張牌，檢視完整手牌的效果則使用整手牌。正規事件記錄檢視集合，但觀看者過濾僅向檢視玩家揭露，絕不補入未檢視隱藏牌。
 
-晴風使的順風只在 Discard Shuffle 完成時回復使用次數；reordering Cards already
-in a Deck never recovers it. A shared-Deck Discard Shuffle recovers the use count
-of 順風 for every
-Player who currently owns that ability and whose Profession Ability Set is
-available. With Personal Deck enabled, only the owner of the shuffled Discard
-Pile can recover it. Recovery records an explicit `LimitedUseChanged` only for
-an actual increase from zero to the current maximum; a Player already at
-maximum, whose Profession Ability Set is unavailable, or who no longer owns
-順風 receives no recovery event.
+晴風使的順風只在洗棄牌完成時回復次數；重新排列已在牌堆中的牌絕不回復。共用牌堆洗棄牌時，每位目前擁有順風且職業能力集合可用的玩家均回復次數；啟用個人牌組時只有被洗棄牌的棄牌堆擁有者可回復。只有實際從零增加至目前上限時記錄明確 `LimitedUseChanged`；已達上限、職業能力集合不可用或已不再擁有順風的玩家不產生回復事件。
 
-Local room `44e4b60f-89c9-4e7e-a832-521af4a5aa3c` is the regression scenario
-that fixed this distinction: command 39 consumes player-2's 順風, and
-command 72 performs Rusted Iron Withered Forest against player-2's Personal
-Deck. Its trusted shuffle is a Deck Shuffle, so 順風 must remain exhausted.
+本機房間 `44e4b60f-89c9-4e7e-a832-521af4a5aa3c` 是修正此區別的回歸情境：命令 39 消耗 player-2 的順風，命令 72 對 player-2 個人牌組施展鏽鐵枯林。其可信任洗牌屬牌堆洗牌，因此順風必須維持已用盡。
 
-Death Spirit's Shared Fate (`同命`) is **not** derived from the resolved
-Formation's Affected Player Set. The confirmed rule is: when a Formation effect
-actually deducts the Death Spirit owner's Team HP, that owner's next Player's
-Team loses 10 HP. The effective Team HP delta is therefore the relevant fact in
-this Team-HP model. An `AttackResolved` event's base Attack damage does not
-qualify. A Formation's separate HP-deduction effect does qualify after immunity
-or prevention has made its effective delta known, including when atomic event
-serialization places that separate effect beside its Attack result. Shared Fate
-is appended after that qualifying deduction, groups multiple
-owners that share a target Team into its single resulting HP change, and cannot
-recursively trigger another Shared Fate.
+死精靈同命（`同命`）**不**從已結算陣法的受影響玩家集合推導。已確認規則是：陣法效果實際扣除死精靈擁有者隊伍生命時，該擁有者下家的隊伍扣除 10 點生命。因此此隊伍生命值模型中相關事實是有效隊伍生命值變化。`AttackResolved` 事件的基本攻擊傷害不符合；陣法獨立扣除生命效果在免疫或防止後確定有效變化時則符合，即使原子事件序列化將該獨立效果與攻擊結果並列。同命附加在符合條件的扣除之後，將多位擁有者若共享目標隊伍的結果合併為單一生命值變化，且不能遞迴觸發另一個同命。
 
-Under Void Spirit-Shattering, a Death Spirit that remains owned after losing two
-Spirit Power triggers Shared Fate only when that Technique's Formation effect
-deducts its owner's Team HP. A Death Spirit reduced to zero and broken by that
-Technique does not trigger, and a Spirit newly summoned by 魔靈復甦 did not exist
-for the triggering deduction and does not trigger retroactively.
+虛空碎靈術使死精靈失去兩點靈力後若仍被擁有，只有該術陣法效果扣除其擁有者隊伍生命時才觸發同命。被該術減至零並破除的死精靈不觸發；魔靈復甦新召喚的精靈在觸發扣除時尚不存在，也不追溯觸發。
 
-Death Omen (`死兆`) uses the existing trusted Discard Shuffle boundary when the
-next Player's applicable Deck has one to three Cards and its Discard Pile is
-non-empty. Its `RandomnessRequested` contains a typed Spirit `deathOmen`
-continuation and is the only initial canonical fact: it does not consume the
-Skill's once-per-turn allowance or Spirit Power, move Cards, change HP, or
-break the Spirit. After `RandomnessResolved` has moved the shuffled complete
-Discard Pile to the bottom of that Deck, the continuation emits the ordinary
-Skill-use and resolution facts. Thus replay, the Online Room canonical record,
-and Public Views observe the same waiting state and recorded shuffled order.
+下家適用牌堆有一至三張牌且棄牌堆非空時，死兆（`死兆`）使用既有可信任洗棄牌邊界。其 `RandomnessRequested` 包含具型別精靈 `deathOmen` 續接，是唯一初始正規事實：它不消耗技能每回合次數或靈力、不移牌、不改變生命值，也不破除精靈。`RandomnessResolved` 將完整洗後棄牌堆移至該牌堆底後，續接發出一般技能使用及結算事實。因此重播、線上房間正規紀錄及公開視圖看到相同等待狀態與記錄洗牌順序。
 
 #### Jianghu execution model
 
-Canonical Game State stores Jianghu States separately from generic Status
-Effects. 千鋒 and 踏雪 retain explicit expiry through the end of the owner's next
-turn and apply immediately to the Formation that created them. 中毒 stores one
-aggregate remaining-turn count on its affected Player, deducts HP and decrements
-at that Player's Turn End, and blocks only Formation-provided HP recovery.
-Applying, extending, reducing, and ending a Jianghu State is event-recorded.
+正規遊戲狀態將江湖狀態與一般狀態效果分開儲存。千鋒及踏雪保留持續至擁有者下回合結束的明確到期時間，並立即適用於建立它們的陣法。中毒在受影響玩家身上儲存單一合併剩餘回合數，在該玩家回合結束時扣除生命並減少回合數，且只阻止陣法提供的生命回復。江湖狀態的施加、延長、減少及結束均記錄為事件。
 
-Typed Jianghu hooks participate at the stages the published rules require:
-Formation matching, Attack-point calculation, Formation-effect immunity,
-recovery resolution, post-Formation consequences, and Turn End. They return
-declarative deltas and do not mutate Game State directly.
+具型別江湖鉤子參與公開規則要求的階段：陣法匹配、攻擊點數計算、陣法效果免疫、回復結算、陣法後結果及回合結束。它們回傳宣告式變化，不直接修改遊戲狀態。
 
 #### Confluence Generation execution model
 
-Limited Uses are public canonical records keyed by Player and stable Formation
-or Ability identity, with explicit maximum and remaining counts. Consumption,
-recovery, maximum changes, and Profession-reacquisition resets are semantic
-events. Changing from 道法師 to 道法聖 increases 禁錮法陣's maximum and remaining
-count by one without resetting prior use; 無盡法陣 restores it to the current
-maximum.
+次數限制是公開正規紀錄，以玩家及穩定陣法或能力身分為鍵，明確記錄上限及剩餘次數。消耗、回復、上限改變及重新取得職業時重設均為語意事件。由道法師轉為道法聖時，禁錮法陣上限與剩餘次數各加一，不重設先前使用；無盡法陣使其回復至目前上限。
 
-調律 creates a turn-scoped, Card-specific use obligation: the retrieved Card
-must participate in that turn's Profession Change, or in the permitted
-Profession Formation while 易弦 applies. Activating 調律 is legal only when at
-least one such action can be completed. 天響 retrieves the same Card without
-that restriction. Choices that inspect a Deck, retain Cards, select a 五鳴術, or
-decide 晴風's revealed top Card use typed Pending Choices and replayable
-continuations.
+調律建立回合內、特定牌的使用義務：回收牌必須參與該回合轉職，或在易弦適用時參與允許的職業陣法。只有至少一個此類行動可完成時，發動調律才合法；天響回收同一張牌則不受此限制。檢視牌堆、保留牌、選擇五鳴術或決定晴風展示牌頂的選擇，使用具型別待選擇事項與可重播續接。
 
-The 調律 legality check is reachability-based rather than an immediate
-post-ability check. It includes remaining non-action-ending abilities and
-allows only intermediate choices whose projected result preserves at least one
-legal completion path. The Rules Engine applies this rule to both action
-queries and command validation. The obligation is fulfilled when the 調律 Card
-participates in an accepted allowed action even if that action's effect is
-later ineffective or cancelled; no other voluntary effect may consume that
-Card.
+調律合法性檢查依可達性，而非能力使用後立即檢查。它包含剩餘不結束行動的能力，只允許投影結果保留至少一條合法完成路徑的中間選擇。規則引擎對行動查詢與命令驗證均套用此規則。調律牌參與已接受的允許行動即完成義務，即使該行動效果之後無效或被取消；其他自願效果均不得消耗該牌。
 
-The 調律師 system's Residual-Element transition totals 3, 6, and 9 are minimum
-totals. Residual Level is a printed baseline, while submitted Cards and 調律's
-Discard cost compare their effective levels after applicable interpretations.
-Each Formation role requires a distinct physical Card unless a rule explicitly
-grants multiplicity, so a five-resonance Formation's element-Card and
-Residual-Level-Card roles cannot be filled by the same Card Instance. 易弦's
-permission covers every currently available Profession Formation, including
-inherited 調律師 Formations.
+調律師系統餘行轉職總和 3、6、9 是最低總和。餘級是牌面基準；提交牌及調律棄牌代價比較經適用解讀後的有效等級。除非規則明確允許一牌視為多張，每個陣法角色均需不同實體牌，因此五鳴陣法的屬性牌及餘級牌角色不能由同一實體牌填入。易弦許可涵蓋所有目前可用職業陣法，包括繼承的調律師陣法。
 
-千鳴 normally resolves both resonances simultaneously. When 鏡鳴 requires a
-choice, fully resolve the Residual-Element resonance continuation before the
-selected resonance; a lethal earlier resonance does not truncate the later
-one, and Game Outcome waits for the complete Formation. 萬鳴 instead applies
-its deterministic HP, Shield, and Turn Draw changes before entering its 鏡鳴
-choice, while still deferring final Game Outcome until that choice completes.
+千鳴通常同時結算兩個鳴術。鏡鳴需要選擇時，先完整結算餘行鳴術續接，再結算指定鳴術；先前鳴術致命也不截斷後續鳴術，遊戲結果等待完整陣法結算。萬鳴則先套用確定性的生命值、防護罩及回合抽牌變化，再進入鏡鳴選擇；最終遊戲結果仍等選擇完成後才判定。
 
-煌鳴 and composite resonances containing it affect only the Previous Player;
-their teammate shares the Team HP change but is not added to the Affected
-Player Set. 森鳴 and 萬鳴 recover the performing Player's Team HP, but 中毒 or
-other performer-scoped recovery restrictions are checked only on that
-performing Player, not their teammates.
+煌鳴及包含煌鳴的複合鳴術只影響上家；其隊友共享隊伍生命值變化，但不加入受影響玩家集合。森鳴及萬鳴回復施展玩家隊伍生命值，但中毒或其他施展者範圍回復限制只檢查該施展者，不檢查隊友。
 
 #### Dark Glimmer execution model
 
-惡精靈 and 死精靈 extend the Player's existing single Spirit slot and retain the
-zero-through-six Spirit Power rules. 魔靈附體 transforms the current Spirit kind
-without changing power; 魔靈復甦 and the two summoning Formations summon a new
-Spirit at the published initial power. Persistent Spirit Skills execute through
-typed hooks and never consume the once-per-Spirit-per-turn activated Skill
-allowance.
+惡精靈與死精靈擴充玩家既有單一精靈欄位，並保留零至六靈力規則。魔靈附體改變目前精靈種類而不改變靈力；魔靈復甦及兩個召喚陣法以公開初始靈力召喚新精靈。常駐精靈技能透過具型別鉤子執行，絕不消耗每精靈每回合一次的發動技能次數。
 
-暗行 is one shared ordinary-Profession-Change permission predicate. Both
-playable-action generation and command validation use it, so 暗行者 and its
-inheriting 暗靈使 offer and accept no ordinary Profession Change. The automatic
-暗行者 → 暗靈使 transition is a Dark Formation consequence and remains outside
-that ordinary command predicate.
+暗行是共用的一般轉職許可條件，可執行行動產生及命令驗證均使用它，因此暗行者及繼承其能力的暗靈使不提供也不接受一般轉職。暗行者 → 暗靈使自動轉換是暗黑陣法結果，不在一般命令條件內。
 
-Random hand selection and inspection use the trusted application randomness
-boundary; canonical events record the selected Card Instances and their order,
-while Public Views preserve the rule's inspection boundary. Dark Formation
-Environment invalidation is keyed by performed Formation identity. 暗境 bypasses
-that invalidation only for its owner, and the Hero Schools 影遁 hook ignores only
-the two additionally named Dark Formation effects.
+隨機選取及檢視手牌使用可信任應用程式隨機性邊界；正規事件記錄所選實體牌及順序，公開視圖保留規則的檢視邊界。暗黑陣法的環境無效依實際施展陣法身分判定。暗境只為其擁有者繞過此無效；英雄學派影遁鉤子只忽略另外具名的兩個暗黑陣法效果。
 
 ### 40. Tribulation Theme Rule Module Scope And Source Interpretations
 
-Add Tribulation as an independently selectable Theme Rule Module and deliver it
-as a complete vertical slice through the Rust rules engine, canonical replay,
-viewer-filtered projections, Online Game Room configuration, UI, and automated
-tests. It follows the existing Theme Rule Module dependency and default-selection
-policies.
+將天劫加入為可獨立選用的主題規則模組，並以完整垂直切片交付 Rust 規則引擎、正規重播、依觀看者過濾的投影、線上房間設定、介面及自動化測試。它遵循既有主題規則模組依賴與預設選擇政策。
 
-Each of the five Tribulations is a variable-card-count Formation: it contains
-exactly its two specified overcoming elements, with one or more Cards of each
-element and an effective level sum of at least seven per element. In practice
-the five-Card hand limit permits four or five physical Cards. Under official rule
-2-5.5c, a Tribulation never satisfies a rule that requires a fixed Formation
-card count, regardless of how many Cards were physically used.
+五種天劫均為非固定張數陣法：恰含其指定的兩種相剋屬性，每種至少一張牌，且各自有效等級總和至少為七。實際上五張手牌上限允許四或五張實體牌。依官方規則 2-5.5c，無論實際使用多少張牌，天劫絕不符合要求固定陣法張數的規則。
 
-For Earth-Rending Mountain Collapse (`裂地崩山`), the source phrase `環行牌`
-means a Card whose printed element matches the Environment after the Formation
-transfers it. The new Environment therefore determines every Player's eligible
-discard.
+裂地崩山（`裂地崩山`）的來源用語 `環行牌`，指牌面屬性符合陣法轉移後環境的牌。因此新環境決定每位玩家可捨棄的牌。
 
-The performing Player may select any of the five Environments, including the
-currently active one. A same-element selection still emits an Environment
-Transfer and still requires the Environment-matching discards.
+施展玩家可選五種環境中的任意一種，包括目前環境。選擇相同屬性仍發出環境轉移，且仍須捨棄符合環境的牌。
 
-Official rule 5-2.4i makes an Attack's damage and additional effect simultaneous.
-Earth-Rending Mountain Collapse therefore records the declared Environment and
-collects Player choices sequentially from the Next Player without applying
-Formation consequences between answers. After the last answer, one atomic
-`AttackResolved` transfers the Environment, applies every discard or hand
-reveal, resolves the 60-point Attack, and only then evaluates Game Outcome. Choice
-request and answer events remain replayable intermediate facts, not early
-application of the Formation effect.
+官方規則 5-2.4i 使攻擊傷害與附帶效果同時發生。因此裂地崩山記錄宣告環境，從下家開始依序收集玩家選擇，答案之間不套用陣法結果。最後一個答案後，以一個原子 `AttackResolved` 轉移環境、套用所有棄牌或手牌展示、結算 60 點攻擊，再判定遊戲結果。選擇請求與回答事件仍是可重播的中間事實，不代表提前套用陣法效果。
 
-For Rusted Iron Withered Forest (`鏽鐵枯林`), a shared Deck is processed once:
-reveal its top eight Cards, discard Cards of level three or higher, then shuffle
-the rest back into that shared Deck. With Personal Deck enabled, each Player's
-Deck is processed separately. Both paths reorder Cards already in a Deck and
-therefore never recover the use count of 順風.
+鏽鐵枯林（`鏽鐵枯林`）對共用牌堆處理一次：展示牌堆頂八張、捨棄三級以上牌，再將其餘牌洗回共用牌堆。啟用個人牌組時分別處理各玩家牌堆。兩條路徑均重新排列牌堆中已有的牌，因此絕不回復順風次數。
 
-In team play, Divine Calculation Status makes Thunder-Fire Tribulation's
-(`天雷劫火`) 15-point global HP deduction ineffective for the Status owner's
-Team. Team HP is the Player's HP-bearing resource, so applying the immunity only
-to an individual Player would make this part of Divine Calculation ineffective
-in team play.
+團隊遊戲中，神算狀態使天雷劫火（`天雷劫火`）的 15 點全域扣除生命對狀態擁有者隊伍無效。隊伍生命值是玩家的生命值資源；若只將免疫套用於個人玩家，神算這部分在團隊遊戲中將無效果。
 
-Divine Calculation's 20-point reduction applies only when its owner personally
-receives Tribulation attack damage. If the owner's Shield takes the damage
-instead, the Shield takes the unreduced amount because the Player did not receive
-that damage. The Status still makes that Tribulation's additional effect
-ineffective for its owner and is still removed after the Tribulation.
+神算減少 20 點傷害只適用擁有者親自承受天劫攻擊傷害。若改由擁有者防護罩承受，防護罩承受未減少數值，因為玩家沒有承受該傷害。狀態仍使該天劫附帶效果對擁有者無效，並在天劫後移除。
 
-Divine Calculation Status owns its protection after the 神算 Formation grants
-it; applying that protection does not repeat or resume the granting Formation's
-effect. Snow-Treading Status therefore does not bypass Divine Calculation's
-20-point reduction, although Snow-Treading still handles direct Formation
-effects against the Attack through its normal rules.
+神算陣法授予狀態後，由神算狀態自身擁有其保護；套用保護不會重複或續接授予陣法的效果。因此踏雪狀態不繞過神算的 20 點減傷，但踏雪仍依正常規則處理直接作用於攻擊的陣法效果。
 
-Divine Calculation does not prevent Rusted Iron Withered Forest from processing
-a shared Deck because that Deck is not owned by the protected Player. With
-Personal Deck enabled, skip only the Status owner's Deck and process every other
-Player's Deck normally.
+神算不阻止鏽鐵枯林處理共用牌堆，因為該牌堆不屬於受保護玩家。啟用個人牌組時，只略過狀態擁有者的牌堆，正常處理其他玩家牌堆。
 
-Against Earth-Rending Mountain Collapse, Divine Calculation does not prevent
-the shared Environment Transfer. Its owner neither discards an
-Environment-Element Card nor reveals their hand; every other Player resolves
-that part of the effect normally.
+面對裂地崩山時，神算不阻止共享環境轉移。擁有者不捨棄環行牌也不展示手牌；所有其他玩家正常結算該部分效果。
 
-Mudslide Torrent (`泥石轟流`) increases from 60 to 80 Attack Points only when
-its additional effect effectively deducts at least one point from any Shield.
-Shield loss caused later by the Attack itself cannot trigger the increase. A
-Shield protected by Divine Calculation contributes no effective deduction to
-this test.
+泥石轟流（`泥石轟流`）僅在附帶效果實際從任意防護罩扣除至少一點時，攻擊點數由 60 增為 80。之後由攻擊本身造成的防護罩損失不能觸發增加。受神算保護的防護罩對此檢查沒有有效扣除。
 
-Gale-Rain Status (`烈風暴雨狀態`) invalidates life recovery based on the
-Formation's performing Player, matching the Jianghu poison precedent. A
-Formation performed by a Player without Gale-Rain Status may still recover that
-Player's Team HP even when a teammate has the Status. Non-Formation recovery
-remains effective.
+烈風暴雨狀態（`烈風暴雨狀態`）依陣法施展玩家使生命回復無效，與江湖中毒先例一致。沒有烈風暴雨狀態的玩家施展陣法仍可回復其隊伍生命，即使隊友有該狀態。非陣法回復仍有效。
 
-Official rule 6-1 governs each Gale-Rain Status duration independently. The
-performing Player's current Turn End counts as that Player's first affected
-turn; every other Player counts their next two Turn Ends. Repeated applications
-overlap as distinct two-turn effects rather than merging or extending one
-counter. Divine Calculation prevents only the new application from the
-Tribulation it answers and does not remove an older Gale-Rain Status.
+官方規則 6-1 分別管理每次烈風暴雨狀態持續時間。施展玩家目前回合結束算其第一個受影響回合；其他玩家各計算接下來兩次回合結束。重複施加作為獨立兩回合效果重疊，不合併或延長單一計數器。神算只防止其回應的天劫新施加狀態，不移除較早烈風暴雨狀態。
 
-Earth-Rending Mountain Collapse makes a Player **reveal** their hand when no
-Environment-Element Card exists; it does not let another Player **inspect** that
-hand and therefore does not trigger Evil Spirit's Mischief. Thunder-Fire
-Tribulation's `both Teams` HP deduction is a Formation effect: Shared Fate
-triggers for each surviving Death Spirit owner whose Team actually loses HP.
-A Team protected by Divine Calculation has no such HP deduction or Shared Fate
-trigger.
+沒有環行牌時，裂地崩山使玩家**展示**手牌，不允許其他玩家**檢視**該手牌，因此不觸發惡精靈戲鬧。天雷劫火的 `both Teams` 扣除生命是陣法效果：所屬隊伍實際失去生命的每位存活死精靈擁有者均觸發同命。受神算保護的隊伍沒有此生命扣除，也不觸發同命。
 
-Playable action detail is an optional, contextual player-facing decision
-contract rather than Formation Catalog `rule_text` or a standalone restatement
-of the offered Action. For Echo Melodies it supplements the visible offer with
-the relevant Echo policy: the five optional-cost Melodies state the allowed
-Echo Cost elements and their conditional next-Turn-Start repetition,
-變徵‧淨火 states its automatic no-cost repetition, and 變宮‧植土 states its
-distinct next-Turn-Start Melody-main-effect choice. Positive wording such as
-repeating the main effect once expresses the player-visible boundary without
-describing whether the engine creates another Formation Use.
-[ADR-0023](adr/0023-separate-action-detail-from-catalog-rule-text.md) owns the
-typed rule-fact boundary, refined by
-[ADR-0028](adr/0028-treat-action-detail-as-contextual-supplement.md), which
-defines contextual completeness.
+可執行行動詳情是選用、依情境而定的玩家決策契約，不是陣法目錄 `rule_text`，也不是所提供行動的獨立重述。對迴響曲調，它補充可見選項的相關迴響政策：五種選用代價曲調說明允許的迴響代價屬性及有條件的下次回合開始重複；變徵‧淨火說明自動無代價重複；變宮‧植土說明其獨立的下次回合開始曲調主效果選擇。以「主效果重複一次」等正向文案表達玩家可見邊界，不必描述引擎是否建立另一個陣法施展。[ADR-0023](adr/0023-separate-action-detail-from-catalog-rule-text.md) 擁有具型別規則事實邊界；定義情境完整性的 [ADR-0028](adr/0028-treat-action-detail-as-contextual-supplement.md) 修訂該決策。
 
-`SpiritLevelInterpreted.skill` is an optional canonical semantic field. New
-records write the Fire Spirit Skill that created the Card Interpretation;
-records created before this field existed deserialize it as absent. Replay
-preserves those records and the Public View presents the absent value as a
-legacy Fire Skill interpretation instead of guessing between 螢光 and 絢爛.
+`SpiritLevelInterpreted.skill` 是選用正規語意欄位，記錄建立牌解讀的火精靈技能；公開視圖不會將缺席值猜測為螢光或絢爛。
 
-### 41. Independent Initial Pouch Selection And Hard Cutover
+### 41. Independent Initial Pouch Selection
 
-Initial Pouch Selection remains a public, reconnectable Game Preparation stage
-owned by the Rules Engine, but it no longer names one expected Player. Every
-Player who has not yet placed an initial Pouch may submit `ChooseInitialPouch`
-immediately. Each accepted command commits its canonical events independently
-in server arrival order. Do not represent the group as one Pending Choice or
-one open multi-Player resolution Transaction.
+初始錦囊選擇仍是規則引擎擁有、公開且可重新連線的遊戲準備階段，但不再指定單一預期玩家。每位尚未放置初始錦囊的玩家均可立即提交 `ChooseInitialPouch`。每個已接受命令依伺服器收到順序獨立提交正規事件；不將整組表示為一個待選擇事項或一個開啟中的多玩家結算交易。
 
-Derive the Players who have not chosen from Turn Order minus the owners of
-already placed initial Pouches. Do not persist a second `remaining_players`
-collection in canonical Game State. Validate that the actor is in Turn Order,
-has not already chosen, and selected a Card Instance in their own current
-Personal Deck. A second command with a new Command ID returns the specific
-`InitialPouchAlreadyChosen` Validation Failure and emits no events. A retry with
-the same Command ID remains governed by the Online Command Transaction receipt.
+從行動順序扣除已放置初始錦囊的擁有者，推導尚未選擇玩家；不在正規遊戲狀態持久化第二份 `remaining_players` 集合。驗證操作者位於行動順序、尚未選擇，且所選實體牌位於自己目前個人牌組。以新命令 ID 第二次提交時回傳特定 `InitialPouchAlreadyChosen` 驗證失敗，不發出事件；相同命令 ID 的重試仍受線上命令交易收據管轄。
 
-Each accepted choice emits `PouchPlaced` followed by
-`InitialPouchChosen { player, card }`; remove `next_player` from the latter.
-The last outstanding choice additionally emits
-`InitialPouchSelectionCompleted` before the first `RandomnessRequested`. Only
-that completion event advances Game Preparation to `PendingDeckShuffle`.
-Shuffle the remaining Personal Decks and perform the initial deal in Turn Order
-exactly as before. This policy applies to both supported capacities, two and
-four Players.
+每個已接受選擇依序發出 `PouchPlaced` 及 `InitialPouchChosen { player, card }`；從後者移除 `next_player`。最後一位尚未選擇者還會在第一個 `RandomnessRequested` 前發出 `InitialPouchSelectionCompleted`；只有該完成事件使遊戲準備進入 `PendingDeckShuffle`。剩餘個人牌組洗牌及初始發牌仍與原先一樣依行動順序執行。此政策適用兩種支援人數：雙人及四人。
 
-The choice command batches commute: canonical storage still serializes commits
-and validates `expectedSequence`, while the final Rules Engine projection is
-independent of accepted choice order because every choice changes a distinct
-Player-owned Deck and Pouch. No canonical rollback or order-normalization layer
-is required. The event log deliberately retains arrival order for audit and
-replay, and replay must project the same final state for every legal order.
+選擇命令批次可交換：正規儲存仍序列化提交並驗證 `expectedSequence`，但因每個選擇改變不同玩家的牌堆及錦囊，最終規則引擎投影不受已接受選擇順序影響。無須正規回滾或順序正規化層。事件日誌刻意保留到達順序以供稽核及重播；每種合法順序重播均須投影相同最終狀態。
 
-Public State exposes the stage as the exact camelCase contract
-`initialPouchSelection: { remainingPlayers: PlayerId[] } | null`. Completed
-Players are derived from Turn Order minus `remainingPlayers`; Card identity is
-never added to this public progress object. The viewer-specific interaction
-allows choosing exactly when that viewer remains outstanding. The Pouch Owner
-may inspect their chosen Card after submission and reconnect, while every other
-viewer sees a Card Back. The Web interaction keeps immediate Card-click and
-random-shortcut submission without a confirmation step.
+公開狀態以精確 camelCase 契約 `initialPouchSelection: { remainingPlayers: PlayerId[] } | null` 公開此階段。已完成玩家由行動順序扣除 `remainingPlayers` 推導；公開進度物件絕不加入牌身分。觀看者專屬互動僅在該觀看者尚未選擇時允許選擇。錦囊擁有者在提交及重新連線後可檢視所選牌，其他觀看者均看到牌背。Web 互動保留點牌及隨機快捷鍵立即提交，不需確認。
 
-Online active-game responses carry an active-game version consisting of
-`gameInstanceId` and `recordSequence`. For the same Game Instance, the browser
-ignores a response whose sequence is lower than the highest response already
-applied. This is a delivery-order guard for HTTP and WebSocket snapshots, not a
-canonical concurrency mechanism. Do not add a global room revision as part of
-this change.
+線上進行中遊戲回應攜帶由 `gameInstanceId` 與 `recordSequence` 組成的進行中遊戲版本。相同遊戲實例下，瀏覽器忽略序號低於已套用最高回應的回應。這是 HTTP 及 WebSocket 快照的傳送順序防護，不是正規並行機制；本變更不新增全域房間 revision。
 
-This release is a hard cutover. It does not read, migrate, repair, or preserve
-active legacy Game Records, and it does not preserve completed legacy Replays.
-Waiting rooms remain available with their room identity, owner, members, seats,
-invitation, enabled Rule Modules, readiness, and Locked Deck Lists. Active and
-Finished rooms return to Waiting, clear `gameInstanceId`, and mark every member
-unready and disconnected while preserving the room configuration. Legacy game
-records, replay drafts, locked Deck Lists belonging to reset games, canonical
-room events, Command and trusted-randomness receipts, and resolution
-transactions are removed. Each surviving room starts a fresh room-event log
-with `LegacyGamePurged { epoch }`, presented once as
-`系統版本更新，上一局已清除，請重新準備。` Legacy replay archives and their
-D1 references are deleted permanently; the existing ReplayArchive class and
-namespace continue storing Replays created by the new version.
+### 42. Deep Secret Strategy Decisions
 
-Perform the cutover through a protected, one-time management CLI rather than a
-D1 or Durable Object migration. The CLI requires an explicit staging or
-production environment, defaults to dry-run, requires a separate confirmation
-flag for mutation, reads credentials only from the environment, supports a
-stable purge epoch, and is safe to rerun. It uses a protected GameRoom purge
-operation for partial room cleanup, a ReplayArchive purge operation backed by
-Durable Object `storage.deleteAll()`, D1 cleanup of only replay-reference and
-lifecycle rows, and the Cloudflare Durable Objects Objects API to find stored
-objects that D1 references may not cover. The application remains in explicit
-maintenance mode throughout mutation and verification; command submission and
-Replay creation are unavailable, and any partial failure leaves maintenance
-enabled for a safe retry. Reopen traffic only after verifying that legacy Game
-Records are absent, replay D1 tables are empty, replay Durable Object storage is
-empty, old Replay IDs return not found, and preserved rooms still exist.
+在 Rust 錦囊規則模組內以子模組深化秘計結算，負責秘計選項建構、完整決策驗證、立即秘計效果事件及秘計專屬續接。外層錦囊模組保留來源取得、錦囊翻開、放置及消耗、直接觸發與連環生命週期，以及連環檢索後洗牌。外部 `OfficialRules` 介面不變，不建立公開外掛或逐秘計擴充接點。
 
-### 42. Deep Secret Strategy Decisions And Hard Cutover
+以單一封閉代數命令／參數物件取代目前寬泛選用欄位袋。`SecretStrategyDecision` 保留來源牌及下列恰好五類之一、符合答案結構的選擇：
 
-Deepen Secret Strategy resolution as an internal child module of the Rust Pouch
-Rule Module. It owns Secret Strategy offer construction, complete Decision
-validation, immediate strategy effect events, and strategy-specific
-continuations. The outer Pouch module retains source acquisition, Pouch reveal,
-placement and consumption, the direct-versus-Chain lifecycle, and Chain's
-post-search shuffle. Keep the external `OfficialRules` interface unchanged and
-do not create a public plug-in or per-strategy extension seam.
+- 無輸入秘計：金蟬、偷梁、混水、觀火、還魂及暗渡；
+- 離山指定一位目標玩家；
+- 瞞天使用 `Gain(star)` 或 `Break(star)`；
+- 走為使用 `Clear` 或 `TransferByDiscard(card)`；
+- 開始牽羊，不含牌堆或棄牌堆選牌。
 
-Replace the current wide optional-field command bag with one closed algebraic
-Command/Parameter Object. A `SecretStrategyDecision` retains its source Card and
-one answer-shaped selection from exactly five families:
+封閉變體必須使無關欄位及非法欄位組合無法表示。尤其以星辰操作取代 `star + breakStar`，以環境操作取代選用棄牌。使用窮舉具型別 Rust 分派，不建立十個淺層秘計物件。直接觸發錦囊攜帶完整決策；連環答案使用獨立封閉外層變體：`PlaceOnly` 或包含相同完整決策的 `PlaceAndTrigger`。兩條路徑共享秘計語意，但不合併外層生命週期。
 
-- a no-input Secret Strategy, covering 金蟬, 偷梁, 混水, 觀火, 還魂, and 暗渡;
-- 離山 with one target Player;
-- 瞞天 with `Gain(star)` or `Break(star)`;
-- 走為 with `Clear` or `TransferByDiscard(card)`;
-- beginning 牽羊, with no Deck or Discard Pile Card selections.
+秘計選項遵循相同答案結構類別。每個選項只包含與其答案相關的候選：無輸入秘計沒有空候選集合；離山公開目標玩家；瞞天公開合法星辰操作；走為公開合法環境操作；牽羊只公開可開始延後交換的事實。移除通用 `requiredCardCount` 及無關空選項欄位。這些私密互動投影可跨越 Rust 至 TypeScript 邊界，但決策不是正規遊戲狀態，也不加入公開狀態或公開事件動態。
 
-The closed variants must make irrelevant fields and invalid field combinations
-unrepresentable. In particular, replace `star + breakStar` with the Star
-operation and replace an optional discard Card with the Environment operation.
-Use exhaustive typed Rust dispatch rather than ten shallow Strategy objects.
-Direct Pouch triggering carries the complete Decision. Chain's answer is a
-separate closed outer envelope: `PlaceOnly`, or `PlaceAndTrigger` containing the
-same complete Decision. The two paths share Secret Strategy semantics without
-merging their outer lifecycles.
+提交時依目前正規狀態重新驗證完整決策；沒有不透明 Option ID，也不信任先前選項快照。發出任何事件前驗證來源牌、依牌面值判定的所選秘計資格、目前操作者及目標權限，以及每個具型別操作。過期、偽造、不符或其他非法決策均為驗證失敗，正規事件為零，且不翻開、消耗、產生代價或移動。內部建立、已成功驗證但模組無法結算的決策，才屬規則實作錯誤。
 
-Secret Strategy offers follow the same answer-shaped families. Each option
-contains only the candidates relevant to its answer: no-input strategies have
-no empty candidate collections, 離山 exposes target Players, 瞞天 exposes legal
-Star operations, 走為 exposes legal Environment operations, and 牽羊 exposes
-only the fact that its deferred exchange can begin. Remove generic
-`requiredCardCount` and unrelated empty option fields. These private
-interaction projections may cross the Rust-to-TypeScript boundary, but the
-Decision is not canonical Game State and is not added to Public State or the
-Public Event Feed.
+瞞天 `Break(star)` 要求提交時該星辰存在；不存在或過期目標為驗證失敗，不是合法無效果結算。這不同於授予的暫時星辰效果，其陣法日後嘗試破除己方未擁有的同名星辰；後者仍是合法無效果結果。走為 `Clear` 在沒有目前環境時合法，並結算為無變化。`TransferByDiscard(card)` 要求目前手牌實體牌、讀取牌面屬性、允許公開外來牌、將牌送回牌來源棄牌堆；沒有目前環境或目前環境同屬性時仍合法。
 
-Submission revalidates the complete Decision against current canonical state;
-there is no opaque Option ID and no trust in an earlier offer snapshot. Validate
-the source Card, selected strategy eligibility from its printed value, current
-actor and target authority, and every typed operation before emitting any
-event. A stale, forged, mismatched, or otherwise illegal Decision is a
-Validation Failure with zero canonical events and no reveal, consume, cost, or
-movement. A Decision created internally after successful validation that the
-module cannot resolve is instead a Rule Implementation Error.
+牽羊初始決策只開始續接。必要的預先洗棄牌後，保留後續具型別牽羊待選擇事項：恰選目前牌堆兩張，將這些有序移動投影至棄牌堆，再從投影後棄牌堆恰選兩張。既有依序驗證允許任一剛捨棄牌被放回。交換及可信任牌堆洗牌完成前，秘計來源牌仍置於一旁且不可選。
 
-瞞天 `Break(star)` requires that Star to exist when submitted. A nonexistent or
-stale target is a Validation Failure rather than a legal no-effect resolution.
-This differs from a granted Temporary Star Effect whose Formation later tries
-to break a same-named Star its Team does not own; that later break remains a
-legal no-effect consequence. 走為 `Clear` is legal without a current
-Environment and resolves as no change. `TransferByDiscard(card)` requires a
-current hand Card Instance, reads its printed element, permits an Exposed
-Foreign Card, returns the Card to its Card Origin Discard Pile, and remains
-legal with no current Environment or with a same-element current Environment.
+所有可立即判定的驗證均先於正規輸出。直接有效結算依序為 `PouchRevealed`、秘計效果、`PouchConsumed`。連環依序為 `ChoiceMade`、`PouchPlaced`、`PouchRevealed`、秘計效果、`PouchConsumed`，必要時再執行正常檢索後洗牌。延後牽羊先翻開，直到具型別續接及洗牌完成才消耗；其洗牌仍取代連環原本額外的檢索後洗牌。
 
-牽羊's initial Decision only begins its continuation. After any required
-preliminary Discard Shuffle, retain the later typed Sheep Stealing Pending
-Choice: select exactly two current Deck Cards, project those ordered moves into
-the Discard Pile, then select exactly two Cards from that projected Discard
-Pile. The existing sequential validation allows either newly discarded Card to
-return. The Secret Strategy source Card remains set aside and ineligible until
-the exchange and trusted Deck Shuffle complete.
+TypeScript 只是瀏覽器本機草稿至封閉命令 DTO 的介面卡，不得重作秘計資格或規則引擎驗證。Rust 至 TypeScript 帶標籤變體及所有新增多詞欄位均使用精確 camelCase 序列化契約，並有明確測試。
 
-All immediately decidable validation precedes canonical output. A direct valid
-resolution orders `PouchRevealed`, the strategy effect, then `PouchConsumed`.
-Chain orders `ChoiceMade`, `PouchPlaced`, `PouchRevealed`, the strategy effect,
-then `PouchConsumed`, followed by its ordinary post-search shuffle when
-required. A deferred 牽羊 resolution reveals first and consumes only after its
-typed continuation and shuffle finish; its shuffle continues to replace
-Chain's otherwise additional post-search shuffle.
-
-TypeScript is only the browser-local adapter from a draft to the closed command
-DTO. It must not reproduce strategy eligibility or Rules Engine validation.
-Rust-to-TypeScript tagged variants and every new multiword field use exact
-camelCase serialization contracts with explicit tests.
-
-This is an atomic hard cutover. Remove the legacy optional-field command and
-option shapes in the same change, without dual reads, compatibility variants,
-or fallback parsing. Preserve all unique behavioral evidence. Before deleting
-or consolidating existing Pouch tests, inventory every assertion claim and name
-its replacement evidence as required by ADR-0032. Keep the interaction matrices
-and representative Online Game Room and Playwright seams while adding focused
-atomic-validation, canonical-order, replay, and serialization coverage.
+保留所有獨有行為證據。刪除或合併既有錦囊測試前，依 ADR-0032 盤點每個斷言主張並指定替代證據。保留互動矩陣及代表性線上房間與 Playwright 接點，同時增加原子驗證、正規順序、重播及序列化重點覆蓋。
 
 ### 43. Battle Record Turn-Relative Narration
 
-Project the viewer-filtered Public Decision Feed into a deterministic Battle
-Record for both live rooms and Replays. A `TurnStarted` fact immediately creates
-its labeled Turn Group, including when that group has no Entries; it is a
-boundary, not a separate Battle Record Entry. Preparation remains a distinct
-pre-Turn group and may retain its existing empty-group display policy.
-Room and Replay views display that empty Turn Group without a placeholder
-Entry; a new group is new visible content for automatic scrolling.
+將依觀看者過濾的公開決策動態投影為確定性的戰局紀錄，供即時房間及重播使用。`TurnStarted` 事實立即建立帶標籤的回合組，即使該組沒有項目；它是邊界而非獨立戰局紀錄項目。準備階段仍是獨立回合前組，可保留既有空組顯示政策。房間及重播視圖顯示空回合組，不加佔位項目；新組屬於供自動捲動的新可見內容。
 
-Within a Turn Group, omit the subject only where the typed semantic subject is
-the Turn Player. Do not derive this by globally deleting rendered names. The
-narrator instead chooses the sentence at each typed Player role boundary, so
-another decision maker and every Player needed as a target, owner, source, Team
-reference, or next decision maker remains explicit and keeps normal
-viewer-relative labels (`你`, display name, `我方`/`對方`, or observer labels).
-Preparation has no Turn Player and therefore omits no Player subject.
+回合組內只有具型別語意主詞為回合玩家時才省略主詞，不得從已呈現名稱全域刪除推導。敘述器改在各具型別玩家角色邊界選擇句子，使其他決策者，以及作為目標、擁有者、來源、隊伍參照或下一決策者所需的玩家均明確保留，並使用正常相對觀看者標籤（`你`、顯示名稱、`我方`／`對方`或觀戰者標籤）。準備階段沒有回合玩家，因此不省略玩家主詞。
 
-Each accepted Player Decision remains one Entry; a later Decision by another
-Player starts a later Entry, while its automatic consequences, passive flips,
-and Pending Randomness remain with their existing Decision boundary. The Entry
-title names the complete Decision using public typed facts (for example the
-Formation, Spirit Skill, Profession Ability, or Secret Strategy). Its summary
-only supplements public costs, selections, reasons, and consequences, and must
-use the official element-card label format (`金`/`木`/`水`/`火`/`土`, a space,
-then level). Do not restate the Decision already named by the title: a Formation
-title can be followed by `使用火 2、水 1。`, and a named Spirit Skill title by
-its Spirit Power change and other public consequences.
+每個已接受玩家決策仍是一個項目；其他玩家後續決策另起後續項目，其自動結果、蓋牌翻開及待隨機處理則保留於既有決策邊界。項目標題以公開具型別事實命名完整決策，例如陣法、精靈技能、職業能力或秘計。摘要只補充公開代價、選擇、原因及結果，並須使用官方屬性牌標籤格式（`金`／`木`／`水`／`火`／`土`、空格、等級）。不重述標題已命名的決策：陣法標題後可接 `使用火 2、水 1。`，具名精靈技能標題後可接靈力變化及其他公開結果。
 
-The Battle Record is not persisted rendered text. Old Replays project their
-canonical viewer-filtered inputs through the current deterministic narration
-rules, so equal viewer-filtered input and perspective always produce equal
-wording. Do not add NLG, LLM, or Fluent dependencies for this projection.
+戰局紀錄不是持久化呈現文字。舊重播以目前確定性敘述規則投影其依觀看者過濾的正規輸入，因此相同過濾輸入及視角一律產生相同文案。不為此投影新增 NLG、LLM 或 Fluent 依賴。
 
-Validate this behavior by extending the existing Battle Record and start-API
-tests, scroll tests, and battlefield layout scenario. Cover Turn start before
-the first Entry and the same Player in subject, target, and owner roles. A
-dedicated TurnStarted integration test or new E2E spec is not required.
+擴充既有戰局紀錄及開始 API 測試、捲動測試及戰場版面情境驗證此行為。涵蓋第一個項目前回合開始，以及同一玩家分別作為主詞、目標及擁有者。不需要專用 TurnStarted 整合測試或新 E2E 規格。
 
 ### 44. HP Change Planning
 
-Every outer rule resolution constructs one validated Team HP ledger. The ledger
-requires one current and one initial entry for each Team, rejects invalid ranges
-or arithmetic overflow as an Engine Invariant, and records every requested HP
-attempt including prevention, clamping, and no-op changes. Repeated changes to
-the same Team inherit the preceding planned new HP in canonical call order.
+每次外層規則結算建立一份經驗證隊伍生命值帳本。帳本要求每隊各有目前值及初始值；無效範圍或算術溢位視為引擎不變條件錯誤，並記錄所有生命值變化嘗試，包括防止、界限限制及無變化。同一隊伍的重複變化依正規呼叫順序繼承前一筆規劃後新生命值。
 
-One resolved Formation effect receives a scoped ledger session. Its completion
-reports only the Teams that actually lost HP, in canonical `state.hp` order;
-Shared Fate is planned afterward with the outer ledger and cannot recurse into
-that session. Echo repeats are not Formation effects, while Jianghu States own
-their continuous Formation-effect timing. Pending continuations construct a
-fresh ledger from their then-canonical state rather than serializing a live
-planner.
+一次已結算陣法效果取得有範圍的帳本工作階段。完成時只依正規 `state.hp` 順序回報實際失去生命的隊伍；同命之後由外層帳本規劃，不能遞迴進入該工作階段。迴響重複不是陣法效果；江湖狀態則擁有自身持續陣法效果時點。待處理續接從當時正規狀態建立新帳本，不序列化作用中的規劃器。
 
 ### 45. Totem Formation Rule Interpretations
 
-Source: supplied 五行戰鬥牌5.17規則書.pdf, printed pages 38-39.
-This section records accepted interview rulings; unresolved interactions remain
-outside its scope until separately settled.
+來源：提供的五行戰鬥牌5.17規則書.pdf，印刷頁 38–39。本節記錄已接受的訪談判定；未解決互動在另行確認前不屬本節範圍。
 
-Use 青角圖騰 consistently. The 東靈陣‧青角 result naming 青爪圖騰 is a
-typographical error, not another Totem kind.
+一致使用青角圖騰。東靈陣‧青角結果中寫作青爪圖騰是筆誤，不是另一種圖騰。
 
-Each of the five Totem-granting Formations requires exactly three Cards of its
-element, with at least one having interpreted level exactly 5. For example,
-木1、木2、木5 matches 東靈陣‧青角; 木1、木2、木6 does not. Existing legal
-Card interpretations apply only within their granted scope; this ruling does
-not expand base-only interpretation abilities to Theme Formations.
+五種授予圖騰的陣法各要求恰好三張其屬性牌，且至少一張解讀後等級恰為五。例如木1、木2、木5 符合東靈陣‧青角；木1、木2、木6 不符合。既有合法牌解讀只在其授予範圍內適用；此判定不將僅基礎規則的解讀能力擴大至主題陣法。
 
-A Totem's first effect prevents Environment damage doubling only when its
-Player receives damage, not when that Player's Shield receives it. In a Wood
-Environment, a 20-point Wood Attack against a Player with 青角圖騰 still
-deals 40 to their Shield, while the Totem removes that Environment doubling
-when the Player has no Shield. Other applicable modifiers remain independent.
+圖騰第一效果只在其玩家承受傷害時防止環境傷害加倍；防護罩承受時不適用。木行環境中，持有青角圖騰的玩家若有防護罩，20 點木行攻擊仍對防護罩造成 40 點；沒有防護罩時圖騰移除環境加倍。其他適用修正仍各自獨立。
 
-Only Void Meridian-Severing Technique successfully clearing an existing
-Environment breaks all Totems. Performing it with no Environment, clearing the
-Environment with 走為, and ordinary Environment Transfer preserve Totems.
+只有虛空斷脈術成功破除既有環境才破除所有圖騰。沒有環境時施展、以走為破除環境，以及一般環境轉移均保留圖騰。
 
-南靈陣‧朱羽 first undergoes Active Spell effectiveness checks. If ineffective,
-its entire effect does not execute, including its conversion into an Attack.
-If effective, it becomes the selected elemental Attack and undergoes applicable
-Attack-damage checks. Seal can therefore suppress the complete Formation,
-while Defense can suppress its damage after conversion. This follows the
-existing active-Spell-before-conversion treatment of Metamorphosis.
+南靈陣‧朱羽先經主動術式有效性檢查。若無效，完整效果均不執行，包括轉為攻擊；若有效，轉為所選五行攻擊並經適用攻擊傷害檢查。因此封印可使完整陣法無效，防禦則可在轉換後防止其傷害。此處遵循既有幻化先作主動術式檢查、再轉換的處理。
 
-A Totem's third effect triggers and consumes that Totem when an applicable
-Environment conversion into HP recovery is prevented. It does not trigger when
-a Shield receives the Attack, when a Sacred Beast ignores the Totem, or when
-the damage is already ineffective, for example through Defense. If independent
-five-element generation also converts the Attack into recovery, the Totem is
-still consumed for preventing the Environment conversion; the generation-based
-recovery remains. Consumption is mandatory, not an optional Player choice.
+圖騰第三效果在適用的環境傷害轉回復被防止時觸發並消耗該圖騰。防護罩承受攻擊、聖獸忽略圖騰，或傷害已因防禦等原因無效時不觸發。獨立五行相生也將攻擊轉為回復時，仍因防止環境轉換而消耗圖騰；相生造成的回復仍然存在。消耗為強制，不是玩家選項。
 
-南靈陣‧朱羽 completes Attack Resolution using the original Environment and
-original Totem, then transfers to Fire and grants 朱羽圖騰. For example, in a
-Fire Environment, selecting a Wood Attack may consume the performer's existing
-青角圖騰 before they gain 朱羽圖騰. Damage prevention alone does not prevent
-the later Environment Transfer or Totem acquisition; making the initial Active
-Spell ineffective prevents all of them.
+南靈陣‧朱羽使用原環境及原圖騰完成攻擊結算，再轉為火行環境並授予朱羽圖騰。例如火行環境下選擇木行攻擊，施展者取得朱羽圖騰前可能消耗既有青角圖騰。僅防止傷害不會阻止後續環境轉移或取得圖騰；初始主動術式無效則阻止全部效果。
 
-A Totem's second effect exempts the performed Formation identity from its
-Environment invalidation, not the identity of an effect copied by Metamorphosis.
-黃鱗圖騰 protects 幻化; 青角圖騰 does not protect 幻化 merely because it
-copies 氣壁. Other independent ineffectiveness grounds, including Seal, remain.
+圖騰第二效果使實際施展陣法身分不受環境無效影響，而非保護幻化複製的效果身分。黃鱗圖騰保護幻化；青角圖騰不會僅因幻化複製氣壁而保護幻化。封印等其他獨立無效依據仍然存在。
 
-The Totem Formation Rule Module requires all three Advanced Rule Modules but
-does not require Personal Deck. 尋龍 searches the shared Deck in shared-Deck
-play and the performing Player's own Deck in Personal Deck play.
+圖騰法陣規則模組依賴全部三個進階規則模組，但不要求個人牌組。尋龍在共用牌堆遊戲檢索共用牌堆，在個人牌組遊戲檢索施展玩家自己的牌堆。
 
-Countershock distributes the Attack into shares before each recipient's Totem
-first-effect exception to Environment doubling is evaluated. In a Fire
-Environment, a 20-point Fire Attack reflected by a defender with 朱羽圖騰
-deals 10 to that unshielded defender and 20 directly to the attacking side when
-the attacker has no Totem. The defender's exception does not protect the
-attacker; the existing direct-to-HP reflected-share rule remains unchanged.
+反震先將攻擊分攤，再分別判定各承受者圖騰第一效果對環境加倍的例外。火行環境中，防守者持朱羽圖騰時，經反震的 20 點火行攻擊對無防護罩防守者造成 10 點；若攻擊方沒有圖騰，則對攻擊方直接造成 20 點。防守者例外不保護攻擊方；既有反彈份額直接扣除生命規則不變。
 
-A Totem's third effect is evaluated once for the complete Attack, not once for
-each Countershock share. If 青角圖騰 prevents a Wood Attack's Fire-Environment
-conversion into recovery, consume it once and keep both shares in damage mode,
-unless an independent five-element generation still makes the Attack recover
-HP. Consuming it while resolving one share never restores Environment recovery
-for another share of the same Attack.
+圖騰第三效果對完整攻擊判定一次，不對每個反震份額各判一次。青角圖騰防止木行攻擊在火行環境中轉為回復時，消耗圖騰一次並使兩個份額都維持傷害模式，除非獨立五行相生仍使攻擊回復生命。結算某一份額時消耗圖騰，絕不使同次攻擊的另一份額恢復環境回復。
 
-Formation effectiveness is determined when the Formation is performed,
-including the applicable incoming Counter Effects, the Environment then present,
-and any Totem exemption. For a Covered Passive, this is its covering action,
-not its later flip. The second Totem effect therefore participates in that
-performance-time determination; later changes to the Environment or Totem do
-not retroactively invalidate or revive the already performed Formation.
-For example, covering an effective Defense and then having the next Player use
-走為 to transfer to Metal does not invalidate that Defense. A Defense made
-ineffective by Metal when covered does not recover merely because the
-Environment later changes. Flip-time applicability to the incoming action and
-explicit later neutralization remain separate from this determination.
+陣法有效性在施展時決定，包括當時適用的傳入反制效果、環境及任何圖騰豁免。蓋牌的判定時點是覆蓋行動，不是日後翻開。因此圖騰第二效果參與施展時判定；之後環境或圖騰變更不追溯使已施展陣法無效或恢復有效。例如覆蓋有效防禦後，下家以走為轉為金行環境不會使該防禦無效。覆蓋時因金行環境無效的防禦，也不會僅因環境後來改變而恢復。翻開時對傳入行動的適用性及之後明確中和，仍與此判定分開。
 
-Implementation gap identified during the interview: `covered_passive::trigger`
-currently calls `environment_makes_formation_ineffective` against the live
-flip-time state, while `PassiveCovered` records `sealed` but no performance-time
-Environment ground. Correct that behavior and preserve viewer-filtered reasons
-without exposing a hidden Formation early. Cover both directions of an
-Environment change between cover and flip in regression checks. The existing
-Metal/Defense test holds the Environment constant and does not distinguish
-these timings. This gap is a confirmed correction, not an open rule question.
+訪談發現的實作缺口：`covered_passive::trigger` 目前針對翻開時即時狀態呼叫 `environment_makes_formation_ineffective`，而 `PassiveCovered` 只記錄 `sealed`，沒有施展時環境依據。須修正此行為，並保留依觀看者過濾的原因，不提前暴露隱藏陣法。回歸檢查涵蓋覆蓋與翻開間環境變更的兩個方向。既有金行環境／防禦測試使環境保持不變，無法區分時點。此缺口是已確認修正，不是未決規則問題。
 
-尋龍's selected Card is publicly shown and then placed face down on top of the
-Deck after the remaining Deck is shuffled. Its public reveal remains in the
-Battle Record, but drawing it into a hand follows ordinary hidden-hand rules;
-the reveal does not create permanent public visibility. Existing Exposed
-Foreign Card visibility still applies independently.
+尋龍所選牌先公開展示，剩餘牌堆洗牌後再反面放至牌堆頂。公開展示保留在戰局紀錄；但抽入手牌後遵循一般隱藏手牌規則，展示不建立永久公開可見性。既有公開外來牌可見性仍各自獨立適用。
 
-中靈陣‧黃鱗 requires selecting exactly one Card after inspecting a nonempty
-Next Player hand; declining is not allowed. If that hand is empty, skip the
-Card choice and hand-to-hand Card movement while still transferring to Earth and granting
-黃鱗圖騰. Making the complete Spell ineffective prevents every effect.
+中靈陣‧黃鱗檢視非空下家手牌後必須恰選一張，不得拒絕。手牌為空時略過選牌及手牌間移動，但仍轉為土行環境並授予黃鱗圖騰。完整術式無效時阻止所有效果。

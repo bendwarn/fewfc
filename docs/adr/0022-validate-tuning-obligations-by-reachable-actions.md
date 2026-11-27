@@ -1,10 +1,3 @@
 # Validate Tuning Obligations By Reachable Actions
 
-The Rules Engine authoritatively offers 調律 only when some legal sequence of
-remaining non-action-ending abilities can reach a Profession Change or allowed
-Profession Formation that uses the retrieved Card. While that obligation is
-active, both action queries and command validation reject any voluntary choice
-whose projected result removes every remaining completion path. This
-reachability rule preserves legal post-調律 ability sequences while preventing
-UI bypasses, stale clients, or direct commands from creating an unfinishable
-turn.
+規則引擎僅在剩餘、不結束行動的能力存在某條合法使用順序，能以回收牌完成轉職或允許的職業陣法時，才權威地提供調律。義務有效期間，行動查詢及命令驗證都拒絕任何會使所有剩餘完成路徑消失的自願選擇。這項可達性規則保留調律後的合法能力順序，同時防止繞過介面、使用過期客戶端或直接送命令造成無法完成的回合。

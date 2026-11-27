@@ -6,40 +6,34 @@ ready-for-agent
 
 ## What to build
 
-Complete the Echo Rules Engine with 變徵‧淨火 and 變宮‧植土. Turn Turn Start
-into a resumable resolution stage, reduce only published eligible timed effects
-through typed module hooks, preserve Covered Passive secrecy, and reuse the
-Melody continuation machinery without treating either delayed effect as a new
-Formation Use.
+以變徵‧淨火及變宮‧植土完成迴響規則引擎。將回合開始改為可續接結算階段，透過具型別模組鉤子只縮減公開規則允許的時效效果，保護蓋牌隱密性，並重用曲調續接機制，不將兩種延遲效果視為新的陣法施展。
 
 ## Acceptance criteria
 
-- [x] 淨火 matches one Fire and one Water Card with effective level sum at least 7; 植土 matches one Earth and one Wood Card with effective level sum at least 7.
-- [x] Star Element Substitution and Sacred Art Multiplicity cannot satisfy either pattern, while an in-scope Card Level Interpretation affects the level threshold.
-- [x] 淨火 selects any Player, atomically reduces every eligible effect on that Player by one turn or layer, and remains a successfully executed no-change effect when none exist.
-- [x] 淨火 automatically schedules Echo without a cost and chooses its target again from then-current Game State when Echo resolves.
-- [x] Typed duration-reduction hooks keep each Rule Module's specialized state and return declarative deltas; Echo does not switch over other modules' internal types or convert all effects into generic Status Effects.
-- [x] Hooks opt in timed Formation effects, Covered Passives, public Counter Effects, active Delayed Spells, and rulebook-named exceptions; unrelated Profession, Spirit Skill, and permanent effects are excluded even when they have expiry data.
-- [x] Components of one logical effect are reduced together: 光芒's Cannot Act and Cannot Draw stay synchronized, while separate 光芒 uses remain independent without changing the serialized Status Effect contract.
-- [x] Flow State loses one layer; 裂土 suppression, 天外飛扇, 殘霜手, 書仙 interactions, and every eligible effect contributed by enabled completed Rule Modules follow the 5.16 clarifications.
-- [x] A Covered Passive reduced to zero remains face down and ineffective until its normal NextPlayerActionStart reveal and discard; public Counter Effects without covered Cards end immediately.
-- [x] Scheduled Echo and 植土 are fixed next-Turn-Start schedules without a reducible duration or layer and are not affected by 淨火.
-- [x] Turn Start records entry, expires effects due at that timing, then resolves Scheduled Echo or 植土 and pauses for typed Player or trusted randomness decisions before Main becomes available.
-- [x] 植土 schedules its own distinct delayed effect; at the next Turn Start the Player selects 鳴金, 落木, 流水, 戰火, or 裂土 and executes only that fresh main effect.
-- [x] 植土 never pays Echo Cost or schedules Echo, remains distinct from Echo in canonical events, and does not create a Formation Use or trigger a Covered Passive.
-- [x] Seal and 裂土 do not suppress Turn Start Echo or 植土 execution because those effects are outside the Formation Use action pipeline.
-- [x] A game-ending Turn Start main effect finishes the current atomic main effect, records the outcome, and never enters Main or processes later turn flow.
-- [x] Canonical composite duration events and separate Echo/植土 lifecycle events reproduce direct execution, replay, verification, Public Views, and reconnect without transient state.
-- [x] Focused Rust tests cover every eligible effect kind, excluded duration source, zero/one/multiple durations, neutralized Covered Passives, all five 植土 choices, nested choices and shuffle, no-change 淨火, different Echo targets, and all-enabled interactions.
+- [x] 淨火匹配一張火牌及一張水牌，有效等級總和至少 7；植土匹配一張土牌及一張木牌，有效等級總和至少 7。
+- [x] 星辰變牌與聖術視為兩張不能滿足這兩種組合；適用範圍內的牌等級解讀則影響等級門檻。
+- [x] 淨火可指定任意玩家，以原子方式將該玩家每個符合條件效果減少一回合或一層；沒有任何效果時仍屬成功執行但無變化。
+- [x] 淨火不須代價自動排程迴響，並在迴響結算時依當時遊戲狀態重新選擇目標。
+- [x] 具型別持續時間縮減鉤子保留各規則模組專屬狀態並回傳宣告式變化；迴響不匹配其他模組內部型別，也不將所有效果轉成通用狀態效果。
+- [x] 鉤子納入時效性陣法效果、蓋牌、公開反制效果、生效中的延時術式及規則書列明例外；無關職業、精靈技能及永久效果即使有到期資料亦排除。
+- [x] 同一邏輯效果的組件一起縮減：光芒的無法行動與無法抽牌保持同步，不同次光芒各自獨立，且不改變序列化狀態效果契約。
+- [x] 流水狀態減少一層；裂土限制、天外飛扇、殘霜手、書仙互動及已啟用完整規則模組提供的所有適用效果遵守 5.16 釐清。
+- [x] 持續時間降為零的蓋牌仍反面覆蓋且無效，直到正常 NextPlayerActionStart 時點翻開並捨棄；沒有覆蓋牌的公開反制效果立即結束。
+- [x] 已排程迴響及植土固定於下次回合開始，沒有可縮減的持續時間或層數，不受淨火影響。
+- [x] 回合開始先記錄進入、使該時點到期效果失效，再結算已排程迴響或植土；必要時等待具型別玩家或可信任隨機決策，完成後才進入主階段。
+- [x] 植土排程自己的獨立延遲效果；下次回合開始時玩家選擇鳴金、落木、流水、戰火或裂土，並只重新執行其主效果。
+- [x] 植土不支付迴響代價或排程迴響，在正規事件中與迴響區分，也不建立陣法施展或觸發蓋牌。
+- [x] 封印與裂土不抑制回合開始時的迴響或植土執行，因為這些效果位於陣法施展行動流程之外。
+- [x] 回合開始主效果使遊戲結束時，先完成目前原子主效果並記錄結果，絕不進入主階段或處理後續回合流程。
+- [x] 正規複合持續時間事件與獨立迴響／植土生命週期事件，使直接執行、重播、驗證、公開視圖及重新連線重現相同結果且不產生短暫狀態。
+- [x] 重點 Rust 測試涵蓋所有適用效果種類、排除的持續時間來源、零／一／多個持續時間、被中和蓋牌、全部五種植土選擇、巢狀選擇與洗牌、無變化淨火、不同迴響目標及全啟用互動。
 
 ## Validation
 
-- `cargo test` and strict Clippy pass, including 24 focused Echo integration tests.
-- Web unit tests (28), Nuxt type checking, and the production Nuxt build pass.
-- Composite duration events replay and verify identically; neutralized Covered
-  Passives remain hidden in Public Views until their ordinary trigger.
-- A fresh Brave E2E run remains unavailable because the execution environment
-  rejected the required sandbox escalation for quota reasons.
+- `cargo test` 與嚴格 Clippy 通過，包含 24 個重點迴響整合測試。
+- Web 單元測試（28 項）、Nuxt 型別檢查及正式 Nuxt 建置通過。
+- 複合持續時間事件的重播與驗證一致；被中和蓋牌在正常觸發前於公開視圖中保持隱藏。
+- 執行環境因配額拒絕必要沙箱提升，仍無法重新執行 Brave E2E。
 
 ## Blocked by
 

@@ -4,19 +4,6 @@ status: accepted
 
 # Treat 離山 as Temporary Ability Loss
 
-Although official 5.16 describes 離山 as making Profession Abilities and Spirit
-Skills ineffective, this product treats it as **Temporary Ability Loss**: the
-affected Player retains their Profession and Spirit identities but temporarily
-lacks the complete official 「該職業之能力」set and all Spirit Skills. Options that
-require those abilities are absent from Playable Actions and rejected without
-costs or events when submitted directly, keeping the Rules Engine legality
-contract from [ADR-0031](0031-expose-main-phase-legality-only-as-playable-actions.md)
-authoritative instead of allowing a Player to spend a
-cost or usage on an ability they temporarily do not have.
+官方 5.16 將離山描述為使職業能力及精靈技能無效，但本產品將其視為**暫時失去能力（Temporary Ability Loss）**：受影響玩家仍持有職業與精靈，但暫時失去官方所稱完整的「該職業之能力」及全部精靈技能。依賴這些能力的選項不出現在可執行行動中；直接提交時也會拒絕，且不支付代價或產生事件。[ADR-0031](0031-expose-main-phase-legality-only-as-playable-actions.md) 的規則引擎合法性契約因此仍具權威，不會讓玩家為暫時不具備的能力支付代價或消耗次數。
 
-The loss is prospective. Consequences established by an already accepted
-ability use remain, and canonical 離山 Status Effects, event shapes, Pending
-Choices, and pure replay do not change. Permissions and prohibitions in the
-Profession Ability Set are suspended alike; independent ordinary Profession
-Changes remain legal, while Profession Formations and profession-granted paths
-do not.
+失去能力只影響後續：已接受的能力使用所建立的結果仍然保留，正規離山狀態效果、事件結構、待選擇事項及純重播均不變。職業能力集合中的許可與禁止同樣暫停；獨立的一般轉職仍合法，但職業陣法與職業授予的途徑不可用。

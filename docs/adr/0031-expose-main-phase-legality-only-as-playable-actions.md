@@ -4,23 +4,8 @@ status: accepted
 
 # Expose Active Effects Process legality only as Playable Actions
 
-The Rules Engine exposes every legal Active Effects Process Command as a Player-scoped
-Playable Action for one exact Action Card Selection, including Pass, Discard
-Retrieval, Pouch Secret Strategies, and options from enabled Rule Modules. Web
-adapters serialize and group those offers but do not maintain parallel
-`canPass`, `canRetrieveDiscard`, optional-effect, or Secret Strategy capability
-flags; non-Turn lifecycles such as Initial Pouch Selection remain separate.
-Options used to complete a Pending Choice, such as Chain's Secret Strategy
-options, travel inside that typed Pending Choice payload rather than the Active
-Effects Process interaction payload.
-Initial, refreshed, and reconnected Player views carry the offers for an empty
-Action Card Selection, while non-empty selections remain uncommitted
-browser-local input and replace those offers through the same query. Every
-serialized offer carries a `commandRole` of `activeEffect` or `action`, derived
-from the Rules Engine's canonical Active-Effect Command and Action Command
-classification rather than reclassified by Web code.
+規則引擎依單次精確的行動選牌，將主動效果流程中的每個合法命令公開為限該玩家的可執行行動，包括略過、棄牌回收、錦囊秘計及已啟用規則模組的選項。Web 介面卡序列化並分組這些選項，但不另維護 `canPass`、`canRetrieveDiscard`、選用效果或秘計能力旗標；初始錦囊選擇等非回合生命週期維持獨立。用來完成待選擇事項的選項，例如連環的秘計選項，放在該具型別的待選擇 payload 中，而非主動效果流程互動 payload。
 
-Trusted-randomness command variants continue an already selected Formation or
-Spirit Skill through the existing Pending Randomness lifecycle. They are not
-additional Playable Actions because they do not represent another Active
-Effects Process choice.
+初始、重新整理及重新連線的玩家視圖均載入空行動選牌對應的選項；非空選牌仍是瀏覽器本機、尚未提交的輸入，並透過同一查詢取代選項。每個序列化選項的 `commandRole` 均為 `activeEffect` 或 `action`，由規則引擎的正規主動效果命令與行動命令分類推導，Web 程式碼不重新分類。
+
+可信任隨機性命令變體透過既有待隨機處理生命週期延續已選陣法或精靈技能；它們不代表另一個主動效果流程選擇，因此不是額外的可執行行動。

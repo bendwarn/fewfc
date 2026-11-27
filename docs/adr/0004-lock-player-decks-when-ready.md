@@ -4,18 +4,8 @@ status: accepted
 
 # Lock player deck lists when ready
 
-The Web application stores one current custom Deck List per account. In a
-Personal Deck room, the room captures a validated Locked Deck List when a
-non-owner becomes ready and when the owner starts the game, automatically using
-the Preconstructed Deck List when the account has no valid custom list. The
-snapshot records the name and exact contents actually selected after fallback.
-Game Setup uses only these room snapshots.
+Web 應用程式為每個帳號儲存一份目前的自訂牌組清單。在個人牌組房間中，非房主準備完成時，以及房主開始遊戲時，房間會擷取經驗證的鎖定牌組清單；若帳號沒有有效的自訂清單，則自動使用預組牌組清單。快照記錄實際選用的名稱及完整內容，包含遞補結果。遊戲設定只使用這些房間快照。
 
-Changing enabled Rule Modules, cancelling readiness, or leaving the room
-invalidates affected waiting-room snapshots. Started-game snapshots are
-immutable.
+變更已啟用的規則模組、取消準備或離開房間，會使受影響的等待室快照失效；已開始遊戲的快照不可變更。
 
-Reading live account data when a game starts was rejected because edits after
-readiness could silently change the agreed setup, make readiness misleading, and
-couple deterministic game creation to mutable profile state. Multiple saved deck
-slots remain a separate future capability.
+不在遊戲開始時讀取即時帳號資料，因為準備後的編輯可能悄悄改變雙方同意的設定、使準備狀態失去意義，並讓確定性建局依賴可變的個人資料。多個牌組儲存欄位仍是未來的獨立功能。

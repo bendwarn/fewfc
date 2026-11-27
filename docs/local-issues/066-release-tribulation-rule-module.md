@@ -6,48 +6,36 @@ ready-for-agent
 
 ## What to build
 
-Add Tribulation as one complete Theme Rule Module using the official 5.16
-rules. Deliver all five Tribulations and Divine Calculation through Formation
-matching, atomic multi-Player resolution, canonical replay, Public Views,
-Online Game Rooms, and the battlefield, including shared- and Personal-Deck
-behavior and interactions with existing Rule Modules.
+使用官方 5.16 規則，將天劫作為完整的單一主題規則模組加入。透過陣法匹配、原子多玩家結算、正規重播、公開視圖、線上房間及戰場交付五種天劫與神算，包括共用牌堆及個人牌組行為，以及與既有規則模組的互動。
 
 ## Acceptance criteria
 
-- [x] Tribulation is independently selectable, requires Star, Five Directions Legend, and Hero Schools, and is enabled by default in new games and rooms without changing persisted room configurations.
-- [x] The Formation Catalog exposes the five Tribulations and 神算 with their published names, categories, rule text, and exact matching rules.
-- [x] Every Tribulation is a variable-card-count Special Attack containing exactly its two specified overcoming elements with an effective level sum of at least seven per element; it never satisfies a fixed Formation card-count condition.
-- [x] 天雷劫火 resolves its 60-point Attack and one 15-point Formation-effect deduction per Team atomically, and triggers Shared Fate only for Death Spirit owners whose Teams actually lose HP.
-- [x] 烈風暴雨 applies independent two-turn Gale-Rain Status instances to every unprotected Player, counts each affected Player's Turn Ends under the main duration rules, and blocks only life recovery from Formations performed by that Player.
-- [x] 泥石轟流 deducts up to 20 points from every unprotected Shield, becomes an 80-point Attack only when that additional effect deducts at least one Shield point, and routes the Attack according to the target's resulting Shield.
-- [x] 裂地崩山 accepts any declared Environment, including the current one, and collects Environment-Element Card discards or hand reveals sequentially from the Next Player through the performer using printed Card elements.
-- [x] 裂地崩山 stores every answer in a replayable pending Formation continuation and applies Environment Transfer, discards or reveals, Attack damage, Card movement, and Game Outcome atomically only after the final answer.
-- [x] 鏽鐵枯林 processes a shared Deck once or every Personal Deck separately, reveals the applicable top eight Cards, discards printed level-three-or-higher Cards to their origin piles, and records every resulting shuffle through trusted midgame randomness.
-- [x] 鏽鐵枯林 integrates with Tailwind shuffle recovery and Divine Calculation correctly: shared Deck processing remains global, while a protected Player's Personal Deck is skipped.
-- [x] 神算 grants one exclusive Divine Calculation Status, replaces any previous owner, and the next Tribulation performed by any Player consumes it after applying its protection.
-- [x] Divine Calculation reduces only Tribulation Attack damage personally received by its owner, leaves Shield damage unreduced, remains effective against Snow-Treading attacks, and applies its additional-effect immunity to the correct Player-, Team-, Deck-, Shield-, and Environment-owned resources.
-- [x] Canonical events, direct execution, replay verification, persisted continuation recovery, Public State, viewer-filtered event history, and reconnect produce identical outcomes without leaking hands, Deck order, or private choice options.
-- [x] The battlefield presents accessible Rule Module state, Formation declarations, Environment selection, pending discard choices, Divine Calculation Status, Gale-Rain Status, and resolved event history.
-- [x] Any new Rust Web DTO multiword fields serialize with the exact camelCase contract and have serialization contract tests.
-- [x] Focused Rust, Web unit, and self-contained two-worker Brave Playwright tests cover all six Formations, both Deck modes, two- and four-Player play, Shield and Countershock cases, Divine Calculation's full immunity matrix, reconnect, game-ending resolutions, and all-enabled compatibility.
+- [x] 天劫可獨立選用，依賴星辰圖記、五方傳說及英雄學派，在新遊戲及房間預設啟用，且不改變已持久化房間設定。
+- [x] 陣法目錄公開五種天劫與神算的公開名稱、類別、規則文字及精確匹配規則。
+- [x] 每種天劫都是非固定張數的特殊攻擊，恰含其指定的兩種相剋屬性，且每種屬性有效等級總和至少為七；它不符合固定陣法張數條件。
+- [x] 天雷劫火原子結算 60 點攻擊及每隊一次 15 點陣法效果扣除生命，且只為所屬隊伍實際失去生命的死精靈擁有者觸發同命。
+- [x] 烈風暴雨對每位未受保護玩家各施加獨立、兩回合的烈風暴雨狀態，依主要持續時間規則計算各受影響玩家的回合結束，且只阻止該玩家施展陣法造成的生命回復。
+- [x] 泥石轟流從每個未受保護防護罩扣除至多 20 點；僅在附帶效果至少扣除一點防護罩時成為 80 點攻擊，再依目標結算後防護罩狀態處理攻擊。
+- [x] 裂地崩山接受任意宣告環境，包括目前環境；依牌面屬性，從下家開始依序至施展者收集環行牌捨棄或手牌展示。
+- [x] 裂地崩山將每個答案儲存於可重播的待處理陣法續接；最後一個答案之後，才原子套用環境轉移、捨棄或展示、攻擊傷害、牌移動及遊戲結果。
+- [x] 鏽鐵枯林處理共用牌堆一次，或分別處理每個個人牌組；展示適用牌堆頂八張，將牌面三級以上牌捨棄到其來源棄牌堆，並透過可信任遊戲中隨機性記錄所有洗牌。
+- [x] 鏽鐵枯林正確整合順風洗牌回復及神算：共用牌堆處理仍為全域，受保護玩家的個人牌組則略過。
+- [x] 神算賦予唯一神算狀態、取代前一擁有者，並在任意玩家下次施展天劫、套用其保護後消耗。
+- [x] 神算僅減少擁有者親自承受的天劫攻擊傷害，不減少防護罩傷害；它對踏雪攻擊仍有效，並將附帶效果免疫套用至正確的玩家、隊伍、牌堆、防護罩及環境資源。
+- [x] 正規事件、直接執行、重播驗證、持久化續接恢復、公開狀態、依觀看者過濾的事件歷史及重新連線產生相同結果，不洩漏手牌、牌序或私密選項。
+- [x] 戰場呈現可存取的規則模組狀態、陣法宣告、環境選擇、待處理棄牌選擇、神算狀態、烈風暴雨狀態及已結算事件歷史。
+- [x] 所有新增 Rust Web DTO 多詞欄位均依精確 camelCase 契約序列化，並有序列化契約測試。
+- [x] 重點 Rust、Web 單元及自足雙 Worker Brave Playwright 測試涵蓋六個陣法、兩種牌堆模式、雙人及四人、防護罩及反震、神算完整免疫矩陣、重新連線、終局結算及全啟用相容性。
 
 ## Validation
 
-- `cargo test` and strict Clippy pass, including focused Tribulation, replay,
-  persistence, Public View, and all-enabled regressions.
-- Web unit tests, Nuxt type checking, production build, and Playwright spec
-  discovery pass.
-- The self-contained Brave spec covers default/dependency normalization and a
-  private, reconnectable 裂地崩山 Environment choice through a development-only
-  fixture.
-- The Rust suite passes with 12 focused Tribulation integration tests, full
-  `cargo test`, and strict Clippy.
-- Web unit tests (31), Nuxt type checking, production build, and focused
-  Playwright spec discovery pass.
-- A fresh Brave run could not start because Wrangler requires sandbox-external
-  access to its user preference directory and the escalation was rejected for
-  quota reasons.
+- `cargo test` 與嚴格 Clippy 通過，包含天劫、重播、持久化、公開視圖及全啟用重點回歸測試。
+- Web 單元測試、Nuxt 型別檢查、正式建置及 Playwright 規格探索通過。
+- 自足 Brave 規格透過僅供開發測試資料，涵蓋預設／依賴正規化及私密、可重新連線的裂地崩山環境選擇。
+- Rust 套件通過 12 個重點天劫整合測試、完整 `cargo test` 及嚴格 Clippy。
+- Web 單元測試（31 項）、Nuxt 型別檢查、正式建置及重點 Playwright 規格探索通過。
+- Wrangler 需要沙箱外使用者偏好目錄存取，且提升因配額遭拒，因此無法啟動新的 Brave 執行。
 
 ## Blocked by
 
-None - can start immediately.
+無，可立即開始。

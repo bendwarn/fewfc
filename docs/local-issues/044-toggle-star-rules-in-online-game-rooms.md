@@ -6,33 +6,27 @@ ready-for-agent
 
 ## What to build
 
-Every Online Game Room uses the Base Ruleset. Add one default-on room setting
-that enables the complete Star Rule Module; creators may turn off that module
-without disabling any Base rule.
+每個線上遊戲房間均使用基礎規則集。新增一個預設開啟的房間設定以啟用完整星辰圖記規則模組；建立者可關閉該模組而不關閉任何基礎規則。
 
-Persist the enabled module configuration as room metadata. The owner may change
-it while the room is waiting; every change invalidates non-owner readiness and
-locked setup inputs. Starting the game captures an immutable module
-configuration in Game Setup for command handling, automatic advancement,
-playable-Formation queries, Public View updates, reconnects, and replay.
+將已啟用模組設定持久化為房間中繼資料。房主可在等待期間修改；每次變更均使非房主的準備狀態及鎖定設定輸入失效。遊戲開始時將不可變模組設定擷取到遊戲設定，供命令處理、自動推進、可施展陣法查詢、公開視圖更新、重新連線及重播使用。
 
 ## Acceptance criteria
 
-- [x] Base Ruleset is mandatory for every room and the UI provides no control to disable it.
-- [x] Room creation enables the complete Star advanced-rules module by default; its waiting-room toggle is enabled by default.
-- [x] Disabling the toggle leaves every Base rule active.
-- [x] The UI does not expose separate toggles for individual Stars or Star features.
-- [x] Only the owner can change enabled Rule Modules while the room is waiting.
-- [x] Changing enabled Rule Modules invalidates non-owner readiness and all waiting-room locked setup inputs.
-- [x] A started Game Setup retains an immutable module configuration and active-game commands cannot change it.
-- [x] Public and private room metadata, room lists, invitations, reconnects, and reset matches retain the Star toggle.
-- [x] Starting a room creates Game Setup with the mandatory Base Ruleset and the selected module configuration.
-- [x] Every later command, automatic advancement, playable-Formation query, and replay dispatches from the Game State module configuration.
-- [x] Public State View and Public Event Feed carry complete viewer-safe Star data only when the Star Rule Module is enabled.
-- [x] Rooms with Star disabled retain Base behavior and do not expose Star state or Star Formations.
-- [x] The waiting-room UI shows that Base is mandatory and whether Star rules are enabled; the creation dialog intentionally omits rule controls.
-- [x] Browser tests cover default-enabled Star rules, explicitly disabled Star rules, waiting-room changes and readiness invalidation, two-player and team-mode starts, reconnect, and match reset.
-- [x] A development-only Star endgame fixture is completed through normal online UI play, outcome resolution, and match reset without manual phase advancement.
+- [x] 每個房間都必須使用基礎規則集，介面不提供停用控制。
+- [x] 建立房間預設啟用完整星辰進階規則模組；等待室開關預設開啟。
+- [x] 關閉開關後所有基礎規則仍啟用。
+- [x] 介面不提供個別星辰或星辰功能的獨立開關。
+- [x] 只有房主可在等待期間變更已啟用規則模組。
+- [x] 變更已啟用規則模組會使非房主準備狀態及所有等待室鎖定設定輸入失效。
+- [x] 已開始的遊戲設定保留不可變模組設定，遊戲中命令不能更改它。
+- [x] 公開及私人房間中繼資料、房間清單、邀請、重新連線及重設對局保留星辰開關。
+- [x] 開始房間時，以必備基礎規則集及選定模組設定建立遊戲設定。
+- [x] 所有後續命令、自動推進、可施展陣法查詢與重播均依遊戲狀態的模組設定分派。
+- [x] 只有啟用星辰圖記時，公開狀態視圖及公開事件動態才攜帶完整且符合觀看權限的星辰資料。
+- [x] 停用星辰的房間保留基礎行為，不公開星辰狀態或星辰技。
+- [x] 等待室介面顯示基礎規則為必備及星辰規則是否啟用；建立對話框刻意省略規則控制。
+- [x] 瀏覽器測試涵蓋預設啟用、明確停用、等待室變更及準備失效、雙人及團隊開局、重新連線與對局重設。
+- [x] 僅供開發使用的星辰終局測試資料透過正常線上介面完成遊戲、結果結算及對局重設，無須手動推進階段。
 
 ## Blocked by
 

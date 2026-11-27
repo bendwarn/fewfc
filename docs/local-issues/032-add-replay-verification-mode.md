@@ -6,21 +6,20 @@ AFK
 
 ## Parent
 
-Derived from `docs/rules-engine-decisions.md` section 33.
+源自 `docs/rules-engine-decisions.md` 第 33。
 
 ## What to build
 
-Add an optional verification mode that can rerun command decisions or automatic advancement against a known history and compare the produced canonical events with the stored event log. Pure replay must remain unchanged and should continue applying recorded events exactly.
+新增選用驗證模式，可針對已知歷史重新執行命令決策或自動推進，並比較產生的正規事件與已儲存事件日誌。純重播必須保持不變，繼續精確套用已記錄事件。
 
 ## Acceptance criteria
 
-- [ ] Pure replay continues to apply canonical events without recomputation.
-- [ ] Verification mode can compare expected automatic events with recorded automatic events.
-- [ ] Verification mode can compare expected command-produced events with recorded command-produced events when command context is available.
-- [ ] Verification failures report sequence and event mismatch details.
-- [ ] Tests cover successful verification, automatic event mismatch, command event mismatch, and pure replay independence.
+- [ ] 純重播繼續直接套用正規事件，不重新計算。
+- [ ] 驗證模式可比較預期自動事件與已記錄自動事件。
+- [ ] 有命令情境時，驗證模式可比較預期命令事件與已記錄命令事件。
+- [ ] 驗證失敗回報序號及事件不一致細節。
+- [ ] 測試涵蓋驗證成功、自動事件不一致、命令事件不一致及純重播獨立性。
 
 ## Blocked by
 
 - #29
-

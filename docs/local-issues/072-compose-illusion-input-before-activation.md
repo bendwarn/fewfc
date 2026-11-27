@@ -6,115 +6,65 @@ ready-for-agent
 
 ## Problem Statement
 
-Selecting two Cards currently makes the Rules Engine emit 25 complete Illusion
-offers and 25 complete Phantasm offers: one for every element-and-level
-declaration. The Web renders those otherwise identical offers as repeated
-Ability buttons. This exposes candidate enumeration as interface structure,
-makes the decision difficult to scan, and treats input selection as though the
-Activated Profession Ability had already been committed.
+選取兩張牌時，規則引擎目前對每種屬性與等級宣告各發出一個完整選項，總計 25 個幻術及 25 個幻朧選項。Web 將這些其他部分相同的選項呈現為重複能力按鈕，導致候選枚舉成為介面結構，使決策難以瀏覽，也將輸入選擇誤當成發動能力已經提交。
 
-Dark Spirit has a smaller version of the same presentation problem. It emits up
-to two level-specific offers, and the Web renders them as same-named buttons
-instead of using the level-picker interaction already established by Splendor.
+暗靈有較小規模的相同呈現問題：引擎發出至多兩個依等級區分的選項，Web 卻呈現同名按鈕，而非使用絢爛已建立的等級選擇互動。
 
 ## Solution
 
-Represent Illusion and Phantasm as one offered Ability apiece with a typed
-Action Input Requirement describing the legal Virtual Formation Card elements
-and levels. The Web opens a client-local modal matrix from that offer. Selecting
-one matrix cell completes and submits the existing ability command with
-`declaredElement` and `declaredLevel`; opening or cancelling the matrix does not
-activate the Ability, create canonical state, or create a Pending Choice.
+幻術與幻朧各表示為一個能力選項，附帶具型別行動輸入要求，描述合法虛擬牌屬性及等級。Web 從該選項開啟客戶端本機矩陣對話框。選取一格即可填妥並提交含 `declaredElement` 及 `declaredLevel` 的既有能力命令；開啟或取消矩陣不發動能力、不建立正規狀態，也不建立待選擇事項。
 
-Render Dark Spirit through the existing Splendor-style level picker while
-retaining its current concrete engine candidates. Even a single legal Dark
-Spirit level remains an explicit menu selection.
+暗靈保留目前具體引擎候選，透過既有絢爛式等級選擇器呈現。即使暗靈只有一個合法等級，仍須明確從選單選擇。
 
 ## User Stories
 
-1. As a Player, I want one Illusion or Phantasm button after selecting its two
-   cost Cards, so that I do not have to scan 25 repeated labels.
-2. As a Player, I want to choose the Virtual Formation Card from a five-element
-   by five-level matrix, so that all declarations are visible in one compact
-   control.
-3. As a Player, I want selecting a matrix cell to activate immediately, so that
-   a redundant confirmation step does not slow the interaction.
-4. As a Player, I want to cancel with a visible control or Escape while keeping
-   my selected cost Cards, so that opening the matrix does not commit me.
-5. As a reconnecting Player, I want an unsubmitted matrix draft to disappear,
-   so that a browser-local selection is never mistaken for an activated
-   Ability.
-6. As a Player, I want Dark Spirit to use the same level-picker flow as
-   Splendor, even when only one level is legal, so that the same button does not
-   change behavior based on option count.
-7. As a rules maintainer, I want the Rules Engine to describe legal Illusion
-   inputs without multiplying Action offers, so that Web presentation does not
-   depend on candidate enumeration.
+1. 作為玩家，我希望選取兩張代價牌後，幻術或幻朧各只有一個按鈕，無須瀏覽 25 個重複標籤。
+2. 作為玩家，我希望從五屬性乘五等級矩陣選擇虛擬牌，在精簡控制中看見所有宣告。
+3. 作為玩家，我希望選取矩陣格後立即發動，避免多餘確認步驟拖慢互動。
+4. 作為玩家，我希望使用可見控制或 Escape 取消並保留所選代價牌，使開啟矩陣不代表已提交。
+5. 作為重新連線玩家，我希望未提交矩陣草稿消失，避免將瀏覽器本機選擇誤認為已發動能力。
+6. 作為玩家，我希望暗靈即使只有一個合法等級，也使用與絢爛相同的等級選擇流程，使同一按鈕不因選項數改變行為。
+7. 作為規則維護者，我希望規則引擎描述合法幻術輸入而不倍增行動選項，使 Web 呈現不依賴候選枚舉。
 
 ## Implementation Decisions
 
-- Add a closed typed Action Input Requirement to Profession Ability offers.
-- The initial requirement variant describes a Virtual Formation Card using
-  explicit legal elements and levels supplied by the Rules Engine.
-- Emit one Illusion offer and one Phantasm offer for a legal two-Card selection.
-  Their `declared_element` and `declared_level` are absent until command
-  submission.
-- Keep `declaredElement` and `declaredLevel` on the submitted command and
-  validate both authoritatively in the Rules Engine.
-- Do not create a canonical Pending Choice, Choice ID, continuation, Game Event,
-  or persisted draft before command submission.
-- Keep the existing read-only `playableActions` query. Opening and cancelling
-  the matrix cause no additional engine command.
-- Render the requirement as a modal 5×5 matrix. Do not repeat the cost Cards or
-  the follow-up Formation scope inside the modal.
-- Selecting a cell submits immediately and closes the modal regardless of the
-  response outcome. While the request is in flight, prevent duplicate
-  submission.
-- A visible cancel control and Escape close the modal without submission and
-  retain the selected Cards.
-- Close an open modal if its Player, turn, phase, viewer, or offered Ability
-  context becomes invalid.
-- Keep Splendor unchanged. Group current Dark Spirit candidates into one
-  Splendor-style level picker and always require an explicit menu-item click.
-- Do not migrate Splendor or Dark Spirit to Action Input Requirement in this
-  issue.
+- 在職業能力選項加入封閉具型別行動輸入要求。
+- 第一種要求變體以規則引擎明確提供的合法屬性及等級描述虛擬牌。
+- 合法選取兩張牌時，各發出一個幻術及幻朧選項；提交命令前不存在 `declared_element` 及 `declared_level`。
+- 提交命令保留 `declaredElement` 及 `declaredLevel`，由規則引擎權威驗證兩者。
+- 提交命令前不建立正規待選擇事項、Choice ID、續接、遊戲事件或持久化草稿。
+- 保留既有唯讀 `playableActions` 查詢；開啟及取消矩陣不產生額外引擎命令。
+- 要求以 5×5 矩陣對話框呈現；對話框內不重複代價牌或後續陣法範圍。
+- 選取一格立即提交並關閉對話框，無論回應結果為何；請求進行中防止重複提交。
+- 可見取消控制及 Escape 關閉對話框而不提交，並保留所選牌。
+- 玩家、回合、階段、觀看者或能力選項情境失效時，關閉開啟的對話框。
+- 絢爛保持不變；將目前暗靈候選分組為一個絢爛式等級選擇器，永遠要求明確點選選單項目。
+- 本議題不將絢爛或暗靈遷移至行動輸入要求。
 
 ## Testing Decisions
 
-- Add Rules Engine tests proving one Illusion and one Phantasm offer are emitted
-  with the complete element-and-level requirement.
-- Add Web serialization contract coverage for the exact camelCase
-  `inputRequirement`, element, and level fields.
-- Add Web interaction unit tests for requirement recognition, matrix lookup,
-  command completion, and draft invalidation.
-- Add component or end-to-end coverage proving one Ability button opens the
-  matrix, a cell submits the declared element and level, cancellation submits
-  nothing, and reconnect starts with no open draft.
-- Add Web coverage proving Dark Spirit renders one trigger and uses an explicit
-  level selection even with one candidate.
-- Preserve direct command validation and replay coverage because the canonical
-  activation shape and events remain unchanged.
+- 新增規則引擎測試，證明幻術與幻朧各發出一個含完整屬性及等級要求的選項。
+- 新增 Web 序列化契約覆蓋，驗證精確 camelCase `inputRequirement`、屬性及等級欄位。
+- 新增 Web 互動單元測試，涵蓋要求辨識、矩陣查詢、命令完成及草稿失效。
+- 新增元件或端到端測試，證明一個能力按鈕開啟矩陣、選格提交宣告屬性及等級、取消不提交，且重新連線後沒有開啟的草稿。
+- 新增 Web 測試，證明暗靈呈現一個觸發控制，即使只有一個候選仍須明確選擇等級。
+- 由於正規發動結構及事件不變，保留直接命令驗證及重播覆蓋。
 
 ## Out of Scope
 
-- Changing the rules, cost, Formation Requirement, Virtual Formation Card, or
-  replay semantics of Illusion or Phantasm.
-- Persisting or synchronizing unsubmitted Action input.
-- Representing Action Input Requirement as Pending Choice.
-- Moving Splendor or Dark Spirit to the new engine requirement contract.
-- Adding cost-Card summaries, Formation-scope prose, or a confirmation step to
-  the Illusion modal.
-- Introducing compatibility fields for the unreleased Web contract.
+- 改變幻術或幻朧的規則、代價、陣法要求、虛擬牌或重播語意。
+- 持久化或同步未提交的行動輸入。
+- 將行動輸入要求表示為待選擇事項。
+- 將絢爛或暗靈移入新引擎要求契約。
+- 在幻術對話框加入代價牌摘要、陣法範圍文字或確認步驟。
+- 為未發布 Web 契約引入相容欄位。
 
 ## Further Notes
 
-- The glossary definitions for Activated Profession Ability, Action Input
-  Requirement, Pending Choice, Virtual Formation Card, and Formation
-  Requirement are authoritative.
-- ADR-0025 continues to govern the canonical Illusion and Phantasm procedure.
-- Existing dirty worktree changes, especially the in-progress Player-Facing
-  Action Detail work, belong to the user and must be preserved.
+- Activated Profession Ability、Action Input Requirement、Pending Choice、Virtual Formation Card 及 Formation Requirement 的詞彙表定義具權威性。
+- ADR-0025 繼續管轄正規幻術及幻朧流程。
+- 既有未提交工作樹變更，尤其進行中的玩家行動詳情工作，屬於使用者，必須保留。
 
 ## Blocked by
 
-- none
+- 無

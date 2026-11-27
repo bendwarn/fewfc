@@ -4,14 +4,6 @@ status: accepted
 
 # Order cross-module Attack resolution
 
-Attack resolution first applies legal Card interpretations and matches the
-Formation, then computes Attack Points including Profession modifiers, evaluates
-point-based qualifications, resolves Counter Effects, applies five-element
-interaction, Environment Effects, and Shields, and finally resolves
-post-Formation consequences. Canonical Attack events retain both Attack Points
-and the final damage or recovery result.
+攻擊結算依序套用合法的牌解讀並匹配陣法，計算含職業修正的攻擊點數，判定點數門檻，處理反制效果，套用五行生剋、環境效果及防護罩，最後處理陣法後續結果。正規攻擊事件同時保留攻擊點數及最終傷害或回復結果。
 
-This order keeps point-based rules such as Windwalking and Star Summoning
-independent from damage transformations such as Environment Effects. Allowing
-each Rule Module to wrap the entire resolver was rejected because the result
-would depend on module registration order rather than explicit game semantics.
+此順序使風行術及召喚星辰等依點數判定的規則，不受環境效果等傷害轉換影響。不讓各規則模組包覆整個解析器，因為結果會取決於模組登錄順序，而非明確的遊戲語意。

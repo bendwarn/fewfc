@@ -6,29 +6,23 @@ complete
 
 ## What to build
 
-Deepen rule execution behind the mandatory Base Ruleset and closed official
-Advanced Rule Module catalog recorded in ADR-0001. Preserve all Base Ruleset
-behavior while routing setup, command decisions, automatic advancement,
-playable-Formation queries, replay verification, and Web-facing execution
-through the same interface.
+深化 ADR-0001 記錄的必備基礎規則集與封閉官方進階規則模組目錄後方的規則執行介面。保留所有基礎規則集行為，並讓設定、命令決策、自動推進、可施展陣法查詢、重播驗證及 Web 執行使用同一介面。
 
-Formation registries, matchers, Effect Plans, resolvers, and Pending Choice
-continuations become implementation details. Game Setup and Game State carry the
-enabled module configuration so callers cannot apply mismatched rules.
+陣法登錄表、匹配器、效果計畫、解析器及待選擇事項續接成為實作細節。遊戲設定及遊戲狀態攜帶已啟用模組設定，防止呼叫端套用不一致規則。
 
 ## Acceptance criteria
 
-- [x] Every game executes the Base Ruleset whether or not Advanced Rule Modules are enabled.
-- [x] Game State projects the enabled Advanced Rule Module identities from Game Setup.
-- [x] Base setup, commands, automatic advancement, playable-Formation queries, and replay execute through one deep rule-execution interface.
-- [x] Official Advanced Rule Modules augment that same command and query flow rather than replacing the Base Ruleset.
-- [x] Game Record and Web callers do not construct rule modules or choose them independently of Game State.
-- [x] Unknown Advanced Rule Module identities fail explicitly before emitting Game Events or mutating Game State.
-- [x] Formation registry, matcher, and module-hook details are not part of the external interface.
-- [x] Shared conformance tests exercise the Base-only configuration through the same interface used by callers.
-- [x] Direct tests of shallow registry plumbing are replaced; matcher algorithm invariants may remain internal tests.
-- [x] Existing Base-only Rust, Web unit, and browser behavior remains unchanged.
+- [x] 每局遊戲均執行基礎規則集，無論是否啟用進階規則模組。
+- [x] 遊戲狀態從遊戲設定投影已啟用的進階規則模組識別。
+- [x] 基礎設定、命令、自動推進、可施展陣法查詢及重播均透過同一深度規則執行介面執行。
+- [x] 官方進階規則模組擴充同一命令及查詢流程，不取代基礎規則集。
+- [x] 遊戲紀錄及 Web 呼叫端不自行建構規則模組，也不獨立於遊戲狀態選擇模組。
+- [x] 未知進階規則模組識別在發出遊戲事件或修改遊戲狀態前明確失敗。
+- [x] 陣法登錄表、匹配器及模組鉤子細節不屬於外部介面。
+- [x] 共用符合性測試透過呼叫端使用的同一介面測試僅基礎規則設定。
+- [x] 取代直接測試淺層登錄接線的測試；匹配演算法不變條件可保留內部測試。
+- [x] 既有僅基礎規則的 Rust、Web 單元及瀏覽器行為不變。
 
 ## Blocked by
 
-None - can start immediately
+無，可立即開始

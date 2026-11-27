@@ -6,91 +6,51 @@ ready-for-agent
 
 ## What to build
 
-As an operator, I want development conveniences to be isolated from production-like
-environments so staging and production always create and present games according to
-the published rules.
+作為操作人員，我希望開發便利功能與類正式環境隔離，使 staging 與 production 一律依公開規則建立及呈現遊戲。
 
-Only local development may expose fixtures, fixture-based setup fallbacks,
-diagnostic UI, or development-only adapters. Staging and production must have the
-same gameplay, permissions, and player-facing interface; they differ only in
-deployment origin, bindings, secrets, and persisted data.
+只有本機開發可公開測試資料、以測試資料為基礎的設定遞補、診斷介面或僅供開發的介面卡。staging 與 production 必須使用相同遊戲玩法、權限及玩家介面，只在部署來源、綁定、秘密與持久化資料上不同。
 
 ## Acceptance criteria
 
-- [x] The application has an explicit environment distinction for local development,
-      staging, and production.
-- [x] `APP_ENV=development|staging|production` is the sole environment policy input;
-      application behavior is not inferred from URLs, `NODE_ENV`, or Wrangler
-      environment names.
-- [x] A production-like deployment with a missing or invalid `APP_ENV` fails clearly
-      instead of defaulting to development behavior.
-- [x] Staging and production use identical gameplay rules, permissions, and
-      player-facing UI.
-- [x] Local development is the only environment allowed to expose test conveniences.
-- [x] Production-like game creation uses authoritative room participants plus
-      ruleset-defined defaults rather than fixture players, fixture order, or fixed
-      fallback seeds.
-- [x] A room supplies the actual participants and player count; the selected ruleset
-      supplies defaults such as starting health and the official deck.
-- [x] First player, four-player teams and turn order, and the shuffle seed are
-      randomized when the match starts.
-- [x] Generated setup and random results are persisted once and reused for reconnect
-      and replay.
-- [x] The Base Ruleset exposes a production setup path that combines actual room
-      participants with official ruleset defaults and card composition.
-- [x] `sample_game_setup` and fixture identities or ordering are limited to tests and
-      the development-only surface.
-- [x] Production code does not obtain official card composition indirectly through a
-      sample or fixture setup.
-- [x] Player-facing production-like pages contain no diagnostic controls, fixture
-      identities, internal event names, or prototype-only labels.
-- [x] Anonymous guest play remains available in staging and production as a product
-      feature, labeled `以訪客身份遊玩` rather than as a quick-start or test shortcut.
-- [x] Guest display names are product-appropriate generated identities and never
-      expose fixture names such as Alice or Bob.
-- [x] Redundant prototype kickers (`GAME LOBBY`, `MATCH READY`, `WAITING ROOM`, and
-      `GAME SET`) are removed rather than translated.
-- [x] Initial client state contains no prefilled fixture identity such as
-      `玩家 Alice`.
-- [x] A new room defaults to the editable name `{host display name}的房間`
-      instead of the prototype name `五行練習場`.
-- [x] Development-only server routes and adapters are unavailable in staging and
-      production.
-- [x] Development-only UI is excluded from staging and production bundles rather
-      than merely hidden.
-- [x] Direct requests to development-only APIs return `404` in production-like
-      environments and cannot invoke local processes.
-- [x] Server-side authorization and rule validation remain authoritative regardless
-      of which controls the client renders.
-- [x] Normal login, room, and match screens retain the production interface even
-      during local development.
-- [x] Any fixture or manual engine controls live only under a development-only
-      `/dev` route that is absent from staging and production.
-- [x] Local play and `/api/local-game` are development-only; staging and production
-      create matches exclusively through online rooms.
-- [x] Missing or placeholder production-like bindings and secrets fail deployment or
-      startup clearly instead of silently using local defaults.
-- [x] Wrangler defines explicit, isolated `staging` and `production` environments,
-      each with `APP_ENV`, origin, storage, and Durable Object bindings appropriate
-      to that environment.
-- [x] Package scripts expose only explicit production-like deployment commands such
-      as `cf:deploy:staging` and `cf:deploy:production`; an unqualified `cf:deploy`
-      cannot publish local defaults.
-- [x] Environment-matrix tests verify that `/dev` and `/api/local-game` work only in
-      development and return `404` in staging and production.
-- [x] Production-like UI tests verify that fixture identities, prototype English
-      kickers, and development controls are absent.
-- [x] Configuration tests verify that missing or invalid `APP_ENV` and placeholder
-      production-like bindings fail clearly.
-- [x] Match-start tests verify that room participants, generated setup, randomized
-      order, official deck, and shuffle seed are persisted.
+- [x] 應用程式明確區分本機開發、staging 及 production 環境。
+- [x] `APP_ENV=development|staging|production` 是唯一環境政策輸入；應用程式行為不從 URL、`NODE_ENV` 或 Wrangler 環境名稱推導。
+- [x] 類正式部署缺少或提供無效 `APP_ENV` 時明確失敗，不預設使用開發行為。
+- [x] staging 與 production 使用相同遊戲規則、權限及玩家介面。
+- [x] 只有本機開發環境允許公開測試便利功能。
+- [x] 類正式環境建立遊戲時，使用權威房間參與者及規則集定義的預設值，不使用測試玩家、測試順序或固定遞補種子。
+- [x] 房間提供實際參與者及玩家人數；所選規則集提供初始生命值及官方牌組等預設值。
+- [x] 對局開始時隨機決定先手、四人隊伍及行動順序與洗牌種子。
+- [x] 產生的設定及隨機結果只持久化一次，供重新連線及重播重用。
+- [x] 基礎規則集提供正式設定路徑，結合實際房間參與者、官方規則集預設值及牌組成。
+- [x] `sample_game_setup` 與測試身分或順序僅限測試及僅供開發使用的介面。
+- [x] 正式程式碼不透過範例或測試設定間接取得官方牌組成。
+- [x] 類正式玩家頁面不含診斷控制、測試身分、內部事件名稱或僅原型使用的標籤。
+- [x] 匿名訪客遊戲在 staging 及 production 仍作為產品功能提供，標示 `以訪客身份遊玩`，而非快速開始或測試捷徑。
+- [x] 訪客顯示名稱使用適合產品的產生身分，絕不暴露 Alice 或 Bob 等測試名稱。
+- [x] 移除多餘原型標示（`GAME LOBBY`、`MATCH READY`、`WAITING ROOM` 及 `GAME SET`），不翻譯後保留。
+- [x] 初始客戶端狀態不預填 `玩家 Alice` 等測試身分。
+- [x] 新房間預設為可編輯名稱 `{host display name}的房間`，不使用原型名稱 `五行練習場`。
+- [x] 僅供開發的伺服器路由及介面卡在 staging 與 production 不可用。
+- [x] 僅供開發的介面排除在 staging 與 production bundle 外，而非僅隱藏。
+- [x] 類正式環境中直接請求僅供開發的 API 會回傳 `404`，且不能呼叫本機程序。
+- [x] 無論客戶端呈現哪些控制，伺服器授權及規則驗證仍具權威。
+- [x] 即使在本機開發期間，正常登入、房間及對局畫面仍保有正式介面。
+- [x] 測試資料或手動引擎控制只存在於僅供開發的 `/dev` 路由；staging 與 production 不含該路由。
+- [x] 本機遊戲及 `/api/local-game` 僅供開發；staging 與 production 只能透過線上房間建立對局。
+- [x] 類正式環境缺少綁定或秘密，或使用佔位值時，部署或啟動明確失敗，不靜默使用本機預設值。
+- [x] Wrangler 定義明確隔離的 `staging` 及 `production` 環境，各含適合該環境的 `APP_ENV`、來源、儲存及 Durable Object 綁定。
+- [x] 套件腳本只公開明確的類正式部署命令，例如 `cf:deploy:staging` 及 `cf:deploy:production`；未限定環境的 `cf:deploy` 不能發布本機預設值。
+- [x] 環境矩陣測試驗證 `/dev` 及 `/api/local-game` 只在 development 運作，在 staging 與 production 回傳 `404`。
+- [x] 類正式介面測試驗證不存在測試身分、原型英文標示及開發控制。
+- [x] 設定測試驗證缺少或無效 `APP_ENV` 及類正式佔位綁定會明確失敗。
+- [x] 對局開始測試驗證房間參與者、產生設定、隨機順序、官方牌組及洗牌種子均已持久化。
 
 ## Non-goals
 
-- Changing the game rules.
-- Making staging share production data or secrets.
-- Adding a beginner or learning mode.
+- 改變遊戲規則。
+- 讓 staging 共用 production 資料或秘密。
+- 新增初學者或學習模式。
 
 ## Blocked by
 
-- None - can start immediately
+- 無，可立即開始

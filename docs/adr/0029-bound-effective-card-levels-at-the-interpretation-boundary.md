@@ -4,33 +4,10 @@ status: accepted
 
 # Bound effective Card Levels at the interpretation boundary
 
-The Base Ruleset fixes every consumable Card Level to the inclusive range one
-through five. We distinguish Printed Card Level from Effective Card Level:
-rules read the bounded Effective Card Level unless they explicitly require the
-printed value. Physical Cards obtain their effective element and level through
-one Effective Card Facts Resolver, while Virtual Formation Cards use the same
-bounded level type without participating in Card Interpretation Layers. Rule
-Modules and Game Setup cannot override these bounds.
+基礎規則集規定所有可使用的牌等級均介於一至五，包含上下限。牌面等級（Printed Card Level）與有效等級（Effective Card Level）分開：除非規則明確要求牌面值，否則讀取受限的有效等級。實體牌透過同一個有效牌資訊解析器取得有效屬性與等級；虛擬牌使用同樣受限的等級型別，但不參與牌解讀層。規則模組與遊戲設定均不能覆寫界限。
 
-Semantic canonical events remain specific to their rules and project their
-effects into one ordered collection of Card Interpretation Layers. The resolver
-composes those layers in canonical effect order and applies the level bound
-once, after the complete composition. A relative adjustment may cross a bound
-while composition is in progress; an absolute level assignment must already be
-within one through five, and an invalid assignment makes command handling or
-replay fail instead of being silently corrected. Printed and Effective Card
-Levels are distinct domain types so ordinary rule consumers cannot bypass the
-resolver accidentally.
+具語意的正規事件仍各自對應其規則，並將效果投影至同一個有序牌解讀層集合。解析器依正規效果順序組合各層，全部組合完成後才套用一次等級界限。相對調整在組合過程中可以跨越界限；絕對等級指定則必須本來就介於一至五，無效指定會使命令處理或重播失敗，而不是靜默修正。牌面等級與有效等級是不同的領域型別，使一般規則使用端不會意外繞過解析器。
 
-This deepens ADR 0011's dimension-composition decision and retains ADR 0025's
-separation between physical interpretations and Virtual Formation Cards. We
-reject module-local clamps, hard-coded precedence over scattered module state,
-and per-layer clamping: they respectively permit omissions, obscure canonical
-effect order, and change the agreed final-composition semantics.
+本決策深化 ADR 0011 的維度組合，並保留 ADR 0025 對實體牌解讀與虛擬牌的區分。不採模組各自限制界限、以硬編碼優先順序處理分散的模組狀態，或逐層限制界限：三者分別可能遺漏限制、掩蓋正規效果順序，或改變已同意的最終組合語意。
 
-Property tests must prove that arbitrary valid layer sequences always resolve
-to levels one through five and that bounds apply only after full composition.
-Conformance tests must cover every semantic event-to-layer mapping and enforce
-that rule consumers accept Effective rather than Printed Card Levels. A
-captured-room regression test is unnecessary. Web DTO and hand-UI presentation
-of effective levels remain outside this decision.
+性質測試須證明任意合法層序列最終等級均介於一至五，且只在完整組合後套用界限。符合性測試須涵蓋每個語意事件至解讀層的映射，並確保規則使用端接受有效等級而非牌面等級。無須建立擷取房間的回歸測試。有效等級的 Web DTO 與手牌介面呈現不屬於本決策。

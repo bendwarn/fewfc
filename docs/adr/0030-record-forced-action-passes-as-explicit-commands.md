@@ -4,16 +4,6 @@ status: accepted
 
 # Record forced action passes as explicit commands
 
-When an Action Pass is the sole Playable Action, the Rules Engine advances
-without awaiting Player input but records the same explicit `PassAction`
-Command used when a Player declines optional Active-Effect Commands. This keeps
-Command validation, Game Events, and replay consistent at the deliberate cost
-of a Command source that was selected automatically rather than submitted by a
-Player. Forced advancement recognizes only an empty Action Card Selection whose
-authoritative Playable Action result is exactly one Action Pass; it does not
-rederive pass legality through a parallel predicate. An Action Pass may
-coexist with optional Active-Effect Commands but never with another Action
-Command, so only the exact one-offer result advances automatically. The
-Playable Action carries the authoritative `PassActionReason`; automatic
-application copies that reason into the Command, whose normal validation still
-protects against stale state.
+當行動略過（Action Pass）是唯一可執行行動時，規則引擎不等待玩家輸入即推進，但仍記錄玩家拒絕選用主動效果命令時所用的同一個明確 `PassAction` 命令。這使命令驗證、遊戲事件及重播一致，代價是命令來源由系統自動選擇而非玩家提交。
+
+強制推進只辨識行動選牌為空，且權威可執行行動結果恰好只有一個行動略過；不得以另一套條件重新推導略過是否合法。行動略過可與選用主動效果命令共存，但不可與其他行動命令共存，因此只有恰好一個選項時自動推進。可執行行動攜帶權威的 `PassActionReason`；自動套用將原因複製到命令，仍由正常驗證防止狀態過期。

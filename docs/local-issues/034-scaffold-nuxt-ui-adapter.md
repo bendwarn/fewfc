@@ -6,26 +6,26 @@ AFK
 
 ## Parent
 
-Derived from `apps/web/docs/platform-decision.md`.
+源自 `apps/web/docs/platform-decision.md`。
 
 ## What to build
 
-Create the first Nuxt website adapter around the rules engine without changing the Rust domain boundary. The UI should make the current Public Game State inspectable and provide enough controls to start a local game, submit legal Commands, advance automatic resolution, and inspect recent Public Event Feed entries.
+建立規則引擎外第一個 Nuxt 網站介面卡，不改變 Rust 領域邊界。介面應能檢視目前公開遊戲狀態，並提供足夠控制以開始本機遊戲、提交合法命令、推進自動結算及查看近期公開事件動態。
 
 ## Acceptance criteria
 
-- [x] Add a Nuxt app under `apps/web`.
-- [x] Use TypeScript for UI-facing DTOs.
-- [x] Add a rules-engine adapter boundary that can later be backed by Rust Wasm or a server API without rewriting Vue components.
-- [x] Replace the UI stub with a local Rust rules-engine bridge for start, playable-formation query, automatic advancement, and formation commands.
-- [x] Render current phase, current player, turn number, teams/HP, hands as own cards or hidden counts, discard, covered passives, pending choice, shields, statuses, and game status.
-- [x] Provide local-play controls for starting a sample game, submitting an action pass, choosing turn discard when required, and advancing automatic resolution.
-- [x] Let a player select hand cards, show playable formations, and submit a formation by clicking the formation option without a separate play button.
-- [x] Show a recent viewer-filtered Public Event Feed.
-- [x] Do not expose canonical Game State or canonical Game Events directly as browser replay sources.
-- [x] Add a documented Cloudflare deployment path using Nuxt/Nitro presets.
-- [x] Add focused UI tests or component tests for hidden-card rendering and pending-choice rendering.
+- [x] 在 `apps/web` 下新增 Nuxt 應用程式。
+- [x] 面向介面的 DTO 使用 TypeScript。
+- [x] 新增規則引擎介面卡邊界，日後可由 Rust Wasm 或伺服器 API 提供實作，無須重寫 Vue 元件。
+- [x] 以本機 Rust 規則引擎橋接取代介面 stub，支援開始、可施展陣法查詢、自動推進及陣法命令。
+- [x] 呈現目前階段、玩家、回合編號、隊伍／生命值、自己手牌或隱藏牌數量、棄牌、蓋牌、待選擇事項、防護罩、狀態及遊戲狀態。
+- [x] 提供本機遊玩控制，以開始範例遊戲、提交行動略過、必要時選擇回合棄牌及推進自動結算。
+- [x] 玩家可選取手牌、查看可施展陣法，並點選陣法選項直接提交，無須獨立施展按鈕。
+- [x] 顯示近期依觀看者過濾的公開事件動態。
+- [x] 不將正規遊戲狀態或正規遊戲事件直接暴露為瀏覽器重播來源。
+- [x] 使用 Nuxt/Nitro 預設配置提供有文件說明的 Cloudflare 部署路徑。
+- [x] 為隱藏牌及待選擇事項呈現新增重點介面或元件測試。
 
 ## Blocked by
 
-- None - can start immediately
+- 無，可立即開始

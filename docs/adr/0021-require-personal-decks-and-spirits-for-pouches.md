@@ -1,11 +1,3 @@
 # Require Personal Decks and Spirits for Pouches
 
-The Pouch Rule Module depends on Personal Deck and Spirit and cannot be enabled
-for a shared-Deck or Spirit-disabled game, despite the published Pouch rules not
-declaring those dependencies. Personal Deck lets every Player choose privately
-and independently from their own unshuffled Deck before the remaining Decks are
-shuffled, avoiding shared-Deck selection contention and information leakage to
-later selectors. Spirit supplies the ownership, power, replacement, and Skill
-rules required for Return Soul to resolve completely. Spirit transitively
-requires all three Advanced Rule Modules. Supporting published shared-Deck
-Pouch play or Pouch without Spirit would require a separate future decision.
+錦囊規則模組依賴個人牌組與精靈；即使公開的錦囊規則沒有宣告這些依賴，共用牌堆或未啟用精靈的遊戲也不能啟用此模組。個人牌組讓各玩家在洗剩餘牌組前，私下且獨立地從自己未洗牌的牌堆選擇，避免共用牌堆的選擇衝突，以及對後續選擇者洩漏資訊。精靈規則提供還魂完整結算所需的擁有權、靈力、替換及技能規則；精靈又間接依賴全部三個進階規則模組。若要支援公開規則中的共用牌堆錦囊玩法，或不含精靈的錦囊玩法，未來須另行決策。

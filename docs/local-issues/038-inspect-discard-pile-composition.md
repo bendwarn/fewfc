@@ -6,56 +6,34 @@ ready-for-agent
 
 ## What to build
 
-As a player, I want to select the discard pile and inspect its composition so I can
-see how many Card Instances of each discarded Card Definition are currently public.
+作為玩家，我希望選取棄牌堆並檢視組成，以查看目前公開的每種棄牌定義各有多少張實體牌。
 
-The discard pile is already fully visible through the Public State View. The client
-groups its Public Cards by Card Definition, where one kind means one element and
-level combination, and derives counts without adding canonical or hidden game data
-to the API.
+棄牌堆已透過公開狀態視圖完整可見。客戶端依牌定義分組公開牌；每種牌是一個屬性與等級組合，並由此推導數量，不向 API 增加正規或隱藏遊戲資料。
 
 ## Acceptance criteria
 
-- [x] Selecting the discard pile opens a composition overlay.
-- [x] Discarded cards are grouped by element and level into 25 Card Definition
-      counts.
-- [x] The overlay always renders all 25 Card Definitions, including zero counts, so
-      its dimensions and item positions remain stable as the discard changes.
-- [x] The fixed grid uses element columns in the order metal, wood, water, fire,
-      earth and level rows from 1 through 5.
-- [x] Column headers display only the element names, row headers display levels 1
-      through 5, and each data cell displays only its count.
-- [x] Zero-count cells remain present with lower visual emphasis.
-- [x] Desktop anchors the composition popover above the discard pile.
-- [x] Mobile presents the same fixed grid in a centered modal that stays within the
-      viewport.
-- [x] While the overlay is open, the next selection anywhere on the screen,
-      including inside the overlay, closes it and returns focus to the discard-pile
-      trigger.
-- [x] Pressing Escape closes the overlay and returns focus to the discard-pile
-      trigger.
-- [x] The read-only overlay has no separate close icon.
-- [x] A mandatory action-choice overlay takes precedence and prevents opening the
-      discard composition as a second stacked overlay.
-- [x] Outside mandatory action choices, every player may inspect a non-empty
-      discard pile regardless of whose turn it is.
-- [x] After the game ends, the result stays outside the battlefield and every
-      player may inspect the final discard pile directly from the table.
-- [x] When the discard pile is empty, the trigger displays zero but is disabled and
-      does not open the overlay.
-- [x] While the overlay is open, its counts update immediately when the Public
-      State View changes.
-- [x] If a state update empties the discard pile, the overlay closes, focus returns
-      to the now-disabled trigger, and the trigger continues to display zero.
-- [x] Each count represents the number of matching Card Instances currently in the
-      discard pile.
-- [x] Counts are derived only from the viewer's Public State View.
-- [x] The existing discard-pile total remains visible on the battlefield.
-- [x] The trigger and grid expose complete accessible labels, including the discard
-      total and each cell's element, level, and count.
-- [x] Automated tests cover grouping, all 25 stable cells, opening and closing
-      behavior, live updates, automatic closure when emptied, and the disabled
-      empty state.
+- [x] 選取棄牌堆會開啟組成浮層。
+- [x] 棄牌依屬性及等級分組為 25 種牌定義數量。
+- [x] 浮層一律呈現全部 25 種牌定義，包括數量為零的種類，使棄牌變化時尺寸及項目位置保持穩定。
+- [x] 固定網格的屬性欄依金、木、水、火、土排列，等級列由 1 至 5 排列。
+- [x] 欄標題只顯示屬性名稱，列標題顯示等級 1 至 5，每個資料格只顯示數量。
+- [x] 零數量格仍保留，但視覺強調程度較低。
+- [x] 桌面版將組成浮層定位在棄牌堆上方。
+- [x] 手機版在視窗內的置中對話框呈現相同固定網格。
+- [x] 浮層開啟時，下一次在畫面任何位置選取，包括浮層內，均關閉浮層並將焦點返回棄牌堆觸發控制。
+- [x] 按 Escape 關閉浮層並將焦點返回棄牌堆觸發控制。
+- [x] 唯讀浮層沒有獨立關閉圖示。
+- [x] 強制行動選擇浮層具有優先權，阻止將棄牌組成開為第二層浮層。
+- [x] 強制行動選擇之外，任何玩家均可檢視非空棄牌堆，不受目前回合限制。
+- [x] 遊戲結束後，結果位於戰場外，所有玩家均可直接從牌桌檢視最終棄牌堆。
+- [x] 棄牌堆為空時，觸發控制顯示零但停用，不開啟浮層。
+- [x] 浮層開啟期間，公開狀態視圖變更時數量立即更新。
+- [x] 狀態更新使棄牌堆清空時，浮層關閉、焦點返回已停用觸發控制，且觸發控制繼續顯示零。
+- [x] 每個數量表示目前棄牌堆中符合條件的實體牌數。
+- [x] 數量僅由觀看者的公開狀態視圖推導。
+- [x] 戰場上既有棄牌堆總數繼續可見。
+- [x] 觸發控制及網格公開完整可存取標籤，包括棄牌總數及每格屬性、等級與數量。
+- [x] 自動化測試涵蓋分組、全部 25 個穩定格、開關行為、即時更新、清空時自動關閉及空堆停用狀態。
 
 ## Validation
 
@@ -63,19 +41,16 @@ to the API.
 - `bun run test:e2e`
 - `bun run typecheck`
 - `cargo test`
-- Production Nuxt and rules WASM build
-- Playwright E2E through Brave at 377 x 734 and 1280 x 720, including accessible
-  table structure, fixed cell count, responsive placement, all close paths,
-  mandatory choice precedence, WebSocket count updates, and automatic closure
-  when the discard is emptied
+- 正式環境 Nuxt 與規則 WASM 建置。
+- 透過 Brave 執行 377 x 734 及 1280 x 720 的 Playwright E2E，包括可存取表格結構、固定格數、響應式位置、所有關閉路徑、強制選擇優先權、WebSocket 數量更新及棄牌堆清空時自動關閉。
 
 ## Non-goals
 
-- Showing deck composition or hidden hands.
-- Persisting the overlay across reload or route changes.
-- Adding discard composition to canonical game state or the Game Record.
-- Adding a separate discard action to the result panel.
+- 顯示牌堆組成或隱藏手牌。
+- 在重新載入或切換路由後保留浮層。
+- 將棄牌組成加入正規遊戲狀態或遊戲紀錄。
+- 在結果面板新增獨立棄牌操作。
 
 ## Blocked by
 
-- None - can start immediately
+- 無，可立即開始

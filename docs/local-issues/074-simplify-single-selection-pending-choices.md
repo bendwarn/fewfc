@@ -6,211 +6,108 @@ ready-for-agent
 
 ## Goal
 
-Remove redundant confirmation from single-selection Pending Choices while
-keeping every submitted outcome clear from its control or semantic guidance.
+移除單選待選擇事項中多餘的確認步驟，同時讓每個提交結果可從控制或語意說明清楚理解。
 
 ## Problem Statement
 
-Every Card Pending Choice currently uses one toggleable browser draft, selected
-count, and confirmation button even when its maximum is one. The Player must
-therefore click the only answer they intend and then confirm the same intent.
-Player, Formation, and Environment Pending Choices already submit with one
-click, so the extra Card step is inconsistent as well as redundant.
+目前每個選牌待選擇事項都使用可切換的瀏覽器草稿、已選數量及確認按鈕，即使最多只能選一張也一樣。玩家必須先點選唯一想要的答案，再確認相同意圖。玩家、陣法與環境待選擇事項已可一鍵提交，因此多出的選牌步驟既不一致也多餘。
 
-The generic Card draft also exposes the canonical zero-or-one encoding of Clear
-Wind instead of the decision's player-facing meaning. Its current presentation
-makes selecting the revealed Card mean discard, even though selecting a visible
-Card more naturally means wanting to keep it. Finally, the Chaos prompt says
-Cards return to a hand even though the rule and resolver return them to the top
-of the unqualified Deck.
+通用選牌草稿還暴露晴風在正規資料中以零或一張牌編碼的方式，而非玩家決策意義。目前呈現方式讓選擇展示牌代表捨棄，但點選可見牌通常更自然地代表想保留它。此外，混沌提示寫成牌回到手牌，而規則與解析器實際將牌放回未限定所有者的牌堆頂。
 
 ## Solution
 
-Treat a Card Pending Choice with a maximum of one as an immediate interaction,
-not a local selection draft. One explicit click constructs and submits the typed
-answer. Keep multi-selection drafts and confirmation unchanged. Adapt Clear Wind
-through its semantic outcomes while preserving its canonical typed answer, and
-correct player-facing wording without changing rules, replay, or server DTOs.
+最多選一張牌的待選擇事項採立即互動，而非本機選擇草稿；玩家明確點擊一次即可建構並提交具型別答案。多選草稿及確認維持不變。晴風依語意結果調整介面，保留其正規具型別答案；修正玩家文案，不改變規則、重播或伺服器 DTO。
 
 ## Confirmed Scope
 
-- Apply this interaction policy only to canonical Pending Choices.
-- Do not change Initial Pouch Selection, Main Phase Action Input Requirements,
-  Virtual Formation Card selection, direct Secret Strategy input, or other
-  selection workflows.
-- Preserve canonical Choice IDs, typed answers, validation, continuations,
-  lifecycle events, replay, and rule consequences. This is a Web interaction
-  and presentation change.
+- 此互動政策只適用於正規待選擇事項。
+- 不改變初始錦囊選擇、主階段行動輸入要求、虛擬牌選擇、直接秘計輸入或其他選擇流程。
+- 保留正規 Choice ID、具型別答案、驗證、續接、生命週期事件、重播及規則結果。此為 Web 互動與呈現變更。
 
 ## Current Inventory
 
-The following reachable Card Pending Choices always require exactly one Card:
+下列可到達的選牌待選擇事項均恰好要求一張牌：
 
-- Turn Draw Discard
-- Holy Wind
-- Revelation
-- Azure Cloud Step
-- Mirror Resonance
-- Myriad Resonance
-- Thousand Resonance
-- Ringing Metal Deck search
-- Echo Cost for Ringing Metal, Falling Wood, Flowing Water, War Fire, and Split
-  Earth; these choices also permit the separate Decline answer
-- Earth Rending Card
+- 回合抽牌棄牌；
+- 聖風；
+- 啟示；
+- 青雲步；
+- 鏡鳴；
+- 萬鳴；
+- 千鳴；
+- 商調‧鳴金牌堆檢索；
+- 鳴金、落木、流水、戰火及裂土的迴響代價；這些選擇另允許拒絕答案；
+- 裂地崩山牌選擇。
 
-Chaos dynamically requires exactly one Card when the target has only one Card,
-and exactly two Cards when the target has at least two.
+混沌在目標只有一張牌時動態要求恰選一張，目標至少有兩張牌時要求恰選兩張。
 
-Player, Formation, and Environment Pending Choices already submit immediately
-when an option is selected. Their reachable cases are Pure Fire target, Split
-Earth Formation, Plant Earth Melody, and Earth Rending Environment.
+玩家、陣法及環境待選擇事項已在選取選項時立即提交。可到達的案例包括變徵‧淨火目標、裂土陣法、變宮‧植土曲調及裂地崩山環境。
 
-Clear Wind exposes a zero-to-one Card range but is nevertheless a
-single-selection decision: the Player chooses between discarding the revealed
-Card and returning it to the Deck top.
-Its canonical zero-or-one Cards answer must not force the Web interface to
-present a generic Card-selection draft. Clear Wind Ten Thousand Miles cannot
-reach a one-Card maximum in legal play: performing its four-Card Formation
-frees at least four of the five hand slots before the keep choice is requested.
-It remains a multi-selection choice. Chain and Sheep Stealing are composite
-choices. The `metamorphosis` and `sealCard` Web presentation variants have no
-reachable typed Choice Continuation.
+晴風雖公開零至一張牌的範圍，仍屬單選決策：玩家選擇捨棄展示牌或將它放回牌堆頂。其正規零或一張牌答案不得迫使 Web 介面呈現通用選牌草稿。晴風萬里在合法遊戲中不會達到最多一張的情況：施展四張陣法後，請求保留選擇前已釋出五個手牌位置中的至少四個，因此仍為多選。連環及牽羊是複合選擇。`metamorphosis` 與 `sealCard` Web 呈現變體沒有可到達的具型別選擇續接。
 
 ## User Stories
 
-1. As a Player answering a single-Card Pending Choice, I want one Card click to
-   submit my answer, so that I do not confirm the same intent twice.
-2. As a Player answering a multi-Card Pending Choice, I want to review and
-   change my draft before confirmation, so that removing single-choice
-   confirmation does not weaken multi-choice control.
-3. As a Player using Clear Wind, I want clicking the revealed Card to mean
-   keeping it on top of the Deck, and an explicit discard action to mean I do
-   not want it.
-4. As a Player considering Echo, I want either an eligible cost Card or
-   `放棄迴響` to be a complete immediate answer.
-5. As a reconnecting Player, I want the current choice to wait for my explicit
-   click even when it has only one legal answer, so that rendering a view never
-   performs a command.
-6. As a Player whose immediate answer fails to submit, I want the same choice
-   restored with an error and retryable controls, so that failure does not look
-   like acceptance.
-7. As a Player answering Chaos, I want its prompt to use the official Deck-top
-   wording, so that the displayed consequence matches the rule.
+1. 作為回答單張牌待選擇事項的玩家，我希望點一次牌便提交答案，不必再次確認相同意圖。
+2. 作為回答多張牌待選擇事項的玩家，我希望確認前能檢視及修改草稿，確保移除單選確認不削弱多選控制。
+3. 作為使用晴風的玩家，我希望點選展示牌代表將其放回牌堆頂，而明確的捨棄操作代表不想保留它。
+4. 作為考慮迴響的玩家，我希望點選符合條件的代價牌或 `放棄迴響` 都是完整且立即的答案。
+5. 作為重新連線玩家，我希望即使只有一個合法答案，目前選擇仍等待我明確點擊，避免呈現視圖自動執行命令。
+6. 作為立即答案提交失敗的玩家，我希望還原相同選擇、顯示錯誤並可重試，避免將失敗誤認為接受。
+7. 作為回答混沌的玩家，我希望提示使用官方牌堆頂用語，使顯示結果符合規則。
 
 ## Confirmed Interaction Policy
 
-- A Pending Choice's typed canonical answer shape does not dictate its visual
-  control. In particular, a Card answer need not use the generic Card-selection
-  interface.
-- Classify Clear Wind by its two mutually exclusive rule outcomes, not by its
-  zero-or-one Cards encoding. Present it as a single-selection decision and do
-  not require a separate confirmation step.
-- Preserve the existing canonical Clear Wind encoding while mapping it to the
-  Player's intent in the Web interaction: clicking the revealed Card means
-  keeping it on the Deck top and submits the empty Cards answer; clicking the
-  `捨棄此牌` button means rejecting it and submits that Card in the Cards answer.
-- Explain the Clear Wind Card control as `選擇此牌則放回牌堆最上方`. Use the
-  explicit `捨棄此牌` label instead of an ambiguous `取消` label.
-- Treat Echo Cost as a single-selection decision even though its Card choice
-  permits Decline. Selecting an eligible Card immediately submits payment;
-  selecting `放棄迴響` immediately submits the Decline answer. Decline is an
-  alternative outcome, not confirmation of a Card draft.
-- For Card choices, use `maximum == 1` as the structural immediate-submission
-  boundary. `minimum == 1` has no empty-answer control; `minimum == 0` exposes
-  the semantic empty-answer action as well. Clear Wind supplies the only
-  currently reachable zero-to-one case and uses its dedicated mapping above.
-- Do not add generic `選擇後立即送出` guidance. The absence of a confirmation
-  button is sufficient interaction feedback. Keep semantic explanation only
-  where the option's result would otherwise be unclear, as with Clear Wind.
-- Never answer a Pending Choice merely because the view mounted, reconnected,
-  or exposes only one legal result. Require one explicit Player click; remove
-  only the redundant second confirmation gesture.
-- Do not create or display a local Card-selection draft when `maximum == 1`.
-  Hide the selected-count text and confirmation button; each Card is an
-  immediate action control. Choices with `maximum > 1` retain toggleable draft
-  selection, selected-count feedback, and explicit confirmation.
-- Render multi-selection bounds with `~` rather than an en dash, for example
-  `已選 1（0~4）`.
-- Correct the existing Chaos presentation: selected Cards return from the next
-  Player's hand to the top of the unqualified Deck, not to their hand. Do not
-  switch between one-Card and two-Card prose at runtime. Follow the official
-  rule wording and the glossary's unqualified Deck convention with the fixed
-  label `混沌：選擇手牌放回牌堆最上方`.
-- Disable every control for the active Pending Choice as soon as an immediate
-  answer submission starts. On success, let refreshed canonical state replace
-  the choice. On failure, keep the same choice visible, show the existing error
-  presentation, and re-enable its controls for an explicit retry. Do not retain
-  a single-selection draft or retry automatically.
+- 待選擇事項的正規具型別答案結構不決定視覺控制；尤其選牌答案不必使用通用選牌介面。
+- 晴風依兩種互斥規則結果分類，不依零或一張牌的編碼分類。它呈現為單選決策，不需要獨立確認。
+- 保留既有正規晴風編碼，並在 Web 互動中對應玩家意圖：點展示牌代表放回牌堆頂，提交空牌答案；點 `捨棄此牌` 代表拒絕該牌，在答案中提交該牌。
+- 晴風牌控制說明使用 `選擇此牌則放回牌堆最上方`，並使用明確的 `捨棄此牌` 標籤，而非含糊的 `取消`。
+- 迴響代價雖允許拒絕，仍視為單選決策。點選符合條件的牌立即提交代價；點選 `放棄迴響` 立即提交拒絕答案。拒絕是替代結果，不是確認選牌草稿。
+- 選牌以 `maximum == 1` 作為立即提交的結構邊界。`minimum == 1` 不提供空答案控制；`minimum == 0` 也提供具有語意的空答案操作。晴風是目前唯一可到達的零至一案例，使用上文專用映射。
+- 不新增通用 `選擇後立即送出` 提示；沒有確認按鈕已足以提供互動回饋。只有選項結果否則不清楚時才保留語意說明，例如晴風。
+- 絕不因視圖掛載、重新連線或僅有一個合法結果而自動回答待選擇事項。必須由玩家明確點擊一次；只移除多餘的第二次確認。
+- `maximum == 1` 時不建立或顯示本機選牌草稿；隱藏已選數量及確認按鈕，每張牌均為立即操作控制。`maximum > 1` 時保留可切換草稿選擇、已選數量回饋及明確確認。
+- 多選界限使用 `~` 而非 en dash，例如 `已選 1（0~4）`。
+- 修正混沌呈現：所選牌從下家手牌放回未限定所有者的牌堆頂，而非回到其手牌。執行時不依一張或兩張切換文案；依官方規則及詞彙表的未限定牌堆慣例，固定顯示 `混沌：選擇手牌放回牌堆最上方`。
+- 立即答案開始提交時停用目前待選擇事項所有控制。成功時以更新後正規狀態取代選擇；失敗時保留相同選擇、顯示既有錯誤並重新啟用控制供明確重試。不保留單選草稿，也不自動重試。
 
 ## Implementation Decisions
 
-- Put the immediate-versus-draft boundary in the Web Pending Choice Interaction
-  module rather than enumerating rule continuations in the room page.
-- Route both ordinary Game Card controls and the Ringing Metal Card Choice Matrix
-  through the same Card-choice interaction entry point. The visual control does
-  not decide answer legality or submission timing.
-- Build a one-Card typed answer directly when `maximum == 1`; do not first write
-  the Card to `selectedChoiceCards` or call the multi-choice submit action.
-- Keep the existing draft toggle and `submitPendingChoice` path authoritative
-  when `maximum > 1`.
-- Detect Clear Wind from its typed public presentation and map its two controls
-  to the existing empty and one-Card answer shapes. Do not change its canonical
-  Choice Continuation or resolver.
-- Reuse the existing `isLoading`, room-connection, Choice ID, command
-  transaction, and error-presentation boundaries. Do not add a second
-  idempotency or retry mechanism in the interaction helper.
-- Keep Player, Formation, Environment, Decline, Chain, and Sheep Stealing answer
-  contracts unchanged.
+- 立即提交與草稿的邊界放在 Web 待選擇互動模組，不在房間頁枚舉規則續接。
+- 一般遊戲牌控制及鳴金選牌矩陣均透過同一選牌互動入口；視覺控制不決定答案合法性或提交時點。
+- `maximum == 1` 時直接建構單張牌具型別答案，不先將牌寫入 `selectedChoiceCards`，也不呼叫多選提交操作。
+- `maximum > 1` 時繼續以既有草稿切換及 `submitPendingChoice` 路徑為權威。
+- 從具型別公開呈現辨識晴風，將兩個控制映射到既有空答案及單張牌答案；不改變其正規選擇續接或解析器。
+- 重用既有 `isLoading`、房間連線、Choice ID、命令交易及錯誤呈現邊界；互動輔助程式不新增第二套冪等或重試機制。
+- 玩家、陣法、環境、拒絕、連環及牽羊答案契約保持不變。
 
 ## Testing Decisions
 
-- Add Web Pending Choice Interaction tests proving that `maximum == 1` builds an
-  immediate answer while `maximum > 1` only changes the local draft.
-- Add focused Clear Wind tests proving that clicking the revealed Card submits
-  an empty Cards answer and `捨棄此牌` submits that Card.
-- Cover Echo Cost payment and Decline as two immediate typed answers, including
-  a state with no eligible cost Card where the Player must still explicitly
-  click `放棄迴響`.
-- Test that mounting, reconnecting, or exposing one legal answer never submits
-  without a Player click.
-- Test that an in-flight answer disables the choice, success replaces it from
-  canonical state, and failure re-enables the same choice without a selected
-  draft or automatic retry.
-- Update presentation assertions for Clear Wind, the fixed Chaos rule wording,
-  and multi-selection bounds rendered with `~`.
-- Update the representative ordinary Game Card E2E flow for Turn Draw Discard
-  to prove that one click sends the command and no confirmation button exists.
-- Cover the distinct Card Choice Matrix flow through Ringing Metal with the same
-  one-click submission assertion.
-- Do not duplicate E2E flows for Holy Wind, Revelation, Azure Cloud Step,
-  Resonance, Echo Cost, or Earth Rending Card; their immediate behavior is
-  already covered by the shared structural interaction tests.
-- Validate with focused Web tests, relevant Playwright tests, type checking,
-  full `cargo test`, formatting, and diff checks.
+- 新增 Web 待選擇互動測試，證明 `maximum == 1` 建立立即答案，而 `maximum > 1` 僅改變本機草稿。
+- 新增晴風重點測試，證明點展示牌提交空牌答案，點 `捨棄此牌` 則提交該牌。
+- 涵蓋迴響代價支付與拒絕兩種立即具型別答案，包括沒有符合條件代價牌時，玩家仍須明確點選 `放棄迴響`。
+- 測試掛載、重新連線或只有一個合法答案時，沒有玩家點擊絕不提交。
+- 測試答案請求進行時停用選擇、成功後由正規狀態取代、失敗後重新啟用相同選擇且不保留選擇草稿或自動重試。
+- 更新晴風、固定混沌規則文案及以 `~` 呈現的多選界限之呈現斷言。
+- 更新回合抽牌棄牌的一般遊戲牌代表性 E2E 流程，證明點一次即發送命令且沒有確認按鈕。
+- 以相同一鍵提交斷言涵蓋鳴金的獨立選牌矩陣流程。
+- 不為聖風、啟示、青雲步、鳴術、迴響代價或裂地崩山牌選擇重複 E2E 流程；其立即行為已由共用結構互動測試涵蓋。
+- 執行重點 Web 測試、相關 Playwright 測試、型別檢查、完整 `cargo test`、格式及 diff 檢查。
 
 ## Out of Scope
 
-- Changing any canonical Pending Choice kind, Choice ID, Choice Continuation,
-  typed answer, event, rule consequence, replay behavior, or Web DTO.
-- Applying immediate submission to Initial Pouch Selection, Main Phase Action
-  Input Requirements, direct Secret Strategy inputs, Chain, Sheep Stealing, or
-  any workflow outside canonical Pending Choices.
-- Removing confirmation from Card Pending Choices whose maximum exceeds one.
-- Automatically answering a choice on mount, reconnect, or because only one
-  legal result exists.
-- Persisting, synchronizing, or restoring single-selection drafts.
-- Removing unreachable `metamorphosis` or `sealCard` presentation variants.
+- 改變任何正規待選擇種類、Choice ID、選擇續接、具型別答案、事件、規則結果、重播行為或 Web DTO。
+- 將立即提交套用於初始錦囊選擇、主階段行動輸入要求、直接秘計輸入、連環、牽羊或任何正規待選擇事項以外的流程。
+- 移除最大數量超過一的選牌待選擇事項的確認。
+- 在掛載、重新連線或僅有一個合法結果時自動回答選擇。
+- 持久化、同步或恢復單選草稿。
+- 移除無法到達的 `metamorphosis` 或 `sealCard` 呈現變體。
 
 ## Governing Context
 
-- ADR-0015 defines closed typed Pending Choice answers.
-- ADR-0026 and completed issue #70 define the canonical Pending Choice lifecycle
-  and keep browser drafts and player-facing presentation in the Web interaction
-  module.
-- No ADR is proposed for this change: the interaction policy is easy to reverse,
-  visible in the UI implementation, and does not alter the canonical domain
-  model.
+- ADR-0015 定義封閉具型別待選擇答案。
+- ADR-0026 及已完成議題 #70 定義正規待選擇生命週期，並將瀏覽器草稿及玩家呈現留在 Web 互動模組。
+- 不為此變更提出 ADR：互動政策容易回復、可在介面實作中看見，且不改變正規領域模型。
 
 ## Blocked by
 
-- none
+- 無

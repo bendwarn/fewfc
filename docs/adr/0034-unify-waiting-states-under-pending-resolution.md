@@ -4,60 +4,20 @@ status: accepted
 
 # Unify waiting states under Pending Resolution
 
-Pending Resolution is the one serialized owner of an accepted rule flow while
-it waits for player input or trusted randomness. Pending Choice contains only
-the closed answer requirement and Pending Randomness contains only the random
-operation, source order, and validated result; neither carries a continuation.
-The Rules Engine resumes the Pending Resolution generically after either input,
-so card supply and future rule flows do not add Rule Module-specific randomness
-or choice-routing variants.
+待處理規則流程（Pending Resolution）是在已接受的規則流程等待玩家輸入或可信任隨機性時，唯一序列化的擁有者。待選擇事項只包含封閉的答案要求，待隨機處理只包含隨機操作、來源順序與驗證後結果；兩者均不攜帶續接。任一輸入完成後，規則引擎以通用方式恢復待處理規則流程，因此牌堆供給與未來規則流程無須新增模組專屬的隨機性或選擇路由變體。
 
-An internal deep `pending_resolution` module owns that resume seam. Its single
-interface accepts an opaque, already validated Choice or Randomness input,
-captures the semantic Pending Resolution before projection clears the waiting
-state, emits and projects the canonical `ChoiceMade` or `RandomnessResolved`
-event, and exhaustively delegates the typed rule continuation. Raw external
-input validation remains with `pending_choice` and `randomness`; Rule Module
-handlers remain typed functions that return canonical events, while
-`pending_resolution` owns their projection and ordering. One semantic Pending
-Resolution may pass through multiple sequential Choice and Randomness waits.
+內部的 `pending_resolution` 模組擁有此恢復接點。其單一介面接受不透明、已驗證的選擇或隨機性輸入，在投影清除等待狀態前擷取具語意的待處理規則流程，發出並投影正規 `ChoiceMade` 或 `RandomnessResolved` 事件，再窮舉分派具型別的規則續接。外部原始輸入驗證仍由 `pending_choice` 與 `randomness` 負責；規則模組處理器仍是回傳正規事件的具型別函式，其投影與順序則由 `pending_resolution` 負責。同一語意流程可依序經過多次選擇與隨機性等待。
 
-The module also owns consequences that belong to this resume sequence,
-including Discard Shuffle ordering, while delegating Tailwind recovery to the
-Confluence Rule Module and Formation Use completion to `formation_use`. It may
-finish by creating the next waiting input, completing the Formation Use, or
-concluding the Game. It then requires at most one waiting input and requires
-that input to match the remaining Pending Resolution. An inconsistent internal
-waiting state is `EngineInvariantError::InvalidPendingResolution`; invalid
-external answers remain validation errors.
+模組也負責屬於此恢復序列的結果，包括洗棄牌順序；順風回復委由匯流世代規則模組處理，陣法施展完成委由 `formation_use` 處理。流程可藉由建立下一個等待輸入、完成陣法施展或結束遊戲而告一段落。此時最多只能有一個等待輸入，且必須與剩餘的待處理規則流程相符。內部等待狀態不一致屬於 `EngineInvariantError::InvalidPendingResolution`；無效外部答案仍屬驗證錯誤。
 
-Pending Resolution completion deliberately does not cross the Player Decision
-boundary. Application orchestration continues to own automatic advancement to
-the next Player Decision, forced Pass handling, and `RecordedDecision`
-grouping. This keeps the resume module independent of application batching and
-replay verification.
+待處理規則流程完成時刻意不跨越玩家決策邊界。應用程式協調層繼續負責自動推進至下一個玩家決策、強制略過及 `RecordedDecision` 分組，使恢復模組不依賴應用程式批次處理與重播驗證。
 
 ## Considered options
 
-- Keeping separate Choice Continuation and Randomness Continuation unions would
-  preserve the existing shapes but continues to classify rule flow by its
-  waiting mechanism and distributes retry logic among Rule Modules.
-- Generic application callbacks cannot be persisted, replayed, or validated.
-- Retaining ADR-0026's separate continuation ownership only for Pending Choice
-  would avoid a wider migration but leaves two competing owners for the same
-  rule flow.
+- 分開保留選擇續接及隨機性續接的 union 雖可維持既有結構，但仍以等待機制分類規則流程，並將重試邏輯分散到各規則模組。
+- 一般應用程式回呼無法持久化、重播或驗證。
+- 僅針對待選擇事項保留 ADR-0026 的獨立續接擁有權，可避免更大範圍遷移，卻會讓同一規則流程存在兩個互相競爭的擁有者。
 
 ## Consequences
 
-This supersedes ADR-0026 only for continuation ownership; its closed public
-Pending Choice contract and Web interaction seam remain. Deployment cuts over
-to record schema 7 and purges existing active and finished Game Records
-rather than migrating their typed continuations. Public Views expose only the
-waiting input appropriate to each viewer. Tests cross the Pending Resolution
-interface for both choice and randomness pauses; no legacy-record replay path
-is retained. The refactor does not otherwise change the canonical event
-sequence or schema, `RecordedDecision` sources or batches, Public View, or
-replay verification. Existing dispatch-detail tests may be removed only after
-their claims have named replacement evidence as required by ADR-0032;
-interaction matrices remain intact. The closed typed dispatch does not add a
-runtime trait, registry, or adapter.
+本決策僅在續接擁有權方面取代 ADR-0026；其封閉的公開待選擇契約及 Web 互動接點不變。公開視圖只顯示適合各觀看者的等待輸入。測試透過待處理規則流程介面涵蓋選擇與隨機性暫停；此重構不另改變正規事件順序或結構、`RecordedDecision` 來源或批次、公開視圖或重播驗證。既有分派細節測試僅能在其主張依 ADR-0032 取得具名替代證據後移除；互動矩陣保持不變。封閉的具型別分派不新增執行期 trait、登錄表或介面卡。

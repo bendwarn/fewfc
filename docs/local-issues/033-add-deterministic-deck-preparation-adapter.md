@@ -6,21 +6,20 @@ AFK
 
 ## Parent
 
-Derived from `docs/rules-engine-decisions.md` section 5.
+源自 `docs/rules-engine-decisions.md` 第 5。
 
 ## What to build
 
-Add an adapter for preparing deck order deterministically before `DeckPrepared` is recorded. Replay must continue to depend only on the recorded deck order, while new game creation may optionally use a seeded or injected randomness source to produce that order.
+新增介面卡，在記錄 `DeckPrepared` 前以確定性方式準備牌堆順序。重播必須繼續只依賴已記錄牌序；建立新遊戲時則可選擇使用種子或注入的隨機來源產生牌序。
 
 ## Acceptance criteria
 
-- [ ] A deck preparation port can produce an ordered deck before game start.
-- [ ] A deterministic in-memory or seeded adapter can produce repeatable deck orders for tests.
-- [ ] `GameRecord::start` still records the full `DeckPrepared.deck_order`.
-- [ ] Replay ignores seeds or RNG adapters and uses only recorded deck order.
-- [ ] Tests cover deterministic preparation, event-log preservation of prepared order, and replay independence from RNG.
+- [ ] 牌堆準備端口可在遊戲開始前產生有序牌堆。
+- [ ] 確定性的記憶體或種子介面卡可為測試產生可重複牌序。
+- [ ] `GameRecord::start` 仍記錄完整 `DeckPrepared.deck_order`。
+- [ ] 重播忽略種子及 RNG 介面卡，僅使用已記錄牌序。
+- [ ] 測試涵蓋確定性準備、事件日誌保留準備後牌序及重播獨立於 RNG。
 
 ## Blocked by
 
-- None - can start immediately
-
+- 無，可立即開始

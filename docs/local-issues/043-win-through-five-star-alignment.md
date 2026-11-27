@@ -6,27 +6,22 @@ ready-for-agent
 
 ## What to build
 
-Implement Five-Star Alignment as the Star Rule Module's Player-specific special
-victory condition. When the module is enabled, a Player who has personally
-summoned all five Star kinds wins for their Team after the qualifying Formation
-Use fully resolves.
+將五星連珠實作為星辰圖記中依個別玩家判定的特殊勝利條件。啟用模組時，玩家親自召喚全部五種星辰後，待符合條件的陣法施展完全結算，其隊伍獲勝。
 
-Represent the achievement as a semantic canonical Game Event and project it
-through Game State, replay, Public State View, Public Event Feed, and the Web
-game-result presentation.
+以具語意的正規遊戲事件表示此成就，並投影至遊戲狀態、重播、公開狀態視圖、公開事件動態及 Web 結果呈現。
 
 ## Acceptance criteria
 
-- [x] Star summoning history is tracked per Player and retains distinct Star kinds after Stars are replaced or broken.
-- [x] Teammates' histories are not combined when evaluating Five-Star Alignment.
-- [x] Summoning a Player's fifth distinct Star emits `FiveStarAlignmentAchieved`.
-- [x] The complete Formation Use resolves before Five-Star Alignment determines Game Outcome.
-- [x] Five-Star Alignment makes the completing Player's Team the winner before HP-based outcome evaluation.
-- [x] A simultaneous HP draw caused by the same Formation Use does not override Five-Star Alignment.
-- [x] Public State View and Public Event Feed identify the special victory without exposing hidden canonical data.
-- [x] The Web result presentation distinguishes Five-Star Alignment from an HP victory.
-- [x] Direct execution and replay produce identical histories, achievement event, and Game Outcome.
-- [x] Two-player and team-mode tests cover completion, repeated Star summons, and non-combining teammate histories.
+- [x] 召喚星辰歷史依玩家追蹤；星辰被取代或破除後仍保留不同星辰種類。
+- [x] 判定五星連珠時不合併隊友歷史。
+- [x] 玩家召喚第五種不同星辰時發出 `FiveStarAlignmentAchieved`。
+- [x] 五星連珠決定遊戲結果前，完整陣法施展先結算。
+- [x] 依生命值判定結果前，五星連珠使達成玩家的隊伍獲勝。
+- [x] 同次陣法施展造成的生命值同時歸零不覆蓋五星連珠。
+- [x] 公開狀態視圖及公開事件動態指出特殊勝利，不洩漏隱藏正規資料。
+- [x] Web 結果呈現區分五星連珠與生命值勝利。
+- [x] 直接執行及重播產生相同歷史、成就事件與遊戲結果。
+- [x] 雙人及團隊測試涵蓋達成、重複召喚及不合併隊友歷史。
 
 ## Blocked by
 

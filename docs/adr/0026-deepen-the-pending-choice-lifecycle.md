@@ -4,46 +4,18 @@ status: accepted
 
 # Deepen the Pending Choice lifecycle across the Web seam
 
-The Rules Engine and Web application use two deep modules joined by one closed
-typed Public Pending Choice contract. The Rules Engine Pending Choice module
-owns canonical choice creation, a record-local monotonic Choice ID, typed Choice
-Continuations, answer-shaped variants, answer validation, one answer command,
-and the Choice Requested and Choice Made lifecycle events. Each Rule Module
-contributes typed choice requests and resumes only the Choice Continuations it
-owns; it does not construct final Pending Choice state or allocate Choice IDs.
+規則引擎及 Web 應用程式各使用一個深度模組，兩者由封閉且具型別的公開待選擇事項契約連接。規則引擎的待選擇事項模組負責建立正規選擇、紀錄內遞增的 Choice ID、具型別選擇續接、符合答案結構的變體、答案驗證、單一回答命令，以及 Choice Requested 與 Choice Made 生命週期事件。各規則模組提供具型別的選擇請求，且只恢復自己擁有的選擇續接；它們不建立最終待選擇狀態，也不配置 Choice ID。
 
-Public View filters hidden information before the contract crosses the Web seam.
-The answering Player receives one typed visible variant, while other viewers
-receive a hidden variant containing only the Player and an already-public reason
-for waiting. The Web Pending Choice Interaction module owns client-local draft
-transitions, player-facing presentation, and typed answer construction. Drafts
-are reset by Choice ID and are not persisted or synchronized through the server.
+契約跨越 Web 接點前，公開視圖先過濾隱藏資訊。作答玩家收到一個具型別的可見變體；其他觀看者收到隱藏變體，只包含玩家及已公開的等待原因。Web 的待選擇互動模組負責客戶端本機草稿轉換、玩家介面與具型別答案建構。草稿依 Choice ID 重設，不透過伺服器持久化或同步。
 
-Initial Pouch Selection remains the distinct Game Preparation workflow chosen in
-ADR-0020, even though it and Chain reuse the Web module's internal Pouch Card
-selection implementation. The old EffectGenerated and CardSetChoice variants,
-the flattened Web DTO option bag, the separate Turn Draw and effect-choice answer
-commands, and their compatibility paths are removed before deployment rather
-than supported alongside the new contract. Domain-specific consequence events
-such as Turn Discard Chosen and Echo Cost Paid remain separate from the generic
-Pending Choice lifecycle events.
+初始錦囊選擇仍是 ADR-0020 選定的獨立遊戲準備流程，即使它與連環共用 Web 模組內部的錦囊牌選擇實作。部署前移除舊的 EffectGenerated 與 CardSetChoice 變體、扁平化 Web DTO 選項袋、分開的回合抽牌與效果選擇回答命令及其相容路徑，不與新契約並存。Turn Discard Chosen、Echo Cost Paid 等領域專屬結果事件仍獨立於通用待選擇生命週期事件。
 
 ## Considered options
 
-- One tier-spanning module was rejected because player-facing presentation must
-  not enter canonical rules, replay, or Public View redaction.
-- A generic multi-axis option bag was rejected because callers had to infer the
-  legal answer from whichever Cards, Players, Formations, or Environments happened
-  to be present. Composite decisions such as Chain retain named answer-shaped
-  variants; sequential decisions create sequential Pending Choices.
-- Server-persisted selection drafts were rejected because unsubmitted UI state is
-  neither canonical game state nor required for deterministic reconnect.
+- 不採跨所有層級的單一模組，因為玩家介面不應進入正規規則、重播或公開視圖遮蔽。
+- 不採通用多軸選項袋，因為呼叫端必須根據碰巧出現的牌、玩家、陣法或環境推測合法答案。連環等複合決策保留具名且符合答案結構的變體；依序決策則依序建立待選擇事項。
+- 不由伺服器持久化選擇草稿，因為未提交的介面狀態既不是正規遊戲狀態，也不是確定性重新連線所需資料。
 
 ## Consequences
 
-The Pending Choice module interface is the Rust lifecycle test surface, Public
-View tests visible and hidden variants, the Web interaction interface tests
-draft-to-answer behavior, and serialization contract tests cover every Rust to
-TypeScript variant. Online command-id idempotency remains owned by the command
-transaction module; a different command that references a completed Choice ID
-is a Validation Failure and emits no Game Events.
+待選擇事項模組介面是 Rust 生命週期測試的測試介面；公開視圖測試可見及隱藏變體；Web 互動介面測試從草稿到答案的行為；序列化契約測試涵蓋每個 Rust 至 TypeScript 的變體。線上命令 ID 的冪等性仍由命令交易模組負責；不同命令若參照已完成的 Choice ID，即為驗證失敗且不發出遊戲事件。

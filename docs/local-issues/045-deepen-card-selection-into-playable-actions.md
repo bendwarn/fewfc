@@ -6,29 +6,22 @@ ready-for-agent
 
 ## What to build
 
-Deepen the current Card-selection flow so one rule-backed query returns every
-Action candidate that exactly matches the selected Card Instances. Preserve
-Formation Uses and add the response shape needed for later Profession Changes
-without making the client infer rules or enumerate hand combinations.
+深化目前選牌流程，使一次有規則依據的查詢回傳所有與所選實體牌完全匹配的行動候選。保留陣法施展，並加入後續轉職所需的回應結構，不讓客戶端推測規則或枚舉手牌組合。
 
-Split the battlefield's central controls vertically on every viewport: an
-upper Ability panel for Active-Effect Commands that do not close the Main
-Phase, and a lower Action panel for Formation Uses and Pass Action. Preserve
-the existing interaction while creating the end-to-end seam required by Hero
-Schools.
+在所有視窗寬度下垂直分割戰場中央控制：上方能力面板容納不結束主階段的主動效果命令，下方行動面板容納陣法施展及行動略過。保留既有互動，同時建立英雄學派需要的端到端接點。
 
 ## Acceptance criteria
 
-- [x] Selecting Cards queries one playable-Action interface shared by validation and presentation.
-- [x] Existing Formation candidates retain their identity, summary, and submission behavior.
-- [x] The candidate schema can distinguish Formation Uses from future Profession Changes.
-- [x] The client never chooses Cards or reconstructs legality outside the Rules Engine.
-- [x] The Ability panel contains Discard Retrieval and states that successful use does not end the turn action.
-- [x] The Action panel contains Formation candidates and Pass Action and states that successful use ends the Main Phase.
-- [x] Ability appears above Action at every viewport width; neither panel changes to a side-by-side layout.
-- [x] Loading, error, empty-selection, keyboard, focus, and accessible-name behavior remain covered.
-- [x] Rust, Web API, component, and Playwright assertions preserve existing Base and Optional Rule behavior.
+- [x] 選牌會查詢由驗證與呈現共用的單一可執行行動介面。
+- [x] 既有陣法候選保留身分、摘要與提交行為。
+- [x] 候選資料結構可區分陣法施展與未來轉職。
+- [x] 客戶端絕不在規則引擎外選牌或重建合法性。
+- [x] 能力面板包含棄牌回收，並說明成功使用不結束回合行動。
+- [x] 行動面板包含陣法候選及行動略過，並說明成功使用會結束主階段。
+- [x] 所有視窗寬度下能力均位於行動上方；兩面板不改為並排。
+- [x] 持續測試載入、錯誤、空選擇、鍵盤、焦點及可存取名稱行為。
+- [x] Rust、Web API、元件與 Playwright 斷言保留既有基礎及選用規則行為。
 
 ## Blocked by
 
-None - can start immediately
+無，可立即開始

@@ -6,113 +6,68 @@ ready-for-agent
 
 ## What to build
 
-As a player, I want each major application page to have a stable Nuxt route so
-refreshing or reopening the URL restores the page and authoritative room state I was
-viewing instead of returning to the login screen.
+作為玩家，我希望應用程式各主要頁面有穩定 Nuxt 路由，讓重新整理或重新開啟 URL 後恢復先前查看的頁面及權威房間狀態，而不是返回登入畫面。
 
-The URL identifies the application page and room, not transient game phases,
-selections, or connection state. Waiting, active, and completed views of one room
-share one route and restore their current state from the server.
+URL 識別應用程式頁面及房間，不識別短暫遊戲階段、選擇或連線狀態。同一房間的等待中、進行中及已完成視圖共用一路由，並從伺服器恢復目前狀態。
 
 ## Acceptance criteria
 
-- [x] `/login` renders login and registration.
-- [x] `/rooms` renders the room lobby.
-- [x] `/rooms/:gameId` renders the referenced room in its current waiting, active, or
-      completed state.
-- [x] `/` redirects authenticated users to `/rooms` and unauthenticated users to
-      `/login`.
-- [x] Refreshing `/rooms` keeps the player in the lobby and reloads room lists.
-- [x] Refreshing `/rooms/:gameId` reloads the authoritative viewer-filtered room
-      state and reconnects room synchronization.
-- [x] Private invitation links use `/rooms/:gameId?invite=:token` rather than the
-      legacy `?room=` query.
-- [x] Game phase, pending local selections, and connection state are not encoded in
-      the route.
-- [x] An unauthenticated request for a protected route redirects to
-      `/login?redirect=<internal path>`.
-- [x] Successful account or guest authentication returns the player to the preserved
-      route.
-- [x] Redirect targets accept only local application paths and cannot redirect to an
-      external origin.
-- [x] Opening `/rooms/:gameId` as a current member loads the room without changing
-      membership.
-- [x] Opening a joinable public room route as an authenticated non-member
-      automatically joins that room; private rooms additionally require a valid
-      invitation credential.
-- [x] If the room cannot be joined because it is full, active, dissolved, or unknown,
-      the route remains visible and renders a clear result without changing
-      membership.
-- [x] Creating, joining, or opening a room from the lobby pushes
-      `/rooms/:gameId` so browser Back returns to the lobby.
-- [x] The room Back control navigates to `/rooms` without leaving room membership.
-- [x] Leaving, dissolving, or being removed from a room replaces the current history
-      entry with `/rooms` so Back does not reopen the invalid room.
-- [x] Starting and finishing a match do not change the room URL.
-- [x] While session restoration is pending, protected routes show a dedicated loading
-      state rather than briefly rendering login or lobby content.
-- [x] A room route shows a room-loading state until authoritative room data is
-      available and does not render a fixture or empty battlefield.
-- [x] The waiting room or battlefield renders only after the authoritative response;
-      WebSocket reconnection then resumes live synchronization.
-- [x] Lobby tabs are route state represented by `/rooms?tab=create` and
-      `/rooms?tab=join`.
-- [x] Unsubmitted room forms, card and formation selections, detail overlays, and
-      record expansion are local UI state and reset on reload.
-- [x] An inaccessible room route renders a stable result page rather than
-      automatically redirecting.
-- [x] Full rooms show `房間已滿`; active rooms opened by non-members show
-      `對局已開始`; unknown and dissolved rooms show `找不到這個房間`.
-- [x] The result page offers only a `返回房間大廳` action.
-- [x] A private room's plain `/rooms/:gameId` route reveals no room existence or
-      status to a non-member and renders `找不到這個房間`.
-- [x] A valid invitation token or manually submitted room code authorizes an
-      authenticated non-member to join a private waiting room.
-- [x] After joining, the client replaces the invitation URL with
-      `/rooms/:gameId`, removing the token from browser history while membership
-      becomes the authority for future reloads.
-- [x] Private rooms issue separate high-entropy invitation-link tokens and
-      human-entered short room codes.
-- [x] Both invitation credentials are valid only while the room is waiting and has
-      capacity, and become invalid when the match starts or the room dissolves.
-- [x] Hosts cannot revoke or regenerate invitation credentials in this version.
-- [x] Intentional logout replaces the current route with `/login`, omits a redirect
-      target, disconnects protected subscriptions, and prevents Back from revealing
-      the previous player's room view.
-- [x] Only an expired or missing session encountered on a protected route preserves
-      that internal route as the post-login destination.
-- [x] Opening another joined room from a notification pushes its route so browser
-      Back returns to the previous room.
-- [x] A room route transition disconnects the previous room WebSocket, fetches the
-      destination room's authoritative state, and then connects its room WebSocket.
-- [x] Browser Back to a prior room performs the same authoritative reload and does
-      not reuse a stale room snapshot.
-- [x] The player-scoped notification WebSocket remains connected across authenticated
-      page and room route transitions.
-- [x] Browser tests cover refresh restoration for `/login`, `/rooms`, and waiting,
-      active, and completed room states.
-- [x] Browser tests cover unauthenticated invitation return, token removal, and
-      private-room non-disclosure.
-- [x] Browser tests cover push/replace history for create, join, Back, leave,
-      dissolve, and removal flows.
-- [x] Browser tests cover room A-to-B navigation and Back with exactly one active room
-      WebSocket and a fresh authoritative snapshot at each destination.
+- [x] `/login` 呈現登入及註冊。
+- [x] `/rooms` 呈現房間大廳。
+- [x] `/rooms/:gameId` 依指定房間目前的等待中、進行中或已完成狀態呈現。
+- [x] `/` 將已驗證使用者重新導向 `/rooms`，未驗證使用者導向 `/login`。
+- [x] 重新整理 `/rooms` 後玩家仍在大廳，並重新載入房間清單。
+- [x] 重新整理 `/rooms/:gameId` 後重新載入依觀看者過濾的權威房間狀態，並重新連線房間同步。
+- [x] 私人邀請連結使用 `/rooms/:gameId?invite=:token`，不使用舊版 `?room=` 查詢。
+- [x] 遊戲階段、待處理本機選擇及連線狀態不編碼進路由。
+- [x] 未驗證者請求受保護路由時重新導向 `/login?redirect=<internal path>`。
+- [x] 帳號或訪客驗證成功後，玩家返回保留的路由。
+- [x] 重新導向目標只接受本機應用程式路徑，不能導向外部來源。
+- [x] 目前成員開啟 `/rooms/:gameId` 時載入房間，不改變成員身分。
+- [x] 已驗證非成員開啟可加入的公開房間路由時自動加入；私人房間另需有效邀請憑證。
+- [x] 房間因客滿、進行中、解散或未知而不能加入時，路由仍可見並呈現清楚結果，不改變成員身分。
+- [x] 從大廳建立、加入或開啟房間時推入 `/rooms/:gameId`，使瀏覽器返回回到大廳。
+- [x] 房間返回控制導覽至 `/rooms`，不退出房間成員身分。
+- [x] 離開、解散或被移出房間時，以 `/rooms` 取代目前歷史項目，使返回不會重新開啟無效房間。
+- [x] 開始及結束對局不改變房間 URL。
+- [x] 等待工作階段恢復期間，受保護路由顯示專用載入狀態，不短暫呈現登入或大廳內容。
+- [x] 房間路由在權威房間資料可用前顯示房間載入狀態，不呈現測試資料或空戰場。
+- [x] 只有收到權威回應後才呈現等待室或戰場；其後 WebSocket 重新連線並恢復即時同步。
+- [x] 大廳分頁是路由狀態，以 `/rooms?tab=create` 及 `/rooms?tab=join` 表示。
+- [x] 未提交房間表單、牌與陣法選擇、詳情浮層及紀錄展開均為本機介面狀態，重新載入時重設。
+- [x] 無法存取的房間路由呈現穩定結果頁，不自動重新導向。
+- [x] 客滿房間顯示 `房間已滿`；非成員開啟進行中房間顯示 `對局已開始`；未知及已解散房間顯示 `找不到這個房間`。
+- [x] 結果頁只提供 `返回房間大廳` 操作。
+- [x] 私人房間的單純 `/rooms/:gameId` 路由不向非成員透露房間是否存在或其狀態，並顯示 `找不到這個房間`。
+- [x] 有效邀請 token 或手動提交房間代碼可授權已驗證非成員加入私人等待室。
+- [x] 加入後，客戶端以 `/rooms/:gameId` 取代邀請 URL，從瀏覽器歷史移除 token；未來重新載入以成員身分為權威。
+- [x] 私人房間分別簽發高熵邀請連結 token 及供人手輸入的短房間代碼。
+- [x] 兩種邀請憑證僅在房間等待且尚有空位時有效；對局開始或房間解散時失效。
+- [x] 本版本房主不能撤銷或重新產生邀請憑證。
+- [x] 主動登出時以 `/login` 取代目前路由、省略重新導向目標、斷開受保護訂閱，並防止返回顯示前一玩家房間視圖。
+- [x] 只有在受保護路由遇到工作階段過期或不存在時，才保留該內部路由作為登入後目的地。
+- [x] 從通知開啟另一個已加入房間時推入其路由，使瀏覽器返回可回到前一房間。
+- [x] 房間路由轉換會斷開前一房間 WebSocket、取得目的房間權威狀態，再連接該房間 WebSocket。
+- [x] 瀏覽器返回前一房間時執行相同權威重新載入，不重用過期房間快照。
+- [x] 玩家範圍通知 WebSocket 在已驗證頁面及房間路由轉換期間保持連線。
+- [x] 瀏覽器測試涵蓋 `/login`、`/rooms` 及等待中、進行中、已完成房間狀態的重新整理恢復。
+- [x] 瀏覽器測試涵蓋未驗證邀請後返回、token 移除及私人房間不揭露資訊。
+- [x] 瀏覽器測試涵蓋建立、加入、返回、離開、解散及移除流程的推入／取代歷史。
+- [x] 瀏覽器測試涵蓋房間 A 至 B 導覽及返回；每個目的地均恰有一個作用中房間 WebSocket 及新的權威快照。
 
 ## Technical constraints
 
-- [x] Replace the `screen` state machine in `app.vue` with Nuxt file-based pages and
-      `<NuxtPage>`.
-- [x] Implement shared session-aware route middleware for protected pages.
-- [x] Keep authenticated session and global notifications above page lifetimes.
-- [x] Scope room state and the room WebSocket to the active room route and dispose
-      them when that route changes.
+- [x] 以 Nuxt 檔案路由頁面及 `<NuxtPage>` 取代 `app.vue` 中的 `screen` 狀態機。
+- [x] 為受保護頁面實作共用、具工作階段意識的路由 middleware。
+- [x] 已驗證工作階段及全域通知位於頁面生命週期之上。
+- [x] 房間狀態與房間 WebSocket 限定於目前房間路由，路由變更時釋放。
 
 ## Non-goals
 
-- Persisting unsubmitted card, formation, target, or effect selections across reload.
-- Encoding turn or engine phase in the URL.
-- Restoring non-authoritative client state.
+- 重新載入後持久化未提交的牌、陣法、目標或效果選擇。
+- 將回合或引擎階段編碼進 URL。
+- 恢復非權威客戶端狀態。
 
 ## Blocked by
 
-- None - can start immediately
+- 無，可立即開始

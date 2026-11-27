@@ -4,99 +4,50 @@ status: accepted
 
 # Model player-facing action detail as typed rule consequences
 
-> Refined by
-> [ADR-0028](./0028-treat-action-detail-as-contextual-supplement.md). The typed
-> Rules Engine ownership established here remains accepted; ADR-0028 replaces
-> the required, non-empty, standalone-completeness and one-variant-one-clause
-> assumptions.
+> 本決策由 [ADR-0028](./0028-treat-action-detail-as-contextual-supplement.md) 修訂。此處確立由規則引擎擁有具型別資料的決定仍然有效；ADR-0028 取代詳情必填、非空、可獨立完整理解，以及一個變體對應一個句子的假設。
 
 ## Context
 
-Formation Catalog text and the explanation shown before a Player commits an
-Action serve different purposes. Catalog text describes a Formation in
-isolation. A Player-Facing Action Detail must explain the consequences of the
-specific Action currently being offered, including state-dependent costs,
-substitutions, follow-up choices, trusted randomness, delayed effects, and Rule
-Module exceptions.
+陣法目錄文字與玩家提交行動前看到的說明用途不同。目錄文字單獨描述陣法；玩家行動詳情則須說明目前提供的特定行動之結果，包括依狀態而變的代價、替代、後續選擇、可信任隨機性、延遲效果及規則模組例外。
 
-The previous Web contract exposed a `summary` string copied from catalog
-`rule_text`. The Web then appended rule knowledge through Formation-ID policies
-and separate Secret Strategy prose tables. Echo made the resulting ownership
-problem visible: Rust owned the legal action and Echo lifecycle, while
-TypeScript separately described the Echo Cost and schedule. Either side could
-change without forcing the other description to change.
+原有 Web 契約公開從目錄 `rule_text` 複製的 `summary` 字串，Web 再透過陣法 ID 政策及獨立秘計文字表補上規則知識。迴響凸顯了擁有權問題：Rust 負責合法行動及迴響生命週期，TypeScript 卻另行描述迴響代價及排程；任一邊都可能在另一邊說明未更新時改變。
 
 ## Decision
 
-The Rules Engine represents every player-visible consequence as a closed typed
-`RuleConsequence`. Consequence variants cover at least costs, immediate effects,
-follow-up choices, trusted randomness, delayed effects, rule exceptions, and
-substitutions. They are rule facts rather than localized prose, canonical Game
-Events, or simulations of the final Game State.
+規則引擎以封閉、具型別的 `RuleConsequence` 表示每項玩家可見結果。結果變體至少涵蓋代價、立即效果、後續選擇、可信任隨機性、延遲效果、規則例外與替代。它們是規則事實，而非本地化文字、正規遊戲事件或最終遊戲狀態模擬。
 
-A required `PlayerFacingActionDetail` is embedded in each pre-commit Action
-offer. It is:
+每個提交前行動選項嵌入必填的 `PlayerFacingActionDetail`，其性質如下：
 
-- Player-scoped and limited to information that Player may already see;
-- state-specific to the same snapshot that produced the legal Action;
-- complete for the consequences the Player needs to understand before commit;
-- ordered so its clauses form one coherent explanation; and
-- presentation-neutral, with the Web owning localized wording and layout.
+- 限於查詢玩家及其已可見資訊；
+- 對應產生合法行動的同一狀態快照；
+- 完整涵蓋玩家提交前需要理解的結果；
+- 依順序組成連貫說明；
+- 不綁定呈現方式，由 Web 負責本地化文字與版面。
 
-Rule behavior supplies reusable consequence descriptors next to its execution
-logic. A central Player-Facing Action Detail module composes those descriptors
-with the current public state and verifies completeness. The Web exhaustively
-renders the serialized variants. It does not select rule prose by Formation ID.
+規則行為在執行邏輯旁提供可重用的結果描述；中央玩家行動詳情模組結合描述與目前公開狀態並驗證完整性。Web 對序列化變體進行窮舉呈現，不依陣法 ID 選取規則文字。
 
-The model applies to Formation Use, Profession Change, Activated Profession
-Ability, Spirit Skill, direct Pouch Secret Strategy offers, and Discard
-Retrieval. Pass may retain a fixed concise label without rich detail.
+此模型適用於施展陣法、轉職、職業發動能力、精靈技能、直接觸發錦囊秘計及棄牌回收。略過可保留固定簡短標籤，不必提供豐富詳情。
 
-Pending Choice remains a separate lifecycle. Its descriptor may reuse the same
-`RuleConsequence` values to explain a choice, but an Action Detail does not
-materialize canonical choice options, carry a Choice ID, validate an answer, or
-resume a continuation. A `SecretStrategyOption` may therefore support either a
-direct Pouch trigger or a Chain Pending Choice without becoming a universal
-standalone Action.
+待選擇事項仍有獨立生命週期。其描述可重用相同 `RuleConsequence` 值來解釋選擇，但行動詳情不建立正規選項、不攜帶 Choice ID、不驗證答案，也不恢復續接。因此 `SecretStrategyOption` 可支援直接觸發錦囊或連環待選擇事項，而不必成為通用獨立行動。
 
-The existing `playableActions`, Secret Strategy option, and Discard Retrieval
-workflows do not need to become one transport union. They share the detail
-contract while retaining their distinct command inputs and orchestration.
+既有 `playableActions`、秘計選項及棄牌回收流程無須合併成同一傳輸 union；它們共享詳情契約，同時保留各自的命令輸入與協調流程。
 
-An accepted command does not echo its detail back to the Rules Engine. The
-detail describes the offered snapshot; canonical command validation remains
-authoritative.
+已接受的命令不將詳情回傳規則引擎。詳情描述所提供的快照，正規命令驗證仍具權威。
 
-Action Details state known commitments rather than promise a fully resolved
-outcome. They distinguish guaranteed, conditional, random, follow-up, and
-scheduled consequences, and never reveal hidden opponent information or an
-undecided random result.
+行動詳情陳述已知承諾，不保證完整結算結果；它區分保證、條件式、隨機、後續及排程結果，絕不洩漏對手隱藏資訊或尚未決定的隨機結果。
 
-Catalog prose may still be displayed as supplementary reference material, but
-it is not a completeness fallback. Constructing an offer without its required
-typed detail is a development invariant violation. New rule variants must add
-their consequences and Web rendering explicitly.
+目錄文字仍可顯示為補充參考，但不能作為完整性遞補。建立缺少必填具型別詳情的選項屬於開發不變條件違反；新增規則變體時必須明確增加對應結果及 Web 呈現。
 
 ## Consequences
 
-After the Pending Choice lifecycle work is complete, the Web seam changes
-atomically: playable-action `summary`, Formation presentation `policy`, and
-rule-specific TypeScript prose maps are removed in favor of the required typed
-detail. Pre-deployment code does not retain a dual-field compatibility layer.
-Event-feed summaries and Formation Catalog summaries remain separate and are
-not part of this migration.
+待選擇生命週期工作完成後，Web 接點以原子方式改變：移除可執行行動 `summary`、陣法呈現 `policy` 及規則專屬 TypeScript 文字映射，改用必填的具型別詳情。部署前程式碼不保留雙欄位相容層。事件動態摘要與陣法目錄摘要維持獨立，不屬於此遷移。
 
-Validation is split by responsibility:
+驗證依責任分工：
 
-- Rust rule tests assert the consequences produced by each Action family and
-  representative Rule Module exceptions.
-- Completeness tests ensure every generated Action offer has a complete detail.
-- serialization contract tests lock tagged variants and exact camelCase Web DTO
-  fields;
-- TypeScript tests exhaustively render consequence fixtures; and
-- end-to-end coverage remains focused on representative interactions such as
-  Echo and Chain rather than duplicating every rule case.
+- Rust 規則測試斷言各行動種類及具代表性規則模組例外產生的結果。
+- 完整性測試確保每個產生的行動選項都有完整詳情。
+- 序列化契約測試鎖定標籤變體及精確 camelCase Web DTO 欄位。
+- TypeScript 測試窮舉呈現結果測試資料。
+- 端到端測試聚焦迴響、連環等代表性互動，不重複所有規則案例。
 
-This design increases the explicit work needed when a new rule mechanism is
-introduced. In return, the compiler and contract tests expose missing player
-explanations instead of allowing incomplete prose to ship silently.
+此設計增加引入新規則機制時必須明確完成的工作；相對地，編譯器及契約測試能暴露缺少的玩家說明，避免不完整文字靜默上線。

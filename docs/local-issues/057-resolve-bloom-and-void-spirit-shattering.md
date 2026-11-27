@@ -6,24 +6,21 @@ ready-for-agent
 
 ## What to build
 
-Complete the Spirit Theme Rule Module with automatic Bloom and Void
-Spirit-Shattering Technique. Resolve simultaneous Spirit and Team changes
-without transient winners, preserve direct-victory priority, and make direct
-execution, replay, reconnect, event history, and final online outcomes agree.
+以自動綻放及虛空碎靈術完成精靈主題規則模組。同時結算精靈及隊伍變化而不產生短暫勝者，保留直接勝利優先權，並使直接執行、重播、重新連線、事件歷史及最終線上結果一致。
 
 ## Acceptance criteria
 
-- [x] A six-power Wood Spirit automatically uses Bloom when its Team reaches zero HP from an HP-based resolution.
-- [x] Every eligible Wood Spirit on that Team consumes six power and contributes 40 recovery in one atomic resolution before HP-based Game Outcome evaluation.
-- [x] Combined Bloom recovery is capped at initial Team HP, and Spirits that reach zero power break.
-- [x] Five-Star Alignment and other direct victories finish without triggering automatic Bloom.
-- [x] 虛空碎靈術 is a three-same-level Active Spell available only with Spirit enabled and remains subject to the ordinary Active Spell pipeline.
-- [x] Void Spirit-Shattering atomically reduces every Spirit's power by two before directly removing 20 Team HP for each Spirit owner.
-- [x] Multiple Spirit owners on one Team each contribute their 20-point HP loss, and all affected Teams resolve before Game Outcome evaluation.
-- [x] Spirit Breaking and automatic Bloom observe post-shattering power, so a Wood Spirit reduced from six to four cannot answer HP loss from the same Technique.
-- [x] Canonical composite events contain sufficient Spirit Power, Spirit Breaking, Team HP, and Card movement deltas for replay without recomputing rules.
-- [x] Direct execution, replay, recorded-decision verification, Public Views, online history, reconnect, Draw outcomes, and winner presentation agree.
-- [x] Focused Rust, Web unit, and self-contained Brave Playwright tests cover simultaneous teammate Bloom, HP caps, direct victory, mixed Spirit power, multiple owners per Team, both Teams reaching zero, Seal, and replay.
+- [x] 隊伍因依生命值判定的結算而生命值歸零時，六點靈力的木精靈自動使用綻放。
+- [x] 該隊所有符合條件的木精靈各消耗六點靈力並回復 40 點生命，以一次原子結算完成，再判定依生命值決定的遊戲結果。
+- [x] 合併的綻放回復受隊伍初始生命值限制，靈力歸零的精靈被破除。
+- [x] 五星連珠及其他直接勝利結束遊戲時不觸發自動綻放。
+- [x] 虛空碎靈術由三張同級牌組成，為僅在啟用精靈時可用的主動術式，仍遵守一般主動術式流程。
+- [x] 虛空碎靈術以原子方式使所有精靈靈力扣除二點，再對每個精靈擁有者所屬隊伍直接扣除 20 點生命。
+- [x] 同一隊伍有多位精靈擁有者時，每位各造成 20 點生命扣減；判定遊戲結果前結算所有受影響隊伍。
+- [x] 破除精靈與自動綻放依碎靈後靈力判定，因此從六點降至四點的木精靈不能回應同一次術式的生命值扣減。
+- [x] 正規複合事件包含足夠的靈力、破除精靈、隊伍生命值及牌移動變化，使重播無須重新計算規則。
+- [x] 直接執行、重播、已記錄決策驗證、公開視圖、線上歷史、重新連線、平局結果及勝者呈現一致。
+- [x] 重點 Rust、Web 單元及自足的 Brave Playwright 測試涵蓋隊友同時綻放、生命值上限、直接勝利、不同精靈靈力、同隊多位擁有者、雙方同時歸零、封印及重播。
 
 ## Blocked by
 

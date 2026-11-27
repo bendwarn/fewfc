@@ -4,6 +4,32 @@ Deterministic rules engine for CFECards game state, formation resolution, turn f
 
 ## Language
 
+Names in parentheses include Chinese rulebook wording and product terminology.
+Check the source before treating a product term as official. The official
+[complete rulebook](https://www.cfecards.org/rule/latest/you-xi-gui-ze) and the
+applicable rule-version supplements determine the original wording. An English
+domain name is not authority to invent a Chinese rule name.
+
+The following named rules and abilities use these original names in the
+[official 5.16 rulebook](https://www.dropbox.com/scl/fi/4cigz3t61p07l5tkgvjyl/5.16.pdf?dl=0&rlkey=m2zx1x5dwb6cw7llyy8wt9xiy&st=mqligrpj);
+availability in a particular Rule Version is a separate question:
+
+| English name | Rulebook name |
+| --- | --- |
+| Metamorphosis | 幻化 |
+| Active Spell; Passive Spell; Delayed Spell | 主動術式；被動術式；延時術式 |
+| Five-Element Attack; Physical Attack; Special Attack | 五行攻擊；物理攻擊；特殊攻擊 |
+| Turn End | 回合結束 |
+| Illusion; Phantasm; Illusion Refinement | 幻術；幻朧；幻術精研 |
+| Blazing Yang Art; Dark Spirit | 烈陽訣；暗靈 |
+| Bloom; Stone Shield | 綻放；石盾 |
+| Water-Dotting Fan | 點水扇 |
+| Golden Cicada; Watch the Fire | 秘計‧金蟬；秘計‧觀火 |
+| Ringing Metal; Falling Wood; Flowing Water | 商調‧鳴金；角調‧落木；羽調‧流水 |
+| War Fire; Split Earth; Pure Fire; Plant Earth | 徵調‧戰火；宮調‧裂土；變徵‧淨火；變宮‧植土 |
+| Rusted Iron Withered Forest; Divine Calculation | 鏽鐵枯林；神算 |
+| Void Star-Breaking Technique; Void Spirit-Shattering Technique | 虛空破星術；虛空碎靈術 |
+
 **Free Play (自由對局・切磋)**:
 The existing configurable play offering, without tournament ranking implications.
 _Avoid_: Unranked Competitive Play
@@ -967,7 +993,7 @@ delayed rule effects. All Turn Start effects finish before the Active Effects
 Process.
 _Avoid_: start of Active Effects Process
 
-**Previous Player**:
+**Previous Player (上家)**:
 The player immediately before the current player in turn order.
 _Avoid_: opponent, enemy
 
@@ -983,7 +1009,7 @@ _Avoid_: latest formation, last known formation, formation history
 The Previous-Turn Formation when that Formation is a Five-Element Attack. It does not exist when the Previous-Turn Formation is absent or belongs to another category.
 _Avoid_: latest elemental attack, last known element, elemental history
 
-**Formation**:
+**Formation (陣法)**:
 A declared combination of card instances that matches a formation pattern and resolves through an effect definition.
 _Avoid_: combo, hand pattern
 
@@ -1048,7 +1074,7 @@ _Avoid_: formation behavior
 The attack execution detail that distinguishes elemental, physical, and special attacks.
 _Avoid_: attack category
 
-**Attack**:
+**Attack (攻擊)**:
 A formation category that targets the previous player first and resolves HP impact through that player's team.
 _Avoid_: damage spell
 
@@ -1058,7 +1084,7 @@ has no separately specified timing. Its consequences have no internal
 before-and-after order.
 _Avoid_: damage step, ordered attack effects, Attack completion
 
-**Spell**:
+**Spell (術式)**:
 A formation category whose effect may resolve immediately or be covered as a passive.
 _Avoid_: effect, skill
 
@@ -1068,13 +1094,13 @@ whether submitted cards are shown and resolved immediately or placed face down;
 it is distinct from Formation Category and is not copied by class change.
 _Avoid_: spell category
 
-**Covered Passive**:
+**Covered Passive (蓋牌)**:
 A passive Spell waiting face down in the Formation Area until the next Player's
 action start. If neutralized before that timing, it remains hidden until its
 ordinary reveal and Discard.
 _Avoid_: trap, secret
 
-**Counter Effect**:
+**Counter Effect (反制效果)**:
 A delayed defensive Formation effect that checks and may modify the next Player's
 action. Passive Spells create hidden Counter Effects through Covered Passives;
 class change may create the copied Counter Effect publicly without covered cards.
@@ -1127,7 +1153,7 @@ A Spirit Skill that remains continuously in effect while its granting Spirit
 is owned and does not require active use.
 _Avoid_: activated Spirit Skill, Automatic Profession Ability
 
-**Cannot Act**:
+**Cannot Act (無法行動)**:
 A status kind that prevents a player from taking an action command.
 _Avoid_: stunned, disabled
 

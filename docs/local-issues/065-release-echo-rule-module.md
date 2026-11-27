@@ -6,38 +6,31 @@ ready-for-agent
 
 ## What to build
 
-Release the complete Echo Theme Rule Module through official configuration,
-canonical and viewer-filtered Web contracts, Online Game Rooms, and the
-battlefield. Make every Melody, Echo Cost, Turn Start continuation, schedule,
-choice, and trusted shuffle usable and recoverable through direct play,
-reconnect, event history, and self-contained Brave E2E flows.
+透過官方設定、正規及依觀看者過濾的 Web 契約、線上房間與戰場發布完整迴響主題規則模組。讓每種曲調、迴響代價、回合開始續接、排程、選擇及可信任洗牌均能透過直接遊玩、重新連線、事件歷史及自足 Brave E2E 流程使用與恢復。
 
 ## Acceptance criteria
 
-- [x] Echo becomes an available Theme Rule Module only after all seven Melodies and their interactions are complete.
-- [x] Echo requires Star, Five Directions Legend, and Hero Schools; enabling Echo normalizes those dependencies, disabling any dependency disables Echo, and Personal Deck remains optional.
-- [x] New games and rooms enable Echo by default with every available Rule Module, while existing stored rooms retain their saved module list.
-- [x] Rule Module changes retain readiness and Locked Deck List invalidation behavior and never infer Echo for an already active game.
-- [x] Public State shows Scheduled Echo, 植土 schedules, Flow State layers, public 裂土 suppression, and whether resolution is waiting for a Player or trusted randomness.
-- [x] Pending Choice exposes its Player and purpose publicly but sends private candidate Cards or other sensitive options only to the answering Player.
-- [x] Pending Randomness exposes only that the server is resolving a shuffle; no viewer receives the submitted order through Public State or Public Event Feed.
-- [x] Selected 淨火 targets, 裂土 Formations, 植土 Melodies, revealed 鳴金 Cards, Echo Cost Discards, lifecycle outcomes, and expiry are represented in viewer-safe event history.
-- [x] The battlefield offers accessible controls for Card, Player, Formation, Melody, and Decline answers and blocks ordinary actions until every continuation is complete.
-- [x] Reconnect during Echo Cost, 裂土 selection, 淨火 target selection, 植土 selection, Pending Randomness, and resumed Turn Start restores the exact actionable control without duplicating commands or events.
-- [x] Worker restart or retry during 鳴金 shuffle cannot expose, lose, duplicate, or reorder Cards and cannot advance to Echo Cost or Main before the trusted shuffle commits.
-- [x] Rust-to-TypeScript multiword action and event fields serialize with the exact camelCase contract and have focused contract tests.
-- [x] Direct execution, replay, recorded-decision verification, Public Views, Web commands, event presentation, reconnect, and final Game Outcome agree for every Melody in shared- and Personal-Deck games.
-- [x] Focused Rust, Web unit, Nuxt type checking, production build, and self-contained two-worker Brave Playwright tests cover default/dependency configuration, two- and four-Player play, all choices, both Deck modes, hidden information, reconnect, Worker retry, Seal, 裂土, 淨火, game over, and all-enabled compatibility.
+- [x] 全部七種曲調及互動完成後，迴響才成為可用主題規則模組。
+- [x] 迴響依賴星辰圖記、五方傳說及英雄學派；啟用時正規化這些依賴，停用任一依賴則停用迴響；個人牌組仍為選用。
+- [x] 新遊戲及房間預設連同所有可用規則模組啟用迴響；既有儲存房間保留原模組清單。
+- [x] 規則模組變更保留準備狀態與鎖定牌組清單失效行為，不為已進行的遊戲推斷啟用迴響。
+- [x] 公開狀態顯示已排程迴響、植土排程、流水狀態層、公開裂土限制，以及結算是否等待玩家或可信任隨機性。
+- [x] 待選擇事項公開其玩家與目的，但僅向作答玩家傳送私密候選牌或其他敏感選項。
+- [x] 待隨機處理只公開伺服器正在結算洗牌；沒有觀看者透過公開狀態或公開事件動態收到提交順序。
+- [x] 所選淨火目標、裂土陣法、植土曲調、公開鳴金牌、迴響代價棄牌、生命週期結果及到期資訊均呈現在符合觀看權限的事件歷史中。
+- [x] 戰場提供牌、玩家、陣法、曲調及拒絕答案的可存取控制；所有續接完成前阻擋一般行動。
+- [x] 在迴響代價、裂土選擇、淨火目標選擇、植土選擇、待隨機處理及恢復的回合開始期間重新連線，均能恢復確切可操作控制，不重複命令或事件。
+- [x] 鳴金洗牌期間 Worker 重啟或重試不會暴露、遺失、重複或改變牌序，也不能在可信任洗牌提交前推進至迴響代價或主階段。
+- [x] Rust 至 TypeScript 的多詞行動及事件欄位以精確 camelCase 契約序列化，並有重點契約測試。
+- [x] 共用牌堆及個人牌組遊戲中，每種曲調的直接執行、重播、已記錄決策驗證、公開視圖、Web 命令、事件呈現、重新連線及最終遊戲結果一致。
+- [x] 重點 Rust、Web 單元、Nuxt 型別檢查、正式建置及自足雙 Worker Brave Playwright 測試涵蓋預設／依賴設定、雙人及四人、所有選擇、兩種牌堆模式、隱藏資訊、重新連線、Worker 重試、封印、裂土、淨火、遊戲結束及全啟用相容性。
 
 ## Validation
 
-- `cargo test` and strict Clippy pass; the Echo suite contains 24 focused
-  integration tests and the Web adapter contains focused contract tests.
-- Web unit tests (30), Nuxt type checking, and the production Nuxt build pass.
-- Self-contained Brave scenarios cover default/dependency normalization and a
-  private, reconnectable 淨火 Player choice through a development-only fixture.
-- A fresh Brave run could not be executed because the environment previously
-  rejected the required sandbox escalation for quota reasons.
+- `cargo test` 與嚴格 Clippy 通過；迴響套件包含 24 個重點整合測試，Web 介面卡包含重點契約測試。
+- Web 單元測試（30 項）、Nuxt 型別檢查及正式 Nuxt 建置通過。
+- 自足 Brave 情境涵蓋預設／依賴正規化，以及透過僅供開發測試資料執行私密且可重新連線的淨火玩家選擇。
+- 環境先前因配額拒絕必要沙箱提升，因此無法重新執行 Brave。
 
 ## Blocked by
 

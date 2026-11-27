@@ -1,12 +1,8 @@
 # 48 Prepare Formations through the Mesmer School
 
-> **Superseded in part:**
+> **部分內容已被取代：**
 > [ADR 0025](../adr/0025-model-illusion-cards-as-virtual-formation-components.md)
-> replaces this issue's Illusion and Phantasm preparation model. The completed
-> checklist below remains a historical record, but its third-physical-Card,
-> optional-follow-up, and mutually exclusive interpretation-source criteria are
-> no longer authoritative. Illusion and Phantasm now create a Virtual Formation
-> Card and a mandatory same-turn Formation Requirement.
+> 取代本議題的幻術與幻朧準備模型。下方已完成清單保留作為歷史紀錄，但第三張實體牌、可選後續行動及互斥解讀來源的條件不再具權威性。幻術及幻朧現在產生虛擬牌，並要求當回合完成陣法。
 
 ## Triage
 
@@ -14,34 +10,25 @@ ready-for-agent
 
 ## What to build
 
-Add the complete Mesmer School as an end-to-end Hero Schools slice. Implement
-Mesmer, Spirit Mesmer, and Hermit with every official 5.16 transition,
-inherited ability, Activated Profession Ability, Formation Proficiency,
-Profession Formation, projection, and interaction from the
-[Mesmer School rules](https://www.cfecards.org/rule/latest/hero/mesmer).
+將完整幻術師學派作為英雄學派端到端的一部分加入。依[幻術師學派規則](https://www.cfecards.org/rule/latest/hero/mesmer)，實作幻術師、幻靈使及隱者的全部官方 5.16 轉職、繼承能力、發動能力、專精能力、職業陣法、投影及互動。
 
 ## Acceptance criteria
 
-- [x] All three Mesmer School Profession Changes enforce their official prerequisite and Water-level cost.
-- [x] Activated Profession Abilities use the shared once-per-Player-turn allowance and do not consume the action opportunity.
-- [x] Illusion and Phantasm create a serializable Prepared Profession Ability with declared Card, element, level, and Formation scope without mutating Card data.
-- [x] Phantasm does not trigger Illusion Refinement because they are separate Activated Profession Abilities.
-- [x] Prepared details are immediately public, survive reconnect and replay, and clear after any Action or at Turn End.
-- [x] Activation requires at least one possible legal follow-up, but the next Action is not forced to use the preparation and paid costs are never refunded.
-- [x] One physical Card selects at most one printed, Prepared, or Star-substituted interpretation in each Formation Match Option.
-- [x] Mesmer School Proficiencies and Profession Formations implement their official patterns and effects while retaining correct Formation identities.
-- [x] Element resistance, Seal interaction, Shield behavior, draw bonuses, and Profession replacement use typed hooks.
-- [x] Direct execution, replay, Public Views, Web DTOs, playable Actions, the Ability panel, and ability summaries agree.
-- [x] Tests cover disconnect after preparation, unused preparation, invalid activation, copied effects, Hero-disabled behavior, and team mode.
+- [x] 幻術師學派三種轉職均執行官方先決條件及水行等級代價。
+- [x] 職業發動能力使用每位玩家每回合一次的共用次數，不消耗行動機會。
+- [x] 幻術與幻朧建立可序列化的已準備職業能力，包含宣告牌、屬性、等級與陣法範圍，不修改牌資料。
+- [x] 幻朧不觸發幻術精研，因為兩者是不同的發動能力。
+- [x] 準備詳情立即公開、在重新連線及重播後保留，並於任何行動後或回合結束時清除。
+- [x] 發動時至少須有一個可能的合法後續，但下一行動不強制使用準備結果，且已支付代價絕不退還。
+- [x] 每個陣法匹配選項中，一張實體牌至多選用牌面、準備結果或星辰替代其中一種解讀。
+- [x] 幻術師學派專精與職業陣法實作官方組合及效果，同時保留正確陣法身分。
+- [x] 屬性抗性、封印互動、防護罩行為、抽牌加成及職業取代使用具型別鉤子。
+- [x] 直接執行、重播、公開視圖、Web DTO、可執行行動、能力面板及能力摘要一致。
+- [x] 測試涵蓋準備後斷線、未使用的準備、無效發動、複製效果、停用英雄學派行為及團隊模式。
 
 ## Superseded acceptance criteria
 
-ADR 0025 supersedes the criteria that model Illusion or Phantasm as a
-`PreparedProfessionAbility` targeting a physical Card Instance, allow the
-Player to end the action without using the created Card, or choose exactly one
-of printed, Prepared, and Star interpretations. The remaining Mesmer School
-delivery criteria continue to describe the historical scope of this completed
-issue.
+ADR 0025 取代下列條件：將幻術或幻朧建模為以實體牌為目標的 `PreparedProfessionAbility`、允許玩家不使用產生的牌即結束行動，或在牌面、準備結果及星辰解讀中恰選一種。其餘幻術師學派交付條件仍描述此已完成議題的歷史範圍。
 
 ## Blocked by
 

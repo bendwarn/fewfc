@@ -6,38 +6,30 @@ ready-for-agent
 
 ## What to build
 
-Prepare the Rules Engine, recorded-decision model, Web DTOs, and Online Game
-Room adapter for Echo's non-Card choices and trusted midgame Deck shuffles.
-Replace the card-only effect-choice answer with a closed typed contract, and
-introduce retryable Pending Randomness that records complete shuffle outcomes
-without admitting client-controlled Deck order or replay-time RNG.
+為迴響的非牌選擇及可信任遊戲中洗牌，準備規則引擎、已記錄決策模型、Web DTO 及線上房間介面卡。以封閉具型別契約取代只能回答牌的效果選擇答案，並引入可重試的待隨機處理；它記錄完整洗牌結果，不接受由客戶端控制的牌序，也不在重播時使用 RNG。
 
 ## Acceptance criteria
 
-- [x] Effect-generated choices accept closed typed answers for Cards, Player, Formation, and Decline; every Pending Choice kind declares and validates its accepted answer variants.
-- [x] Existing multi-Card continuations such as Chaos retain their exact behavior after migration from the card-only answer payload.
-- [x] Invalid answer variants, counts, identifiers, or Cards are Validation Failures that emit no events and do not mutate Game State.
-- [x] Rust and Web DTO fields use the exact camelCase contract, with serialization contract tests for every new multiword action field.
-- [x] Pending Randomness is serialized separately from Pending Choice, blocks gameplay commands and automatic advancement, and survives replay, persistence, reconnect, and Worker restart.
-- [x] Only a trusted application adapter may answer Pending Randomness; public command APIs never accept a client-provided shuffled order.
-- [x] A shuffle answer must be an exact permutation of the requested current Deck remainder; missing, duplicate, foreign, or stale Cards fail without mutation.
-- [x] Canonical events record the complete accepted shuffled order, and replay consumes that order without rerunning or depending on a PRNG implementation.
-- [x] Adapter failure leaves the request retryable and cannot advance a continuation, Turn Start, or Main Phase prematurely.
-- [x] One continuation may safely require sequential trusted shuffle decisions, including empty-Deck Discard recycling followed by a second post-search shuffle, without merging or skipping canonical decisions.
-- [x] Existing stored commands and active games remain readable through an explicit serde-compatible migration or backward-compatible payload path.
-- [x] Focused Rust and Web tests cover every answer kind, invalid payloads, shuffle validation, replay verification, retry, reconnect, and hidden shuffle data.
+- [x] 效果產生的選擇接受牌、玩家、陣法及拒絕的封閉具型別答案；每種待選擇事項均宣告並驗證其接受的答案變體。
+- [x] 混沌等既有多牌續接從僅能回答牌的 payload 遷移後仍保有確切行為。
+- [x] 無效答案變體、數量、識別或牌均為驗證失敗，不發出事件或修改遊戲狀態。
+- [x] Rust 與 Web DTO 欄位使用精確 camelCase 契約；每個新增多詞行動欄位均有序列化契約測試。
+- [x] 待隨機處理與待選擇事項分別序列化，阻擋遊戲命令及自動推進，且可經重播、持久化、重新連線及 Worker 重啟保留。
+- [x] 只有可信任應用程式介面卡可回答待隨機處理；公開命令 API 絕不接受客戶端提供的洗後牌序。
+- [x] 洗牌答案必須是請求時目前剩餘牌堆的精確排列；缺牌、重複牌、外來牌或過期牌均失敗且不修改狀態。
+- [x] 正規事件記錄完整已接受洗後順序，重播使用該順序，不重新執行或依賴偽隨機數產生器實作。
+- [x] 介面卡失敗後請求仍可重試，不會過早推進續接、回合開始或主階段。
+- [x] 單一續接可安全要求依序可信任洗牌決策，包括空牌堆的棄牌回收後再進行第二次檢索後洗牌，不合併或跳過正規決策。
+- [x] 重點 Rust 與 Web 測試涵蓋各種答案、無效 payload、洗牌驗證、重播驗證、重試、重新連線及隱藏洗牌資料。
 
 ## Validation
 
-- `cargo test` and strict Clippy pass, including typed Chaos and
-  `tests/choices_randomness.rs`.
-- Web unit tests (28), Nuxt type checking, and the production build pass.
-- The complete self-contained Brave suite passes: 19 of 19.
-- The trusted adapter persists each Pending Randomness request before resolving
-  it and its sequence test covers two distinct shuffles in one continuation.
-- Public room DTOs expose only request metadata and Card count; the complete
-  current and shuffled orders remain internal or canonical.
+- `cargo test` 與嚴格 Clippy 通過，包含具型別混沌及 `tests/choices_randomness.rs`。
+- Web 單元測試（28 項）、Nuxt 型別檢查及正式建置通過。
+- 完整自足 Brave 測試套件 19 項全部通過。
+- 可信任介面卡在結算前持久化每個待隨機處理請求，其序列測試涵蓋單一續接中的兩次不同洗牌。
+- 公開房間 DTO 只公開請求中繼資料及牌數；完整目前順序及洗後順序留在內部或正規資料。
 
 ## Blocked by
 
-None - can start immediately
+無，可立即開始

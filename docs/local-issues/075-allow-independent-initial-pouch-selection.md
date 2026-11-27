@@ -6,102 +6,46 @@ ready-for-agent
 
 ## Goal
 
-Let every outstanding Player choose their initial Pouch immediately while
-preserving deterministic replay, hidden information, safe Online Game command
-commits, and a deliberate, data-loss-safe cutover from legacy games and
-Replays.
+讓每位尚未選擇的玩家立即選擇初始錦囊，同時維持確定性重播、隱藏資訊及安全的線上遊戲命令提交。
 
 ## Problem Statement
 
-Initial Pouch Selection currently stores one expected Player in Game
-Preparation, validates choices in Turn Order, emits the next Player in
-`InitialPouchChosen`, and exposes only that Player's chooser in the Web UI. The
-choices are actually independent: each Player removes one Card from their own
-Personal Deck and places it in their own Pouch. Requiring Turn Order therefore
-adds waiting without protecting a shared rule invariant.
+目前遊戲準備中的初始錦囊選擇只儲存一位預期玩家、依行動順序驗證選擇、在 `InitialPouchChosen` 發出下一位玩家，Web 介面也只向該玩家提供選擇器。這些選擇其實彼此獨立：每位玩家各從自己的個人牌組移除一張牌並放入自己的錦囊。強制行動順序增加等待，卻沒有保護共享規則不變條件。
 
-The Online Game Room already serializes commands and atomically checks the
-expected canonical sequence, so near-simultaneous submissions do not require a
-new concurrent-write mechanism. Its HTTP and WebSocket delivery can still
-apply an older active-game snapshot after a newer one because broadcasts are
-post-commit asynchronous and room responses have no active-record sequence.
-
-The canonical preparation shape and event contract are changing. The release
-does not add legacy Game Record or Replay compatibility paths. Its one-time
-cleanup may remove only GameRoom or Replay storage proved inaccessible or
-broken; readable rooms and Replay storage must survive the cutover. Waiting
-rooms must survive the cutover.
+線上房間已序列化命令並以原子方式檢查預期正規序號，因此近乎同時的提交不需要新的並行寫入機制。但提交後廣播非同步，房間回應又沒有進行中紀錄序號，HTTP 與 WebSocket 傳送仍可能在較新快照之後套用較舊遊戲快照。
 
 ## Solution
 
-Make Initial Pouch Selection one shared Game Preparation stage. Derive its
-outstanding Players from canonical Pouches, accept one independent command from
-each Player in server arrival order, and close the stage through an explicit
-completion event only after every Player has chosen. Keep trusted shuffles and
-the initial deal ordered by Turn Order.
+初始錦囊選擇採單一共享遊戲準備階段，從正規錦囊推導尚未選擇玩家，依伺服器收到的順序接受各玩家各一次獨立命令，並僅在所有玩家選擇後以明確完成事件結束階段。可信任洗牌與初始發牌繼續依行動順序進行。
 
-Expose public completion progress without Card identity, keep the existing
-immediate-selection interaction, and version only active-game room snapshots so
-the browser can reject stale delivery for the same Game Instance. Add an
-idempotent, protected management CLI for the one-time legacy purge. Do not add a
-D1 migration or a Durable Object class migration, and do not run the purge as
-part of ordinary deploys.
+公開完成進度但不公開牌身分，保留既有立即選擇互動；只為進行中遊戲的房間快照加上版本，使瀏覽器能拒絕同一遊戲實例的過期傳送。
 
 ## User Stories
 
-1. As a Player, I want to choose my initial Pouch as soon as the game starts,
-   so that I do not wait for another Player's setup decision.
-2. As a Player who has chosen, I want to see that I am waiting for the remaining
-   Players and retain private knowledge of my selected Card after reconnect.
-3. As a room participant, I want to see who has completed or remains without
-   learning another Player's Pouch identity.
-4. As a Player using another tab, I want a second new submission rejected as
-   already chosen without changing the game.
-5. As a Player retrying after response loss, I want the same Command ID to
-   return its existing receipt without placing another Pouch.
-6. As a replay auditor, I want accepted choices recorded in actual server
-   arrival order and the same final state reconstructed for every legal order.
-7. As a reconnecting Player, I want an older active-game broadcast ignored when
-   a newer snapshot for the same Game Instance was already applied.
-8. As an operator, I want one explicit, dry-run-first CLI to clear only
-   inaccessible or broken legacy room and Replay storage without deleting
-   accounts, Deck Lists, or readable waiting rooms and Replays.
-9. As an operator, I want a partial cleanup failure to leave the application in
-   maintenance so I can safely rerun the same purge epoch.
-
+1. 作為玩家，我希望遊戲開始後立即選擇初始錦囊，不必等待其他玩家的設定決策。
+2. 作為已選擇玩家，我希望看到正在等待其餘玩家，且重新連線後仍私下知道自己選的牌。
+3. 作為房間參與者，我希望看到哪些玩家已完成或尚未完成，但不得知其他玩家錦囊的牌身分。
+4. 作為使用另一分頁的玩家，我希望第二次新提交因已選擇而被拒絕，不改變遊戲。
+5. 作為回應遺失後重試的玩家，我希望相同命令 ID 回傳既有收據，不再放置錦囊。
+6. 作為重播稽核者，我希望已接受選擇依伺服器實際收到順序記錄，且每種合法順序都能重建相同最終狀態。
+7. 作為重新連線玩家，我希望已套用同一遊戲實例的較新快照後，忽略較舊進行中遊戲廣播。
 ## Confirmed Rules Semantics
 
-- Apply the policy to every supported capacity: two Players and four Players in
-  team mode. Do not introduce a two-Player special case.
-- `GamePreparationStage::InitialPouchSelection` no longer stores a Player.
-- Outstanding Players are Turn Order minus owners of Pouches already placed
-  during Initial Pouch Selection. Do not duplicate this as canonical
-  `remainingPlayers` state.
-- Any outstanding Player may submit `ChooseInitialPouch`. Validate membership
-  in Turn Order, absence of an existing initial Pouch, and ownership of the
-  selected Card in the Player's current Personal Deck.
-- A successful choice is immutable. A new Command ID after that Player chose
-  returns `InitialPouchAlreadyChosen` and emits zero canonical events.
-- Emit `PouchPlaced`, then `InitialPouchChosen { player, card }`. Remove
-  `next_player` from the canonical event.
-- The final outstanding choice also emits `InitialPouchSelectionCompleted`,
-  then the first `RandomnessRequested`. Only the completion event advances the
-  stage to `PendingDeckShuffle`.
-- Continue shuffling remaining Personal Decks and dealing initial hands in Turn
-  Order. Generate exactly one first shuffle request after the completion
-  barrier.
-- The canonical event log keeps server arrival order. Independent choice
-  batches must project the same final state in every legal order.
-- Initial Pouch Selection remains Game Preparation, not Pending Choice. Each
-  non-final choice is an independently completed Online Command Transaction;
-  do not hold one open multi-Player transaction. The final choice may enter the
-  existing trusted-randomness continuation.
-- Do not add timeout, automatic choice, cancellation, or reselection.
+- 此政策適用所有支援人數：雙人及四人團隊模式；不引入雙人特例。
+- `GamePreparationStage::InitialPouchSelection` 不再儲存玩家。
+- 尚未選擇玩家由行動順序扣除初始錦囊選擇期間已放置錦囊的擁有者推導；不將其重複存成正規 `remainingPlayers` 狀態。
+- 任何尚未選擇玩家均可提交 `ChooseInitialPouch`。驗證其位於行動順序、尚無初始錦囊，且所選牌屬於該玩家目前個人牌組。
+- 成功選擇不可變更。該玩家選擇後以新命令 ID 再提交會回傳 `InitialPouchAlreadyChosen`，且不發出正規事件。
+- 依序發出 `PouchPlaced`、`InitialPouchChosen { player, card }`，並從正規事件移除 `next_player`。
+- 最後一位尚未選擇玩家的選擇還會發出 `InitialPouchSelectionCompleted`，接著發出第一個 `RandomnessRequested`。只有完成事件使階段進入 `PendingDeckShuffle`。
+- 繼續依行動順序洗剩餘個人牌組並發初始手牌；完成屏障後恰好產生一個首次洗牌請求。
+- 正規事件日誌保留伺服器收到順序；獨立選擇批次以每種合法順序投影後均須得到相同最終狀態。
+- 初始錦囊選擇仍為遊戲準備，而非待選擇事項。每個非最後選擇是獨立完成的線上命令交易，不維持一個開啟中的多玩家交易；最後選擇可進入既有可信任隨機性續接。
+- 不新增逾時、自動選擇、取消或重新選擇。
 
 ## Public View And Web Decisions
 
-- Replace the single-player preparation projection with this exact camelCase
-  public contract:
+- 以下列精確 camelCase 公開契約取代單玩家準備投影：
 
   ```ts
   initialPouchSelection: {
@@ -109,23 +53,13 @@ part of ordinary deploys.
   } | null
   ```
 
-- Order `remainingPlayers` by Turn Order. Derive completed Players in the Web
-  adapter as Turn Order minus this list; do not transmit both lists.
-- Keep `interaction.canChooseInitialPouch` viewer-specific. It is true only
-  during Initial Pouch Selection when the viewer is outstanding.
-- Show completion and remaining-player progress publicly. Never include chosen
-  Card identity in the progress object or another viewer's event projection.
-- Preserve Pouch knowledge: the owner can inspect their chosen Card immediately
-  and after reconnect; everyone else sees a Card Back until ordinary reveal
-  rules make it public.
-- Both Players initially see the chooser. A Card click submits immediately with
-  no confirmation. The existing `R` random shortcut also submits immediately.
-- After a successful choice, close that Player's chooser and show the waiting
-  state. Treat `InitialPouchAlreadyChosen` from another tab as reconciliation:
-  refresh canonical state and move to waiting without a persistent alarming
-  error.
-- Add this optional active-game response contract, present whenever the response
-  is backed by a current Game Record:
+- `remainingPlayers` 依行動順序排列。Web 介面卡由行動順序扣除此清單推導已完成玩家，不同時傳送兩份清單。
+- `interaction.canChooseInitialPouch` 仍依觀看者而定，只有初始錦囊選擇階段且觀看者尚未選擇時為 true。
+- 公開顯示完成及剩餘玩家進度；進度物件及其他觀看者的事件投影絕不包含所選牌身分。
+- 保留錦囊資訊權限：擁有者可立即及重新連線後檢視所選牌；其他人看到牌背，直到正常公開規則使牌公開。
+- 兩位玩家一開始都看到選擇器。點牌立即提交，不需確認；既有 `R` 隨機快捷鍵也立即提交。
+- 選擇成功後關閉該玩家選擇器並顯示等待狀態。其他分頁傳回 `InitialPouchAlreadyChosen` 時視為狀態調和：重新整理正規狀態並進入等待，不持續顯示令人警戒的錯誤。
+- 回應由目前遊戲紀錄提供時，加入以下選用進行中遊戲回應契約：
 
   ```ts
   activeGameVersion?: {
@@ -134,153 +68,40 @@ part of ordinary deploys.
   }
   ```
 
-  For the same `gameInstanceId`, ignore HTTP or WebSocket responses whose
-  `recordSequence` is lower than the highest already applied. Do not add
-  `roomRevision`, and do not use this viewer guard as a canonical concurrency
-  boundary.
-- Add exact Rust-to-TypeScript camelCase serialization contract tests for every
-  new multiword field, especially `initialPouchSelection`, `remainingPlayers`,
-  and the public completion event.
+  相同 `gameInstanceId` 下，忽略 `recordSequence` 低於已套用最高值的 HTTP 或 WebSocket 回應。不新增 `roomRevision`，也不把此觀看者防護當成正規並行邊界。
+- 每個新增多詞欄位均新增精確 Rust 至 TypeScript camelCase 序列化契約測試，尤其 `initialPouchSelection`、`remainingPlayers` 及公開完成事件。
 
 ## Online Command Decisions
 
-- Keep the Durable Object request queue and `expectedSequence` atomic commit
-  boundary. They linearize near-simultaneous commands and prevent lost updates.
-- Do not reserve a Turn Order slot, normalize event order after commit, roll
-  back a valid earlier choice, or create multiple Pending Choices.
-- Preserve normal Command ID behavior: the same ID and identity returns the
-  immutable receipt; a different identity under the same ID is an idempotency
-  conflict.
-- Ensure two nearly simultaneous distinct Players both commit exactly once.
-  Whichever commit observes the completed barrier owns creation of the first
-  trusted shuffle request.
-- Keep post-commit broadcast and notification outside the canonical
-  transaction. The active-game response version protects the browser from
-  delivery reordering for the same Game Instance.
-
-## Hard Cutover And Management CLI
-
-- Preserve every room and Replay that the authenticated management probe can
-  currently read. A Dissolved room does not cascade-delete a readable Replay.
-- Do not add old Game Record reads, event fallbacks, dual-write, repair, or
-  replay compatibility.
-- Do not add or change D1 migrations. Do not add a Durable Object class
-  migration. Keep the existing GameRoom and ReplayArchive classes and
-  namespaces so the new version can create new games and Replays normally.
-- Add a protected, idempotent GameRoom management probe and purge operation.
-  Delete only a GameRoom object when the authenticated probe explicitly returns
-  HTTP 404 `absent` or HTTP 500 `broken`; delete its matching room-index and
-  membership rows in the same operation. Preserve room ID, name, access,
-  owner, members, seats, invitation, capacity, ruleset, and enabled Rule
-  Modules for every readable room. Never delete on 401/403, authentication
-  failure, timeout, malformed response, or an arbitrary transport/server error.
-- Add a protected ReplayArchive probe/purge operation that verifies the archive's
-  own `sourceGameId` matches a GameRoom explicitly deleted in this run before
-  calling `storage.deleteAll()`. Preserve readable archives and Replay D1 rows
-  unless that association is proven; otherwise fail closed and preserve them.
-  Calling the operation again must remain safe. Do not replace or retire the
-  namespace, because new-version Replays continue using it.
-- Add `apps/web/scripts/purge-legacy-games.ts` and a package script. Require
-  exactly one explicit `--env staging|production`; default to dry-run and
-  require `--confirm` for mutation. Require a stable purge epoch. Derive the
-  temporary Wrangler OAuth/API token from the authenticated Wrangler profile;
-  do not accept a purge secret, and never print credentials. Treat
-  `CLOUDFLARE_ACCOUNT_ID` only as a non-secret account selector.
-- Protect management endpoints with the short-lived authenticated Wrangler
-  OAuth/API token verified against the configured `CLOUDFLARE_ACCOUNT_ID`, and
-  make them available only while an explicit deployment/configuration
-  maintenance gate is active. Do not use `LEGACY_PURGE_SECRET`. This gate is
-  configuration, not persisted schema.
-- During maintenance, reject new game commands and Replay creation. Enter
-  maintenance before enumeration and leave it enabled after any failure.
-- Deployment policy is deliberately separate from this room/replay cleanup:
-  pushes to `main` run the normal CI checks and automatically build and deploy
-  staging; production deploys only from a manually dispatched CI workflow with
-  its production input enabled.
-- The local cutover wizard's `enable` and `disable` operations use the logged-in
-  Wrangler profile to update `MAINTENANCE_MODE` as an ordinary Worker variable.
-  The configuration update reuses the currently deployed Worker code/build;
-  these operations run no GitHub Action, application build, migration, or purge.
-- Ordinary code deployment uses `wrangler deploy --keep-vars` to preserve the
-  active `MAINTENANCE_MODE` gate during pushes. Maintenance remains enabled
-  until a successful variable update disables it, and the wizard fails closed
-  on update errors.
-- Use D1 room data plus the Cloudflare Durable Objects Namespaces/Objects API to
-  enumerate GameRoom and ReplayArchive objects, including storage with no
-  surviving D1 replay reference. Follow API cursors until exhausted.
-- Delete only rows from `player_saved_replay` whose `source_game_id` names an
-  explicitly deleted room, and matching `replay_archive_lifecycle` rows whose
-  Replay association is proven. Preserve authentication, Player profiles,
-  custom Deck Lists, public-room index data for readable rooms, and all other
-  Replay rows. Use a D1 atomic batch/transaction for the selective deletion.
-- Verification must prove: every explicitly deleted GameRoom object and its
-  matching index/membership rows are absent; preserved room count and
-  identities match the dry-run inventory; readable Replay archives and D1 rows
-  remain; explicitly associated deleted Replays have no archive or selected D1
-  rows; sampled deleted Replay IDs return 404; and a second run reports no new
-  mutation.
-- Reopen traffic only after all verification succeeds. Document the exact
-  staging-first and production command sequence, but never invoke the remote
-  purge automatically during deploy, tests, or implementation.
-
-Cloudflare references for the management implementation:
-
-- [Access Durable Object storage](https://developers.cloudflare.com/durable-objects/best-practices/access-durable-objects-storage/)
-- [List Durable Object namespace objects](https://developers.cloudflare.com/api/resources/durable_objects/subresources/namespaces/subresources/objects/methods/list/)
-- [Workers secrets and configuration-only versions](https://developers.cloudflare.com/workers/configuration/secrets/)
-- [Workers versions and deployments](https://developers.cloudflare.com/workers/versions-and-deployments/)
+- 保留 Durable Object 請求佇列及 `expectedSequence` 原子提交邊界；兩者使近乎同時的命令線性化並防止更新遺失。
+- 不預留行動順序位置、不在提交後正規化事件順序、不回滾先前有效選擇，也不建立多個待選擇事項。
+- 保留正常命令 ID 行為：相同 ID 與身分回傳不可變收據；相同 ID 搭配不同身分屬冪等衝突。
+- 確保兩位不同玩家近乎同時選擇時各恰好提交一次；觀察到完成屏障的提交負責建立第一次可信任洗牌請求。
+- 提交後廣播及通知留在正規交易外。進行中遊戲回應版本保護瀏覽器，避免同一遊戲實例的傳送順序顛倒。
 
 ## Testing Decisions
 
-- Add Rust tests for arbitrary submission order, both capacities, already-chosen
-  validation, private Card projection, the completion barrier, exactly one
-  first shuffle request, Turn Order shuffle/deal, and direct-versus-replay state
-  equivalence.
-- Add serialization tests for the changed canonical events and exact camelCase
-  public DTO fields.
-- Add Online Command Transaction and Durable Object tests for near-simultaneous
-  choices, same-ID retry, different-ID duplicate, sequence conflicts, and
-  exactly-once transition into trusted randomness.
-- Add Web tests for public remaining/completed progress, both Players' initial
-  chooser availability, immediate Card and random-shortcut submission, owner
-  reconnect knowledge, other-viewer Card Back, duplicate-tab reconciliation,
-  and stale same-Game-Instance response rejection.
-- Add representative E2E coverage proving both Players initially see the
-  chooser, the first submitter waits, and the final submitter releases shuffle
-  and initial deal.
-- Add CLI tests for argument validation, dry-run default, credential redaction,
-  cursor pagination, room preservation, status reset, selective D1 deletion,
-  ReplayArchive `deleteAll()`, same-epoch rerun, partial failure, maintenance
-  fail-closed behavior, and verification failures.
-- Validate with focused Rust and Web tests, full `cargo test`, Web unit and
-  integration tests, type checking, relevant Playwright coverage, formatting,
-  and diff checks.
+- 新增 Rust 測試，涵蓋任意提交順序、兩種人數、已選擇驗證、私密牌投影、完成屏障、恰好一個首次洗牌請求、依行動順序洗牌／發牌及直接執行與重播狀態等價。
+- 為變更後正規事件及精確 camelCase 公開 DTO 欄位新增序列化測試。
+- 新增線上命令交易及 Durable Object 測試，涵蓋近乎同時選擇、相同 ID 重試、不同 ID 重複提交、序號衝突及恰好一次進入可信任隨機性。
+- 新增 Web 測試，涵蓋公開剩餘／完成進度、雙方初始選擇器可用、立即點牌及隨機快捷鍵提交、擁有者重新連線後的知情、其他觀看者牌背、重複分頁狀態調和及拒絕同遊戲實例過期回應。
+- 新增代表性 E2E，證明雙方一開始均看到選擇器、先提交者等待、最後提交者解除屏障並開始洗牌及初始發牌。
+- 執行重點 Rust 及 Web 測試、完整 `cargo test`、Web 單元及整合測試、型別檢查、相關 Playwright、格式與 diff 檢查。
 
 ## Out Of Scope
 
-- Supporting or migrating an in-progress legacy Game Record.
-- Adding compatibility, conversion, or fallback replaying for a legacy
-  completed Replay. This does not authorize deleting readable archive storage.
-- Running the purge as a schema migration, Durable Object class migration,
-  ordinary deployment hook, or automatic startup task.
-- Adding a global room revision or redesigning all room-state delivery.
-- Changing Pending Choice, generic timeout, auto-answer, forfeit, cancellation,
-  or Pouch trigger semantics after Game Preparation.
-- Reordering canonical events into Turn Order after accepted commits.
+- 新增全域房間 revision 或重新設計所有房間狀態傳送。
+- 改變遊戲準備後的待選擇事項、通用逾時、自動回答、判負、取消或錦囊觸發語意。
+- 已接受提交後將正規事件重新排序為行動順序。
 
 ## Governing Context
 
-- ADR-0020 owns Initial Pouch Selection's Rules Engine and Game Preparation
-  boundary.
-- ADR-0026 keeps Initial Pouch Selection distinct from Pending Choice.
-- ADR-0014 owns trusted randomness and deterministic replay.
-- Completed issue #73 owns Online Command Transaction identity, receipts,
-  sequence validation, atomic commits, and post-commit delivery boundaries.
-- `CONTEXT.md`, `docs/rule.md`, and decision 41 define the confirmed semantics.
-- The management CLI must follow current Cloudflare Durable Object and D1 APIs;
-  platform-specific behavior must be verified against official documentation
-  during implementation.
+- ADR-0020 擁有初始錦囊選擇的規則引擎與遊戲準備邊界。
+- ADR-0026 使初始錦囊選擇與待選擇事項保持區分。
+- ADR-0014 擁有可信任隨機性及確定性重播。
+- 已完成議題 #73 擁有線上命令交易身分、收據、序號驗證、原子提交及提交後傳送邊界。
+- `CONTEXT.md`、`docs/rule.md` 及決策 41 定義已確認語意。
 
 ## Blocked by
 
-- none
+- 無

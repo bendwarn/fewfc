@@ -4,24 +4,10 @@ status: accepted
 
 # Preserve game conclusions alongside competition rulings
 
-Competitive Play uses the existing Ruleset, while Tournament progression may
-require a winner for a Game whose canonical conclusion is Draw. Preserve that
-Game Conclusion and record the Competition Ruling separately, including its
-reason and supporting time-control facts. Never rewrite the original Draw or
-append Game Events after GameEnded to represent tournament adjudication.
+競賽對局沿用既有規則集，但賽事晉級可能需要為正規結論是平局的遊戲決定勝者。應保留原有遊戲結論，並另外記錄競賽判定及其原因與計時依據；不得改寫原始平局，也不得在 GameEnded 後附加遊戲事件來表示賽事判定。
 
-When both Teams' byoyomi deadlines are the same in the authoritative monotonic
-timeline, record a distinct DoubleLoss competition ruling: neither Team is a
-winner and the original Game Conclusion remains unchanged. A delayed observation
-that crosses two different deadlines records only the Team whose deadline came
-first. Tournament scheduling preserves the resulting match as `DoubleLoss`
-rather than inventing a winner; its stage progression is governed by the product
-design rather than the bracket provider.
+權威單調時間軸上雙方讀秒期限相同時，記錄獨立的雙方判負（DoubleLoss）競賽判定：雙方均非勝者，原遊戲結論不變。若延遲觀察跨過兩個不同期限，僅記錄期限較早的隊伍。賽事排程保留 `DoubleLoss` 交手結果，不虛構勝者；階段晉級由產品設計而非賽程供應商決定。
 
-This deliberate split keeps replay faithful while allowing elimination
-progression and auditable referee rulings; treating the bracket provider's
-result as the Game Outcome would erase that distinction.
+此區分讓重播忠於原局，並支援淘汰晉級與可稽核的裁判判定；若把賽程供應商的結果當作遊戲結果，便會抹去這項區別。
 
-See [the confirmed product design](../tournament/competitive-play-design.md) for
-scope, time controls and progression policy. Provider integration and
-the concrete persistence format are not selected by this ADR.
+範圍、計時與晉級政策見[已確認的產品設計](../tournament/competitive-play-design.md)。本 ADR 未選定供應商整合方式或具體持久化格式。

@@ -4,30 +4,14 @@ status: accepted
 
 # Plan Team HP changes per resolution
 
-HP facts are observable game records, but several rules can affect the same
-Team inside one resolution. Deriving every fact afresh from canonical state
-loses call order, obscures clamping/prevention, and lets post-effect rules
-accidentally recurse.
+生命值事實是可觀察的遊戲紀錄，但多條規則可能在同一次結算中影響同一隊伍。若每次都從正規狀態重新推導事實，會遺失呼叫順序、掩蓋界限限制及傷害防止，並可能使效果後規則意外遞迴。
 
-Each outer rules resolution therefore validates and owns one ordered Team-HP
-ledger. Formation effects borrow a scoped child session from that ledger. The
-session reports only canonical-order Teams that actually lost HP; Shared Fate
-is planned afterward with the outer ledger and can never re-enter the session.
-Canonical events retain their semantic owner, while the HP delta itself is
-constructed only by the HP module.
+因此，每次外層規則結算驗證並擁有一份有序隊伍生命值帳本。陣法效果從帳本借用具範圍的子工作階段；該工作階段只依正規順序回報實際失去生命的隊伍。同命隨後以外層帳本規劃，且絕不重新進入該工作階段。正規事件保留各自語意擁有者，生命值變化本身則只由生命值模組建立。
 
-Pending choices and randomness do not retain a live ledger. Their continuation
-starts a fresh outer resolution from canonical state and records a typed Melody
-execution origin. Echo is not a Formation effect, so it cannot acquire
-Formation-only prevention or Shared Fate by inference from ambient state.
+待選擇事項與隨機性不保留作用中的帳本。續接會從正規狀態開始新的外層結算，並記錄具型別的曲調執行來源。迴響不是陣法效果，因此不能根據周圍狀態推論而取得僅適用陣法的防止效果或同命。
 
 ## Considered options
 
-- A global HP-source enum was rejected: semantic events already own their
-  reason, eligibility, and follow-ups, and a universal source would duplicate
-  those rule concepts.
-- Aggregating attack HP changes by Team was rejected: it destroys sequential
-  same-Team changes. Attack records instead carry an ordered vector with a
-  small role classification only where a mixed collection needs one.
-- Serializing an in-progress ledger through Pending Resolution was rejected:
-  command replay must reconstruct continuation behavior from canonical state.
+- 不使用全域生命值來源 enum：語意事件已擁有其原因、適用條件與後續效果，通用來源會重複這些規則概念。
+- 不依隊伍彙總攻擊生命值變化：這會破壞同隊依序發生的變化。攻擊紀錄改用有序向量，僅在混合集合需要時加上簡單角色分類。
+- 不透過待處理規則流程序列化進行中的帳本：命令重播必須能從正規狀態重建續接行為。

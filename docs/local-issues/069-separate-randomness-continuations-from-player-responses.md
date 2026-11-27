@@ -6,108 +6,76 @@ ready-for-agent
 
 ## Problem Statement
 
-A Player can select a legal Rusted Iron Withered Forest Formation and still be
-told that the choice is invalid. The Formation is accepted by Formation
-matching and correctly creates Pending Randomness, but the Rust Web adapter
-then starts building a Player-ready response while the trusted shuffle is still
-unresolved. That projection queries Playable Actions, which correctly rejects
-gameplay queries during Pending Randomness, and the resulting validation error
-is presented to the Player as `選擇無效，請重新選擇。`.
+玩家選擇合法的鏽鐵枯林仍可能收到選擇無效的訊息。陣法匹配已接受該陣法，並正確建立待隨機處理，但可信任洗牌尚未完成時，Rust Web 介面卡便開始建構可供玩家操作的回應。該投影查詢可執行行動；此查詢正確地在待隨機處理期間拒絕遊戲查詢，產生的驗證錯誤卻呈現給玩家為 `選擇無效，請重新選擇。`。
 
-The Player should not observe this trusted application-adapter decision. From
-the Player's perspective, one command performs the Formation, the Online Game
-Room completes every trusted shuffle internally, and the response arrives at
-the next Player decision, such as Turn Draw Discard Choice.
+玩家不應看到此可信任應用程式介面卡決策。從玩家角度，一個命令施展陣法，線上房間在內部完成全部可信任洗牌，再於下一個玩家決策，例如回合抽牌棄牌選擇，回傳回應。
 
 ## Solution
 
-Separate trusted-randomness continuation results from Player-ready rules
-responses with a closed, tagged result contract. A `needsRandomness` result
-contains only the canonical record needed to resume and the trusted randomness
-request. A `ready` result contains the Public Game State, public events,
-Playable Actions, and interaction affordances required by a Player-facing
-response.
+使用封閉、帶標籤的結果契約，區分可信任隨機性續接結果與可供玩家操作的規則回應。`needsRandomness` 結果只包含恢復所需的正規紀錄及可信任隨機性請求；`ready` 結果包含玩家回應所需的公開遊戲狀態、公開事件、可執行行動及互動操作。
 
-The Online Game Room consumes and persists every `needsRandomness` result,
-supplies a trusted permutation, and repeats until it receives `ready`. Only a
-`ready` result may be projected into a Game Room response or WebSocket room
-state. Pending Randomness remains an internal seam between the deterministic
-Rules Engine adapter and the trusted Worker.
+線上房間消費並持久化每個 `needsRandomness` 結果，提供可信任排列並重複處理，直到收到 `ready`。只有 `ready` 可投影為遊戲房間回應或 WebSocket 房間狀態。待隨機處理仍是確定性規則引擎介面卡與可信任 Worker 之間的內部接點。
 
 ## User Stories
 
-1. As the performing Player, I want a legal Rusted Iron Withered Forest to be accepted, so that an internal Deck shuffle is not reported as an invalid choice.
-2. As the performing Player, I want one command submission to advance through trusted shuffles to the next Player decision, so that implementation continuations are invisible during play.
-3. As the performing Player, I want the final response to show Turn Draw Discard Choice when the Formation completes, so that I can continue the Turn normally.
-4. As another Player, I want private Deck order and trusted shuffle requests to remain hidden, so that online play does not leak canonical hidden information.
-5. As a reconnecting Player, I want an interrupted trusted shuffle to resume safely, so that a Worker restart does not lose or duplicate the Formation.
-6. As a room participant, I want each Formation command to be committed exactly once, so that retries do not duplicate canonical events or effects.
-7. As a rules maintainer, I want trusted continuation results and Player-ready results to be distinct variants, so that impossible response states are rejected by exhaustive matching.
-8. As a rules maintainer, I want Playable Actions to be computed only at a Player decision, so that pending internal work cannot trigger unrelated gameplay validation.
-9. As a Worker maintainer, I want each Pending Randomness record persisted before resolving it, so that every continuation remains retryable after failure.
-10. As a Worker maintainer, I want sequential shuffle requests drained through one loop, so that Formations with multiple Deck operations cannot expose an intermediate result.
-11. As a replay auditor, I want accepted shuffle permutations to remain canonical recorded decisions, so that replay never reruns a PRNG.
-12. As a TypeScript caller, I want the Rust and Web tagged contracts to use exact camelCase serialization, so that every result variant is decoded consistently.
-13. As a test author, I want to assert the Game Room command response rather than internal UI rendering details, so that the regression is locked at the highest Player-observable seam.
-14. As a local developer, I want the captured room record to remain a read-only reproduction artifact, so that diagnosis never mutates or publishes hidden room data.
+1. 作為施展玩家，我希望合法鏽鐵枯林被接受，避免內部洗牌被回報為選擇無效。
+2. 作為施展玩家，我希望提交一次命令便能經可信任洗牌推進至下一個玩家決策，讓實作續接不出現在遊戲中。
+3. 作為施展玩家，我希望陣法完成後的最終回應顯示回合抽牌棄牌選擇，以便正常繼續回合。
+4. 作為其他玩家，我希望私密牌序與可信任洗牌請求保持隱藏，避免線上遊戲洩漏正規隱藏資訊。
+5. 作為重新連線的玩家，我希望中斷的可信任洗牌能安全恢復，避免 Worker 重啟遺失或重複陣法。
+6. 作為房間參與者，我希望每個陣法命令恰好提交一次，避免重試造成正規事件或效果重複。
+7. 作為規則維護者，我希望可信任續接結果與可供玩家操作的結果使用不同變體，使窮舉匹配能拒絕不可能的回應狀態。
+8. 作為規則維護者，我希望只在玩家決策時計算可執行行動，避免待處理內部工作觸發無關遊戲驗證。
+9. 作為 Worker 維護者，我希望在結算前持久化每個待隨機處理紀錄，使每次續接失敗後仍可重試。
+10. 作為 Worker 維護者，我希望以單一迴圈處理完依序洗牌請求，避免多次牌堆操作的陣法暴露中間結果。
+11. 作為重播稽核者，我希望已接受的洗牌排列仍為正規已記錄決策，確保重播不重新執行偽隨機數產生器。
+12. 作為 TypeScript 呼叫者，我希望 Rust 與 Web 帶標籤契約使用精確 camelCase 序列化，使每種結果變體一致解碼。
+13. 作為測試撰寫者，我希望斷言遊戲房間命令回應而非內部介面呈現細節，在玩家可觀察的最高接點鎖定回歸。
+14. 作為本機開發者，我希望擷取的房間紀錄維持唯讀重現素材，確保診斷不修改或公開隱藏房間資料。
 
 ## Implementation Decisions
 
-- Replace the optional Pending Randomness field on the otherwise Player-ready response with a closed tagged result contract.
-- Use the camelCase discriminants `needsRandomness` and `ready` in both Rust serialization and TypeScript types.
-- `needsRandomness` carries the updated canonical record and one trusted randomness request. It does not carry Public Game State, public events, Playable Actions, or interaction affordances.
-- `ready` carries the existing completed rules response used for Public Game State, public events, Playable Actions, interaction affordances, and trusted hand-candidate queries.
-- The Rust Web adapter returns `needsRandomness` immediately when command resolution reaches Pending Randomness. It must not call Player-response projection or query Playable Actions first.
-- The trusted Worker exhaustively matches the result variants. It persists the updated record for every `needsRandomness`, submits an exact trusted permutation, and continues until the result is `ready`.
-- The shared sequential-randomness helper accepts the tagged result contract and returns only the ready variant after draining zero or more requests.
-- Callers that cannot legitimately create Pending Randomness must explicitly require `ready`; callers that execute gameplay commands capable of randomness must use the draining path.
-- Game Room HTTP responses and WebSocket room-state messages are ready-only contracts. They never serialize a trusted randomness request, Deck order, or continuation discriminator to a Player.
-- Existing Pending Command Draft retry behavior remains intact. A failure after persistence leaves the same randomness request retryable without committing the Player command twice.
-- Canonical command, event, Pending Randomness, and recorded-decision formats do not change. No room-record migration is required.
-- Rusted Iron Withered Forest rules, Divine Calculation protection, Tailwind recovery, trusted permutation validation, and replay behavior remain unchanged.
-- Do not solve the defect with only a `pending_randomness.is_none()` projection guard. Such a guard may be defensive, but the tagged contract is the required primary design.
+- 以封閉帶標籤結果契約，取代原本可供玩家操作回應上的選用待隨機處理欄位。
+- Rust 序列化及 TypeScript 型別均使用 camelCase 判別值 `needsRandomness` 與 `ready`。
+- `needsRandomness` 攜帶更新後正規紀錄及一個可信任隨機性請求，不攜帶公開遊戲狀態、公開事件、可執行行動或互動操作。
+- `ready` 攜帶既有完成的規則回應，供公開遊戲狀態、公開事件、可執行行動、互動操作及可信任手牌候選查詢使用。
+- 命令結算到達待隨機處理時，Rust Web 介面卡立即回傳 `needsRandomness`，不得先投影玩家回應或查詢可執行行動。
+- 可信任 Worker 窮舉匹配結果變體；每次 `needsRandomness` 均持久化更新紀錄、提交精確可信任排列，繼續直到結果為 `ready`。
+- 共用依序隨機性輔助程式接受帶標籤結果契約，處理完零個或多個請求後只回傳 ready 變體。
+- 合法情況下不可能建立待隨機處理的呼叫端必須明確要求 `ready`；執行可能需要隨機性的遊戲命令之呼叫端必須使用完整處理路徑。
+- 遊戲房間 HTTP 回應及 WebSocket 房間狀態訊息只接受 ready 契約，絕不向玩家序列化可信任隨機性請求、牌序或續接判別值。
+- 既有待處理命令草稿重試行為保持不變；持久化後失敗時，同一隨機請求仍可重試，不重複提交玩家命令。
+- 正規命令、事件、待隨機處理及已記錄決策格式不變。
+- 鏽鐵枯林規則、神算保護、順風回復、可信任排列驗證及重播行為不變。
+- 不僅以 `pending_randomness.is_none()` 投影防護解決缺陷；此防護可以作為輔助，但帶標籤契約是必要的主要設計。
 
 ## Testing Decisions
 
-- Prefer observable result contracts over implementation-call assertions. The highest Player-facing seam is one Online Game Room command submission returning the next Player decision.
-- Add a Rust Web adapter regression in which a Player-view legal Rusted Iron Withered Forest returns `needsRandomness`. Assert its exact camelCase discriminator and request fields, and assert that Player-ready fields are absent.
-- Add a Rust serialization contract test for both tagged variants. This protects the multiword trusted-randomness fields and exact camelCase contract consumed by TypeScript.
-- Update the existing shared Worker randomness-sequence test to cover one and multiple consecutive `needsRandomness` variants, persistence before each resolution, exact resolve actions, and a ready-only result.
-- Add a Game Room regression that submits a legal Rusted Iron Withered Forest once, allows the Worker to complete trusted randomness internally, and receives Turn Draw Discard Choice without exposing a randomness continuation.
-- The Game Room regression must assert that the Player command is committed once and that the canonical events include the trusted shuffle and completed Formation sequence.
-- Use a deterministic Rules Engine-owned fixture for committed tests. Do not depend on the mutable Wrangler room database or copy unrelated hidden Cards into a fixture.
-- Retain the existing focused Tribulation test for revealing, discarding, waiting for trusted shuffle, and completing the Formation after a valid permutation.
-- Retain Pending Randomness permutation, stale-request, retry, replay, and camelCase tests as prior art from the completed midgame-randomness work.
-- Validate with focused Rust Web adapter and Tribulation tests, related Bun shared/Worker tests, full `cargo test`, and TypeScript type checking. Run broader Web build or Brave coverage if the changed shared response types affect those paths.
+- 優先測試可觀察的結果契約，而非實作呼叫。面向玩家的最高接點是一次線上房間命令提交回傳下一個玩家決策。
+- 新增 Rust Web 介面卡回歸：玩家視角下合法的鏽鐵枯林回傳 `needsRandomness`；斷言精確 camelCase 判別值與請求欄位，以及不存在可供玩家操作的欄位。
+- 為兩種帶標籤變體新增 Rust 序列化契約測試，保護 TypeScript 使用的多詞可信任隨機性欄位及精確 camelCase 契約。
+- 更新既有共用 Worker 隨機性序列測試，涵蓋一個及多個連續 `needsRandomness` 變體、每次結算前持久化、精確結算行動及僅 ready 的結果。
+- 新增遊戲房間回歸：提交一次合法鏽鐵枯林，讓 Worker 在內部完成可信任隨機性，並收到回合抽牌棄牌選擇，不暴露隨機性續接。
+- 遊戲房間回歸須斷言玩家命令只提交一次，且正規事件包含可信任洗牌與完成的陣法序列。
+- 提交的測試使用由規則引擎擁有的確定性測試資料，不依賴可變的 Wrangler 房間資料庫，也不將無關隱藏牌複製到測試資料。
+- 保留既有天劫重點測試，涵蓋展示、捨棄、等待可信任洗牌及合法排列後完成陣法。
+- 保留已完成遊戲中隨機性工作中的待隨機處理排列、過期請求、重試、重播及 camelCase 測試，作為既有依據。
+- 驗證時執行重點 Rust Web 介面卡及天劫測試、相關 Bun 共用／Worker 測試、完整 `cargo test` 及 TypeScript 型別檢查。若變更後共用回應型別影響更廣路徑，再執行 Web 建置或 Brave 測試。
 
 ## Out of Scope
 
-- Changing the source or algorithm used by the trusted Worker to shuffle Cards.
-- Moving entropy generation into the deterministic Rules Engine.
-- Changing Rusted Iron Withered Forest, Divine Calculation, Tailwind, Turn Draw, or Formation matching rules.
-- Changing canonical events, recorded decisions, replay semantics, or persisted room schemas.
-- Exposing trusted randomness requests or Deck order to browser clients.
-- Repairing or advancing the captured local room record.
-- Broadly redesigning Card-selection Formation queries beyond separating internal continuation results from Player-ready responses.
+- 變更可信任 Worker 洗牌使用的來源或演算法。
+- 將熵產生移入確定性規則引擎。
+- 變更鏽鐵枯林、神算、順風、回合抽牌或陣法匹配規則。
+- 變更正規事件、已記錄決策、重播語意或持久化房間資料結構。
+- 向瀏覽器客戶端公開可信任隨機性請求或牌序。
+- 修復或推進擷取的本機房間紀錄。
+- 除分離內部續接結果與可供玩家操作的回應外，廣泛重新設計選牌陣法查詢。
 
 ## Further Notes
 
-The read-only reproduction is room
-`5b9a7371-83e4-4f83-9abf-8e32230944fc` after canonical command 79. Glimmer
-interprets Card Instance 14 as effective level three. Card Instances
-`[4, 22, 12, 14]` are then the unique legal Rusted Iron Withered Forest:
-Metal levels total seven and Wood effective levels total seven.
+唯讀重現素材為房間 `5b9a7371-83e4-4f83-9abf-8e32230944fc` 在正規命令 79 之後的紀錄。螢光將實體牌 14 解讀為有效三級。實體牌 `[4, 22, 12, 14]` 因而是唯一合法的鏽鐵枯林：金行等級總和為七，木行有效等級總和為七。
 
-Replaying that exact command as the Player deterministically returns
-`Validation::PendingRandomnessInProgress`. Replaying the same state through a
-non-Player projection exposes the intended trusted request; resolving its exact
-permutation completes Rusted Iron Withered Forest, consumes Divine Calculation,
-changes the defending Team HP from 133 to 93, and advances to Turn Draw Discard
-Choice. This proves that Formation matching, the shuffle request, the
-continuation, and replay are correct; only the mixed continuation/Player
-response interface is defective.
+以玩家身分重播該精確命令會確定性回傳 `Validation::PendingRandomnessInProgress`。以非玩家投影重播相同狀態則可看到預期的可信任請求；結算其精確排列會完成鏽鐵枯林、消耗神算、將防守隊伍生命值由 133 改為 93，並推進至回合抽牌棄牌選擇。這證明陣法匹配、洗牌請求、續接及重播正確；缺陷只在混合續接／玩家回應介面。
 
-The governing decision is ADR 0014, which requires a trusted application
-adapter to supply midgame shuffle outcomes while replay consumes the recorded
-order. Completed local issues 62 and 66 are prior art for Pending Randomness and
-Tribulation respectively.
+管轄決策為 ADR 0014：可信任應用程式介面卡提供遊戲中洗牌結果，重播則使用記錄順序。已完成的本機議題 62 及 66 分別是待隨機處理與天劫的既有依據。

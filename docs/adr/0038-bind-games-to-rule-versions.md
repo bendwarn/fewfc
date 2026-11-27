@@ -4,61 +4,22 @@ status: accepted
 
 # Bind games to rule versions independently of enabled modules
 
-Use the full Rule Version, initially 5.16 and 5.17, to identify applicable rule
-content, including the behavior of same-named rules, and available Theme
-Rule Modules. Rule Version and enabled modules are separate: a game using only
-some 5.16 themes still runs 5.16. Themes cannot be combined across versions.
-Both versions remain available for new games, and each game retains
-its selected version through system upgrades. Deliberate rule changes require
-a new Rule Version; corrections to the implementation of the selected rules
-follow the bug-fix policy below.
+使用完整規則版本（初期為 5.16 與 5.17）識別適用規則內容，包括同名規則的行為及可用主題規則模組。規則版本與已啟用模組分開：只使用部分 5.16 主題的遊戲仍執行 5.16；不同版本的主題不能混用。兩個版本均可用於新遊戲，各遊戲在系統升級後仍保留所選版本。有意改變規則必須建立新版本；修正所選規則的實作則依下列錯誤修正政策處理。
 
-Version 5.16 includes Spirit, Jianghu, Echo, Confluence Generation, Tribulation,
-Pouch, and Dark Glimmer. Version 5.17 includes Spirit, Jianghu, Confluence
-Generation, Pouch, Dark Glimmer, and Totem Formations (圖騰法陣).
+5.16 包含精靈、江湖、迴響、匯流世代、天劫、錦囊及黑暗微光；5.17 包含精靈、江湖、匯流世代、錦囊、黑暗微光及圖騰法陣。
 
-Existing unversioned games belong to 5.16 and retain their stored enabled
-modules; do not classify them as a separate legacy rule version or add modules
-to their running games. Persistence changes must preserve that interpretation
-without rewriting their recorded outcomes.
+建立房間沿用既有介面，增加可展開的歷史規則版本選單；新房間預設 5.17。選擇或變更版本時，先啟用該版本包含的全部主題，玩家再透過既有模組控制取消選用。版本沒有的主題不可用，既有相依限制仍適用。此方式取代全域目錄預設值，同時保留部分模組玩法。
 
-Room creation keeps its existing interface, adding a collapsible list for
-selecting past Rule Versions. New rooms default to 5.17. Selecting or changing
-the Rule Version initially enables all themes included in that version; players
-may then deselect themes using the existing module controls. Themes absent
-from the version are unavailable, and the existing dependency constraints still
-apply. This replaces a global-catalog default without removing partial-module
-play.
+只有房主可在遊戲開始前變更規則版本。依 ADR-0004 的既有設定變更政策，版本變更會重設其他玩家準備狀態，並使等待室鎖定牌組快照失效。遊戲開始後不得變更版本。
 
-Only the room owner may change the Rule Version before game start. A version
-change resets other players' readiness and invalidates locked waiting-room deck
-snapshots, following the existing configuration-change policy in ADR-0004.
-Once the game starts, its Rule Version cannot change.
+兩版本均保留既有產品判定，包括離山的暫時失去能力（ADR-0033），以及錦囊依賴個人牌組與精靈（ADR-0021）。因此全選主題仍須啟用個人牌組，取消選用主題也沿用既有相依行為。規則版本識別的是本產品對公開版本的解讀，不宣稱與 PDF 逐字等同。
 
-Both versions retain existing product rulings, including Temporary Ability Loss
-for 離山 (ADR-0033) and Pouch's Personal Deck and Spirit dependencies (ADR-0021).
-Selecting all themes therefore also requires Personal Deck; deselecting themes
-continues to follow the existing dependency behavior. Rule Version identifies
-this product's interpretation of the published version, not an assertion of
-verbatim equivalence to the PDF.
+首次交付須完整支援 5.17，包括圖騰法陣及其互動、版本選擇、持久化與重播，同時持續支援 5.16。版本選單只能提供可遊玩的版本。
 
-The first delivery includes full 5.17 support, including Totem Formations and
-its interactions, version selection, persistence, and replay support, alongside
-continued 5.16 support. The version selector must only offer playable versions.
-
-This decision supersedes ADR-0001's deferral of rule version identity and
-section 39 of `docs/rules-engine-decisions.md` where defaults use every module
-in the global catalog: available themes now come from the selected version.
-Record schema compatibility is distinct from Rule Version.
+本決策取代 ADR-0001 延後決定規則版本識別的安排，以及 `docs/rules-engine-decisions.md` 第 39 節使用全域目錄所有模組作為預設值的內容；可用主題現在由所選版本決定。紀錄資料結構相容性與規則版本分屬不同問題。
 
 ## Bug fixes and historical records
 
-Bug fixes apply to subsequent operations under the affected Rule Version,
-including ongoing games. Previously recorded outcomes are not recomputed:
-replay applies the original canonical events, as specified in section 33 of
-`docs/rules-engine-decisions.md`. Deliberate balance or rule changes require a
-new Rule Version. This delivery does not preserve every historical engine build
-to reproduce and verify the behavior of past implementation bugs.
+錯誤修正適用於受影響規則版本下的後續操作，包括進行中遊戲。先前記錄的結果不重新計算；重播依 `docs/rules-engine-decisions.md` 第 33 節套用原始正規事件。有意的平衡或規則變更需要新規則版本。
 
-The version-mechanism decisions are settled. The interview continues with
-Totem Formation semantics and interactions before implementation begins.
+版本機制已定案；實作前仍繼續討論圖騰法陣語意及互動。

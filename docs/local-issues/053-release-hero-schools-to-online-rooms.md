@@ -6,27 +6,23 @@ ready-for-agent
 
 ## What to build
 
-Release the complete Hero Schools Rule Module to Online Game Rooms as one
-default-on Advanced Rule toggle. Preserve existing room configurations, expose
-all 18 Professions and their public data, finish the vertically stacked Ability
-and Action controls, add teaching-mode Profession progression, and validate
-complete two-Player and four-Player online games.
+將完整英雄學派規則模組以單一進階規則開關提供於線上房間。公開全部 18 個職業及其公開資料，完成垂直排列的能力與行動控制，加入教學模式職業進階，並驗證完整雙人及四人線上對局。
 
 ## Acceptance criteria
 
-- [x] The Base Ruleset remains mandatory and room setup exposes one Hero Schools toggle with no per-School or per-Profession controls.
-- [x] New rooms enable Hero Schools by default; existing waiting rooms and active games retain their stored module list and remain Hero-disabled.
-- [x] Enabling Hero Schools in an existing waiting room invalidates readiness and locked setup inputs through the existing Rule Module change behavior.
-- [x] Room metadata, lists, invitations, start, reconnect, reset match, recorded decisions, replay, and Public Views preserve the Hero setting.
-- [x] The release gate opens only after the complete 18-Profession catalog and all conformance tests are present.
-- [x] The upper Ability panel lists legal Active-Effect Commands and explains that they do not end the turn action.
-- [x] The lower Action panel lists legal Formation Uses, Profession Changes, and Pass Action from the selected Cards and explains that they end the Main Phase.
-- [x] Both panels remain vertically ordered at every viewport width with actionable controls, focus behavior, and complete accessible names.
-- [x] Profession badges appear only for Players with a Profession and open a read-only effective-ability summary.
-- [x] Teaching mode presents the complete progression graph, transition requirements, ability inheritance and loss, and Profession Formation summaries without changing game legality.
-- [x] Prepared Profession Ability details, Profession Changes, Profession Breaking, and Void Reversion results appear in public online history and survive reconnect.
-- [x] Self-contained Playwright flows cover default-on and disabled Hero settings, two-Player and four-Player games, at least one Profession progression and activation, reconnect, room reset, and every available Rule Module enabled together.
-- [x] Existing Base-only and Optional Rule browser flows remain green.
+- [x] 基礎規則集仍為必備；房間設定只提供一個英雄學派開關，不提供各學派或各職業控制。
+- [x] 新房間依所選規則版本設定可用及預設啟用的主題，見 [ADR-0038](../adr/0038-bind-games-to-rule-versions.md)。
+- [x] 在既有等待室啟用英雄學派時，依既有規則模組變更行為使準備狀態及鎖定設定輸入失效。
+- [x] 房間中繼資料、清單、邀請、開始、重新連線、重設對局、已記錄決策、重播及公開視圖保留英雄學派設定。
+- [x] 只有完整 18 職業目錄及所有符合性測試齊備後，才開啟發布閘門。
+- [x] 上方能力面板列出合法主動效果命令，並說明它們不結束回合行動。
+- [x] 下方行動面板依所選牌列出合法陣法施展、轉職及行動略過，並說明它們會結束主階段。
+- [x] 所有視窗寬度下兩面板均垂直排列，提供可操作控制、焦點行為及完整可存取名稱。
+- [x] 職業徽章只在玩家持有職業時出現，並可開啟唯讀有效能力摘要。
+- [x] 教學模式呈現完整進階圖、轉職條件、能力繼承及失去，以及職業陣法摘要，不改變遊戲合法性。
+- [x] 已準備職業能力詳情、轉職、破除職業及虛空返璞術結果出現在公開線上歷史中，並在重新連線後保留。
+- [x] 自足的 Playwright 流程涵蓋預設啟用與停用英雄學派、雙人及四人對局、至少一次職業進階與能力發動、重新連線、房間重設及同時啟用所有可用規則模組。
+- [x] 既有僅基礎規則及選用規則瀏覽器流程持續通過。
 
 ## Blocked by
 

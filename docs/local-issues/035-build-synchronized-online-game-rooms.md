@@ -6,91 +6,88 @@ ready-for-agent
 
 ## What to build
 
-As a player, I want to create or join a public or private online room, synchronize room and game state with the other players, and complete a match without manually refreshing the page or advancing engine phases.
+作為玩家，我希望建立或加入公開或私人線上房間，與其他玩家同步房間及遊戲狀態，並完成對局，無須手動重新整理頁面或推進引擎階段。
 
-Public and private rooms differ only in how players discover and enter them. After a match starts, both use the same gameplay flow.
+公開與私人房間僅在玩家發現及進入方式上不同；對局開始後兩者使用相同遊戲流程。
 
-Use a Cloudflare Worker as the authenticated gateway and route each room to an authoritative Durable Object. Use WebSockets to push viewer-filtered room state, Public Game State, and Public Event Feed updates to the Nuxt client. Nuxt state management consumes these updates; it is not the cross-client synchronization mechanism.
+使用 Cloudflare Worker 作為已驗證入口，並將每個房間導向權威 Durable Object。透過 WebSocket 向 Nuxt 客戶端推送依觀看者過濾的房間狀態、公開遊戲狀態及公開事件動態更新。Nuxt 狀態管理負責消費更新，而不是跨客戶端同步機制。
 
 ## Acceptance criteria
 
-- [x] A player can create either a public or private room for two or four players.
-- [x] Visibility and player count are immutable after room creation.
-- [x] Public rooms appear in the public list only while they can still be joined.
-- [x] Private rooms do not appear publicly and provide both an invitation link and a short room code.
-- [x] A player can belong to multiple waiting or active rooms, all shown under "My rooms".
-- [x] Guests can create and join online rooms and recover their session in the same browser; cross-device recovery requires an account.
-- [x] Non-host players can toggle ready and unready before the match starts.
-- [x] A waiting-room disconnect clears a non-host player's ready state.
-- [x] The host can start only when the room is full and every other player is connected and ready.
-- [x] A host disconnect does not close, expire, or otherwise change the room.
-- [x] Navigating away from a room does not leave or dissolve it.
-- [x] A non-host player can use `Leave` to immediately leave a waiting room without confirmation.
-- [x] The host can use `Remove` to immediately remove another player from a waiting room.
-- [x] The host can use `Dissolve` to immediately close a waiting room without confirmation and notify its members.
-- [x] `Leave`, `Remove`, and `Dissolve` are unavailable after a match starts.
-- [x] Starting a two-player match randomizes first player.
-- [x] Starting a four-player match randomly creates two equal teams and a legal alternating turn order.
-- [x] Random setup results are recorded once and remain stable across reconnect and replay.
-- [x] Team and turn order are shown briefly before the engine advances to the first player decision, without another confirmation.
-- [x] The server automatically advances non-decision phases and stops only at an actual player decision.
-- [x] General-player screens do not expose manual refresh, manual phase advancement, or other debug controls.
-- [x] Waiting and active room views have no separate status bar or central player strip: Back sits at the battlefield's top-left, waiting-room details stay in its overlay, action status appears only in the acting player's area, and turn count appears only in the match record.
-- [x] A two-player battlefield keeps player areas at the top and bottom; a four-player battlefield keeps the viewer at the bottom, their teammate opposite, and the two opponents at the left and right.
-- [x] On mobile, four-player side areas use a compact vertical layout with avatar, name, HP, connection, action status, and hand count; only top and bottom areas render card rows.
-- [x] Each player area shows a compact connected/disconnected indicator; only the viewer's area adds reconnecting text, and no standalone synchronization label remains.
-- [x] Hidden hands and the deck use the same text-free default Card Back while retaining an accessible "牌背" label.
-- [x] The central Formation area shows only the Formation used during the Previous Turn and is empty when that turn used no Formation; it shows the Formation name and used cards only to the extent allowed by the viewer's Public View.
-- [x] A player selects hand cards first, after which the UI lists matching formation names only.
-- [x] The Formation area keeps the Previous Turn's Formation visible above current Formation candidates; candidate details appear in a non-resizing hover, focus, or long-press overlay.
-- [x] The separate action panel is removed: selection count stays by the viewer's hand, while Formation candidates and `Skip` share the central candidate area.
-- [x] Formation submission progress and rejection reasons replace the candidate controls in place; rejection restores the candidates without clearing the selected cards.
-- [x] Long press reveals formation details on touch devices; hover and focus provide the desktop equivalent.
-- [x] Selecting a formation activates it immediately unless target or effect choices are required.
-- [x] Before the final Command is submitted, a player can return from target or effect selection without losing the selected cards or formation candidates.
-- [x] A normal Action Command implicitly declines any remaining optional active-effect Commands.
-- [x] `Skip` is shown only when `PassAction` is legal and at least one optional activatable effect can be declined.
-- [x] When `PassAction` is legal and no optional activatable effect exists, the server passes automatically.
-- [x] The UI does not model "no formation can activate" as a normal state; a formation may instead resolve as invalidated or no effect according to the rules.
-- [x] While awaiting server acknowledgement, the UI shows a processing state and prevents duplicate submission without optimistic game-state updates.
-- [x] A rejected Command preserves the player's local selection where possible and displays the rejection reason.
-- [x] The game screen always contains a viewer-filtered match record area.
-- [x] Every visible Public Event Feed entry has a plain-language Chinese title and description; internal event identifiers such as `DeckPrepared` are never rendered or used as display fallbacks.
-- [x] Deck preparation, shuffle, and initial deal details are consolidated into one player-facing "對局開始" entry while the canonical Game Record remains complete.
-- [x] Desktop shows a full match-record sidebar; mobile shows the latest two or three entries and can expand the full record.
-- [x] Hidden hands, covered cards, private choices, and private record details are filtered on the server rather than hidden by the client.
-- [x] Teammates can see each other's hand count but not card faces.
-- [x] An in-match disconnect does not pause the match or cause a timeout loss; other players see the disconnected state.
-- [x] While reconnecting, the player can inspect the last state but cannot submit Commands.
-- [x] Reconnection replaces the client with the latest authoritative state without special recovery of unsubmitted local selections.
-- [x] Starting another joined room or reaching a player's turn in a background match produces a non-blocking global notification with an action to open that room.
-- [x] Starting one match does not cancel the player's membership or ready state in other rooms.
-- [x] Notifications are transient and are neither persisted nor replayed; "My rooms" is the authority after reconnect.
-  Browser retention is superseded by [local issue 77](077-retain-and-surface-player-notifications.md):
-  ordinary received notifications are retained locally for room-list dots;
-  server delivery still has no persistence or replay.
-- [x] Match completion shows the result and returns players to the same room.
-- [x] Returning to the room after a match resets every non-host player to unready before another match can start.
+- [x] 玩家可建立兩人或四人的公開或私人房間。
+- [x] 房間建立後，可見性及玩家人數不可變更。
+- [x] 公開房間僅在仍可加入時出現在公開清單。
+- [x] 私人房間不公開列出，並同時提供邀請連結及短房間代碼。
+- [x] 玩家可同時屬於多個等待中或進行中房間，均顯示於「我的房間」。
+- [x] 訪客可建立及加入線上房間，並在同一瀏覽器恢復工作階段；跨裝置恢復需要帳號。
+- [x] 對局開始前，非房主玩家可切換準備與未準備。
+- [x] 等待室斷線會清除非房主玩家的準備狀態。
+- [x] 房間客滿且其他所有玩家已連線並準備完成時，房主才能開始。
+- [x] 房主斷線不會關閉、使房間到期或以其他方式改變房間。
+- [x] 導覽離開房間不會退出或解散房間。
+- [x] 非房主玩家可使用 `Leave` 立即離開等待室，不需確認。
+- [x] 房主可使用 `Remove` 立即將其他玩家移出等待室。
+- [x] 房主可使用 `Dissolve` 立即關閉等待室並通知成員，不需確認。
+- [x] 對局開始後無法使用 `Leave`、`Remove` 及 `Dissolve`。
+- [x] 開始雙人對局時隨機決定先手。
+- [x] 開始四人對局時隨機建立兩個等人數隊伍及合法交錯行動順序。
+- [x] 隨機設定結果只記錄一次，重新連線及重播時保持穩定。
+- [x] 引擎推進至第一個玩家決策前，短暫顯示隊伍及行動順序，不需再次確認。
+- [x] 伺服器自動推進非決策階段，只在實際玩家決策處停止。
+- [x] 一般玩家畫面不公開手動重新整理、手動推進階段或其他除錯控制。
+- [x] 等待中及進行中房間視圖沒有獨立狀態列或中央玩家列：返回位於戰場左上角，等待室詳情留在其浮層中，行動狀態只出現在行動玩家區域，回合數只出現在對局紀錄。
+- [x] 雙人戰場將玩家區域放在上下方；四人戰場將觀看者置於下方、隊友置於對面，兩位對手置於左右。
+- [x] 手機四人戰場的側邊區域使用緊湊垂直版面，包含頭像、名稱、生命值、連線、行動狀態及手牌數；只有上下區域呈現牌列。
+- [x] 每個玩家區顯示緊湊的連線／斷線指示；只有觀看者區域增加重新連線文字，不保留獨立同步標籤。
+- [x] 隱藏手牌及牌堆使用相同無文字預設牌背，並保留可存取的「牌背」標籤。
+- [x] 中央陣法區只顯示上回合施展的陣法；該回合未施展陣法時保持空白。陣法名稱及用牌僅在觀看者公開視圖允許的範圍內顯示。
+- [x] 玩家先選取手牌，介面接著只列出匹配的陣法名稱。
+- [x] 陣法區在目前陣法候選上方持續顯示上回合陣法；候選詳情出現在不改變尺寸的滑鼠懸停、焦點或長按浮層。
+- [x] 移除獨立行動面板：選擇數量留在觀看者手牌旁，陣法候選與 `Skip` 共用中央候選區。
+- [x] 陣法提交進度及拒絕原因原位取代候選控制；遭拒後恢復候選，不清除所選牌。
+- [x] 觸控裝置長按顯示陣法詳情；桌面以懸停及焦點提供同等功能。
+- [x] 選取陣法後立即發動，除非需要目標或效果選擇。
+- [x] 最終命令提交前，玩家可從目標或效果選擇返回，且不失去所選牌或陣法候選。
+- [x] 一般行動命令隱含拒絕其餘選用主動效果命令。
+- [x] 只有 `PassAction` 合法且至少有一個可拒絕的選用可發動效果時，才顯示 `Skip`。
+- [x] `PassAction` 合法且沒有選用可發動效果時，伺服器自動略過。
+- [x] 介面不將「沒有陣法可以發動」建模為一般狀態；陣法可依規則結算為被無效化或無效果。
+- [x] 等待伺服器確認期間，介面顯示處理中並防止重複提交，不樂觀更新遊戲狀態。
+- [x] 命令遭拒時盡可能保留玩家本機選擇，並顯示拒絕原因。
+- [x] 遊戲畫面一律包含依觀看者過濾的對局紀錄區。
+- [x] 每個可見公開事件動態項目均有易懂的中文標題與描述；絕不呈現或以 `DeckPrepared` 等內部事件識別作為顯示遞補。
+- [x] 牌堆準備、洗牌及初始發牌詳情合併成玩家可見的「對局開始」項目；正規遊戲紀錄仍完整。
+- [x] 桌面顯示完整對局紀錄側欄；手機顯示最新兩三筆並可展開完整紀錄。
+- [x] 隱藏手牌、蓋牌、私密選擇及私密紀錄詳情由伺服器過濾，而非由客戶端隱藏。
+- [x] 隊友可看見彼此手牌數量，但不能看見牌面。
+- [x] 對局中斷線不暫停對局，也不造成逾時判負；其他玩家可看見斷線狀態。
+- [x] 重新連線期間玩家可檢視最後狀態，但不能提交命令。
+- [x] 重新連線以最新權威狀態取代客戶端狀態，不特別恢復未提交本機選擇。
+- [x] 另一個已加入房間開始對局，或背景對局輪到玩家時，產生可開啟該房間的非阻塞全域通知。
+- [x] 開始一場對局不取消玩家在其他房間的成員身分或準備狀態。
+- [x] 通知為短暫資訊，不持久化也不重播；重新連線後「我的房間」為權威。瀏覽器保留行為已由 [本機議題 77](077-retain-and-surface-player-notifications.md) 取代：一般收到的通知保留於本機供房間清單圓點使用；伺服器傳送仍不持久化或重播。
+- [x] 對局完成後顯示結果，並讓玩家返回同一房間。
+- [x] 對局後返回房間時，所有非房主玩家重設為未準備，之後才能開始下一局。
 
 ## Technical constraints
 
-- [x] Use a room-scoped Durable Object as the single authority for room membership, Commands, Game Record, and per-viewer updates.
-- [x] Use WebSocket Hibernation so idle room connections can remain open without requiring polling.
-- [x] Maintain one player-scoped global notification WebSocket plus one WebSocket for the currently open room.
-- [x] Do not send canonical Game State or canonical Game Events to browser clients.
-- [x] Server-side start validation is atomic so membership, connectivity, readiness, and capacity cannot race.
+- [x] 使用房間範圍 Durable Object，作為房間成員、命令、遊戲紀錄及各觀看者更新的單一權威。
+- [x] 使用 WebSocket Hibernation，使閒置房間連線可保持開啟而不需輪詢。
+- [x] 維持一個玩家範圍全域通知 WebSocket，以及目前開啟房間的一個 WebSocket。
+- [x] 不向瀏覽器客戶端傳送正規遊戲狀態或正規遊戲事件。
+- [x] 伺服器開始驗證為原子操作，使成員、連線、準備狀態及容量不會發生競態。
 
 ## Non-goals
 
-- Beginner or learning-mode lists of every currently available action.
-- Spectating.
-- Browser or operating-system notifications.
-- Turn timers, room expiry, timeout losses, or automatic room cleanup.
-- Surrender, match cancellation, or abnormal-match adjudication.
-- Leaving, removing players, or dissolving a room during an active match.
-- Manual team selection, seat selection, or room-setting changes.
-- Card Back customization beyond keeping the default appearance replaceable.
+- 初學者或學習模式列出目前所有可用行動。
+- 觀戰。
+- 瀏覽器或作業系統通知。
+- 回合計時器、房間到期、逾時判負或自動房間清理。
+- 投降、取消對局或異常對局判定。
+- 對局進行中離開、移除玩家或解散房間。
+- 手動選隊、選座或變更房間設定。
+- 除保留預設外觀可替換性外，客製化牌背。
 
 ## Blocked by
 
-- None - can start immediately
+- 無，可立即開始

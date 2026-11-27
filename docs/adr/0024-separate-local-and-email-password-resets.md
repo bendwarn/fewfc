@@ -4,8 +4,4 @@ status: deprecated
 
 # Deprecated: local password reset policy
 
-This decision is superseded by
-[ADR-0036](0036-use-explicit-social-authentication-methods.md). The local
-password-reset entry, API, tests, and enablement flag were removed. The product
-does not provide password recovery or email delivery; Email and password remains
-an ordinary Authentication Method alongside explicit social methods.
+本決策已由 [ADR-0036](0036-use-explicit-social-authentication-methods.md) 取代。本機密碼重設入口、API、測試及啟用旗標均已移除。產品不提供密碼復原或電子郵件發送；電子郵件與密碼仍是與明確社群登入方式並列的一般驗證方式。

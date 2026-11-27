@@ -58,124 +58,9 @@ bunx wrangler secret put BETTER_AUTH_SECRET --env production
 ```
 
 `MAINTENANCE_MODE` is a Worker variable managed separately for each deployed
-environment. The local cutover wizard updates the selected Worker's variable
-immediately. CI uses `wrangler deploy --keep-vars` to preserve the
+environment. CI uses `wrangler deploy --keep-vars` to preserve the
 operator-managed value across code deployments, keeping the maintenance state
 under operator control.
-
-## Legacy game cutover (schema 7)
-
-Schema 7 centralizes card supply and the serialized pending rule flow. It does
-not read, migrate, or replay schema 6 Game Records. The one-time purge is
-manual, dry-run-first, and is never run by deployment, migration, or tests. It
-only removes GameRoom Durable Objects whose management-only authoritative probe
-returns either `404 { status: "absent" }` or the explicit `500 { status: "broken" }`
-classification, and removes only its matching stale public-room index and
-membership rows. A healthy room is preserved exactly as-is. Ordinary
-player-facing `401`/`403` responses, authentication failures, timeouts,
-malformed responses, and arbitrary transport/server errors never qualify a
-room for deletion.
-
-The Worker management route requires maintenance mode and a short-lived Wrangler
-token verified against the configured Cloudflare account. The account ID selects
-the verification scope; it is not itself a credential.
-
-The management script reuses the local Wrangler login instead of requiring a
-`CLOUDFLARE_API_TOKEN`. Authenticate and confirm the intended account before
-the dry run:
-
-```bash
-bunx wrangler login
-bunx wrangler whoami
-```
-
-The script reads the selected `[env.staging]` or `[env.production]` block of
-the checked-in `wrangler.toml` for the Worker name, `BETTER_AUTH_URL`, and the
-`DB` D1 binding. It then resolves the two Durable Object namespace IDs through
-Cloudflare's read-only namespace listing by the configured Worker and
-`GAME_ROOM`/`REPLAY` class names. The script obtains its account from `wrangler
-whoami --json` and temporary Cloudflare authorization from `wrangler auth token
---json`; both remain only in memory and are never printed. If the logged-in
-profile belongs to multiple accounts, set the non-secret
-`CLOUDFLARE_ACCOUNT_ID` to select the intended account explicitly. The same
-account ID must be injected into the deployed Worker as a variable by the
-protected deployment configuration; it is never sufficient as a credential by
-itself. Do not set `FEWFC_*` target variables.
-
-Run staging first. Start the local cutover wizard and select `staging`. It uses
-the authenticated local Wrangler profile to set the `MAINTENANCE_MODE` Worker
-variable to `true` on the selected Worker and applies that configuration update
-immediately. The wizard focuses on the mode change; application builds and D1
-migrations remain separate steps. Then take and review a dry-run inventory:
-
-```bash
-bun run build:staging
-bun run purge:legacy-games --env staging --epoch schema-7-2026-08-26
-```
-
-The dry-run sends read-only `room-probe` requests for every indexed room and
-stored GameRoom object. Its `candidateRooms` output lists every candidate room
-identity and classification; it includes only explicit `absent` or `broken`
-responses. Malformed responses fail closed and no mutation is attempted. The
-CLI forwards the short-lived Wrangler token only to the configured Worker URL,
-using the management header; there is no `LEGACY_PURGE_SECRET`.
-
-Only after confirming room identities and object counts, run the mutation and
-its idempotency verification. A GameRoom is deleted only when its management-only
-authoritative probe returns the explicit `404 { status: "absent" }` or
-`500 { status: "broken" }` response. The same check is applied to each D1
-public-room row before removing a stale index row. A successful probe returns
-`200 { status: "preserved" }` and leaves the DO and index untouched. Replay
-archives and D1 replay rows are also preserved unless the archive's own
-`sourceGameId` matches a room explicitly deleted in this run; only then may the
-archive and matching D1 references be removed.
-A successful second confirmed run reports `mutationCount: 0`:
-
-```bash
-bun run purge:legacy-games --env staging --epoch schema-7-2026-08-26 --confirm
-bun run purge:legacy-games --env staging --epoch schema-7-2026-08-26 --confirm
-```
-
-Keep maintenance enabled if either command fails. The script verifies that
-preserved room identities still match the dry-run inventory, every removed room
-object returns 404 after deletion, every preserved room remains readable,
-readable Replay archives and unrelated D1 rows remain, and every explicitly
-associated deleted Replay has no archive or selected D1 reference. Reopen
-traffic only after that verification succeeds. The wizard disables maintenance
-with another immediate Worker variable update using `MAINTENANCE_MODE=false`;
-it does not rebuild the application.
-
-Repeat the same sequence with `production` only after staging verification is
-complete. The script follows the Cloudflare Durable Objects Objects API cursors
-for both namespaces, so ReplayArchives without a surviving D1 reference are
-included. It deletes only Replay data provably associated with explicitly
-deleted rooms; account, profile, Deck List, readable Replay, and readable
-public-room index rows are preserved.
-
-### Local Wrangler maintenance switch
-
-Run the checked-out wizard from the repository root:
-
-```bash
-bash tmp/legacy-game-purge-wizard.sh
-```
-
-It verifies `wrangler whoami`, lets the operator select `staging` or
-`production`, then updates the `MAINTENANCE_MODE` Worker variable on that
-environment to the requested value. The configuration change takes effect
-immediately; Durable Object `exports` keeps the deployed code/build in place
-for this configuration update. The local Wrangler OAuth login authenticates
-the operation, which runs independently from GitHub Actions, API-token setup,
-application builds, migrations, and the purge. If the profile has multiple
-accounts, provide the non-secret
-`CLOUDFLARE_ACCOUNT_ID` when the wizard asks.
-
-The wizard enables maintenance before the dry-run and confirmed purge, and
-disables it only after the second confirmed run reports `mutationCount: 0`.
-Ordinary CI uses `wrangler deploy --keep-vars` to preserve the operator-managed
-`MAINTENANCE_MODE` variable, so active maintenance remains in effect during a
-push. A failed variable update stops the wizard before the purge; verify the
-deployed Worker state before resuming.
 
 Before deployment:
 
@@ -204,8 +89,7 @@ browser checks and writes the pnpm cache; deployment jobs wait for both Rust and
 Web checks.
 
 Wrangler is pinned to `4.151.3` in `package.json`. Code deployment uses its
-standard `deploy` command; the local cutover wizard updates the maintenance
-Worker variable without building the application.
+standard `deploy` command.
 
 `.github/workflows/ci-cd.yml` is the deployment source of truth:
 
@@ -222,9 +106,8 @@ Worker variable without building the application.
 - Each deployment builds the environment-specific Nuxt/Wasm output once,
   applies pending remote D1 migrations, and deploys one Worker version with
   `wrangler deploy --keep-vars`.
-- The local cutover wizard manages `MAINTENANCE_MODE` as an operator-controlled
-  Worker variable. CI uses `wrangler deploy --keep-vars` to preserve its value
-  throughout code deployments.
+- `MAINTENANCE_MODE` is an operator-controlled Worker variable. CI uses
+  `wrangler deploy --keep-vars` to preserve its value throughout code deployments.
 
 Create GitHub Environments named `staging` and `production`. Add these encrypted
 secrets to both environments:

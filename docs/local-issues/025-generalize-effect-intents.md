@@ -6,22 +6,21 @@ AFK
 
 ## Parent
 
-Derived from `docs/rules-engine-decisions.md` section 25 and closed GitHub issue #18.
+源自 `docs/rules-engine-decisions.md` 第 25 和已結案 GitHub 議題 #18。
 
 ## What to build
 
-Deepen the effect resolver boundary so attack, immediate spell, and passive spell resolvers return declarative intents that the formation pipeline converts into semantic events. This should support additional consequences such as HP changes, shield changes, statuses, card moves, action modifications, and pending choices without letting resolvers mutate `GameState` or emit events directly.
+深化效果解析器邊界，使攻擊、立即術式及被動術式解析器回傳宣告式意圖，再由陣法流程轉為語意事件。這應支援生命值變化、防護罩變化、狀態、牌移動、行動修正及待選擇事項等結果，但不讓解析器直接修改 `GameState` 或發出事件。
 
 ## Acceptance criteria
 
-- [ ] Effect intent model supports shield changes, status changes, card moves, HP changes, action modifications, and pending choices.
-- [ ] Existing `barrier` and `metamorphosis` behavior is expressed through the generalized intent path.
-- [ ] The formation pipeline owns baseline used-card movement.
-- [ ] Effect resolvers remain deterministic and do not mutate state or append events directly.
-- [ ] The pipeline rejects duplicate pending choices before emitting events.
-- [ ] Tests cover at least one shield intent, one status intent, one pending-choice intent, and one action-modification intent through public command APIs.
+- [ ] 效果意圖模型支援防護罩變化、狀態變化、牌移動、生命值變化、行動修正及待選擇事項。
+- [ ] 既有 `barrier` 與 `metamorphosis` 行為透過通用意圖路徑表達。
+- [ ] 陣法流程負責基本的用牌移動。
+- [ ] 效果解析器維持確定性，不直接修改狀態或附加事件。
+- [ ] 流程在發出事件前拒絕重複的待選擇事項。
+- [ ] 測試透過公開命令 API 至少涵蓋一個防護罩意圖、狀態意圖、待選擇意圖及行動修正意圖。
 
 ## Blocked by
 
-- None - can start immediately
-
+- 無，可立即開始

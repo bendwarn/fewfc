@@ -6,42 +6,36 @@ ready-for-agent
 
 ## What to build
 
-Add an engine-only Echo Theme Rule Module slice containing 商調‧鳴金,
-角調‧落木, 羽調‧流水, 徵調‧戰火, and 宮調‧裂土. Implement typed Echo
-policies, optional Echo Cost resolution, Scheduled Echo, fresh Turn Start
-main-effect execution, and all five published effects without releasing the
-incomplete module to new Online Game Rooms.
+加入只供引擎使用的迴響主題規則模組切片，包含商調‧鳴金、角調‧落木、羽調‧流水、徵調‧戰火及宮調‧裂土。實作具型別迴響政策、選用迴響代價結算、已排程迴響、回合開始時重新執行主效果及五項公開效果，不將未完成模組發布到新線上房間。
 
 ## Acceptance criteria
 
-- [x] Echo has one stable Rule Module identity in the Rust catalog, requires Star, Five Directions Legend, and Hero Schools, and remains excluded from default and Web-available modules until all seven Melodies are complete.
-- [x] The five basic Melodies use their exact two-Card patterns and remain explicit Formation declarations when the same Cards also match a Base Ruleset Formation.
-- [x] Star Element Substitution, Formation-specific Profession Proficiencies, and Sacred Art Multiplicity do not make a Melody legal; only Card Interpretation Layers whose own scope includes that Formation may affect matching.
-- [x] Melody definitions use typed Optional Cost, Automatic, or None Echo policies and an execution origin that prevents Echo or 變宮‧植土 from recursively scheduling Echo.
-- [x] Optional Echo Cost is offered only after the complete main-effect continuation; the Player may choose one currently held Card with an allowed printed element or explicitly Decline.
-- [x] Echo Cost is an ordinary Discard with normal Card Origin and Pile Owner movement; it neither charges a Spirit nor becomes a Retrievable Discard.
-- [x] A successfully executed no-change main effect remains Echo-eligible, while Seal, 裂土, or another whole-effect invalidation prevents the original Formation Use from scheduling Echo.
-- [x] Scheduled Echo stores only Player, Melody, and due timing; targets, Deck contents, Turn Order targets, and other choices resolve from Game State at that Player's next Turn Start.
-- [x] Echo executes only the Melody main effect: it is not a Formation Use, consumes no action or Formation Cards, triggers no Covered Passive, updates no previous Formation, and satisfies no on-perform rule.
-- [x] 角調‧落木 restores 15 HP to the performing Player's Team up to initial HP; 徵調‧戰火 removes 15 HP from the Previous Player's Team outside the Attack, Shield, and five-element pipelines.
-- [x] 羽調‧流水 stacks public Flow State layers; after ordinary Turn Draw modifiers, at most one layer is spent only when an allowed Turn Draw would otherwise not fill the hand.
-- [x] 宮調‧裂土 privately exposes the Next Player's hand to the performer, then accepts any Formation in the enabled Formation Catalog and publicly records the selected Formation, target, and expiry.
-- [x] 裂土 makes only a matching Formation Use during the target's next turn ineffective; it does not suppress Echo or 變宮‧植土 main-effect execution.
-- [x] An Ineffective Formation still consumes its action and Cards and satisfies independent on-perform rules, but its Formation effects and Echo scheduling do not execute.
-- [x] 商調‧鳴金 searches the performing Player's current Personal Deck or the shared Deck, regardless of Card Origin, publicly reveals the selected Card, shuffles the remainder through Pending Randomness, and places the selected Card on top.
-- [x] An empty Deck first performs ordinary pile-scoped Discard recycling through trusted randomness before 鳴金 searches it; the post-search remainder then receives its own required shuffle.
-- [x] When both the Deck and its recyclable Discard Pile are empty, 鳴金 is a no-change executed main effect rather than a Validation Failure; when only the selected Card remains, it creates no unnecessary post-search randomness request.
-- [x] Semantic Echo decline, scheduling, start, and resolution events plus effect deltas reproduce identical direct, replayed, and verified state.
-- [x] Focused Rust tests cover both Deck modes, two- and four-Player Turn Order, overlapping Formation declarations, hidden information, invalidation, no-change effects, game-ending War Fire, and every Echo Cost element.
+- [x] 迴響在 Rust 目錄中有單一穩定規則模組識別，依賴星辰圖記、五方傳說及英雄學派；全部七種曲調完成前不列入預設或 Web 可用模組。
+- [x] 五種基本曲調使用精確兩張牌組合；同一組牌亦符合基礎規則陣法時，仍須明確宣告曲調。
+- [x] 星辰變牌、陣法專屬職業專精及聖術視為兩張不能使曲調合法；只有本身範圍包含該陣法的牌解讀層可影響匹配。
+- [x] 曲調定義使用具型別選用代價、自動或無迴響政策，並以執行來源防止迴響或變宮‧植土遞迴排程迴響。
+- [x] 完整主效果續接結束後才提供選用迴響代價；玩家可選一張目前持有且牌面屬性允許的牌，或明確拒絕。
+- [x] 迴響代價是一般捨棄，遵守正常牌來源及堆所有者移動；它不增加精靈靈力，也不成為可回收棄牌。
+- [x] 成功執行但未改變狀態的主效果仍可迴響；封印、裂土或其他整體效果無效則阻止原陣法施展排程迴響。
+- [x] 已排程迴響只儲存玩家、曲調及到期時點；目標、牌堆內容、行動順序目標及其他選擇均在該玩家下次回合開始時依遊戲狀態決定。
+- [x] 迴響只執行曲調主效果：它不是陣法施展、不消耗行動或陣法牌、不觸發蓋牌、不更新上回合陣法，也不滿足施展時規則。
+- [x] 角調‧落木為施展玩家隊伍回復 15 點生命，上限為初始生命值；徵調‧戰火在攻擊、防護罩及五行流程之外扣除上家隊伍 15 點生命。
+- [x] 羽調‧流水疊加公開流水狀態層；正常回合抽牌修正後，僅在允許回合抽牌原本無法補滿手牌時消耗至多一層。
+- [x] 宮調‧裂土私下向施展者顯示下家手牌，再接受已啟用陣法目錄中的任意陣法，並公開記錄所選陣法、目標與到期時點。
+- [x] 裂土只使目標下回合匹配的陣法施展無效，不抑制迴響或變宮‧植土主效果執行。
+- [x] 無效陣法仍消耗行動與牌，並滿足獨立的施展時規則，但不執行陣法效果或迴響排程。
+- [x] 商調‧鳴金檢索施展玩家目前個人牌組或共用牌堆，不受牌來源限制；公開所選牌、透過待隨機處理洗剩餘牌，再將所選牌置頂。
+- [x] 牌堆空時，鳴金檢索前先透過可信任隨機性正常回收該堆棄牌；檢索後剩餘牌再獨立洗牌。
+- [x] 牌堆與可回收棄牌堆均空時，鳴金是已執行但未改變狀態的主效果，而非驗證失敗；僅剩所選牌時不建立多餘的檢索後隨機請求。
+- [x] 具語意的拒絕迴響、排程、開始及結算事件，加上效果變化，在直接執行、重播及驗證中重現相同狀態。
+- [x] 重點 Rust 測試涵蓋兩種牌堆模式、雙人及四人行動順序、重疊陣法宣告、隱藏資訊、無效化、無變化效果、使遊戲結束的徵調‧戰火及所有迴響代價屬性。
 
 ## Validation
 
-- `cargo test` and strict Clippy pass, including 16 focused Echo integration tests.
-- Web unit tests (28), Nuxt type checking, and the production build pass.
-- Echo remains engine-only and absent from the shared Web Rule Module catalog.
-- A fresh Brave E2E run could not start because the execution environment
-  rejected the sandbox escalation for quota reasons; the prior 19-test suite
-  passed before this engine-only slice.
+- `cargo test` 與嚴格 Clippy 通過，包含 16 個重點迴響整合測試。
+- Web 單元測試（28 項）、Nuxt 型別檢查及正式建置通過。
+- 迴響仍只供引擎使用，不在共用 Web 規則模組目錄中。
+- 執行環境因配額拒絕沙箱提升，無法啟動新的 Brave E2E；此僅供引擎使用的切片之前，先前 19 項測試套件已通過。
 
 ## Blocked by
 

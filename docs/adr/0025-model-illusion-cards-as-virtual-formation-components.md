@@ -4,24 +4,6 @@ status: accepted
 
 # Model Illusion cards as virtual Formation components
 
-Illusion and Phantasm create a Virtual Formation Card after their Player
-discards two physical Cards; they do not reinterpret a third Card Instance.
-The Virtual Formation Card has a fixed source ability, element, and level and
-joins the subsequent Formation Composition without entering a hand, Deck, or
-Discard Pile. A turn-scoped Formation Requirement commits Illusion to the
-corresponding five-element strike, commits Phantasm to a Base Ruleset
-Formation, and records the completed Formation Composition canonically so
-replay and audit never need to infer a virtual component from earlier events.
+玩家捨棄兩張實體牌後，幻術及幻朧產生一張虛擬牌，而非重新解讀第三張實體牌。虛擬牌固定其來源能力、屬性及等級，加入後續陣法組成，但不進入手牌、牌堆或棄牌堆。回合內的陣法要求使幻術必須組成對應五行擊術，使幻朧必須組成基礎規則陣法；完成的陣法組成以正規資料記錄，讓重播及稽核無須從先前事件推測虛擬組件。
 
-Physical Card Instances and Virtual Formation Cards share effective element,
-level, match-slot, point, and component-count calculations, but only physical
-Cards participate in selection, visibility by zone, Card movement, and effects
-that require a Card Instance. Virtual facts are public when created, cannot be
-changed by Card Interpretation Layers or Star Element Substitution, and are not
-represented as a fabricated Card Instance. The rejected third-physical-Card
-model made Formation matching disagree with point and effect resolution and
-could not faithfully represent the official virtual-card procedure.
-
-Old records that used a third physical Card for Illusion or Phantasm are not
-migrated. Records unrelated to the corrected preparation semantics retain
-their existing canonical shapes.
+實體牌與虛擬牌共用有效屬性、等級、匹配位置、點數及組件數量的計算；但只有實體牌參與選取、依區域決定的可見性、牌移動與要求實體牌的效果。虛擬資料建立時即公開，不受牌解讀層或星辰變牌修改，也不以偽造的實體牌表示。先前的第三張實體牌模型遭否決，因為它使陣法匹配與點數及效果結算不一致，也無法忠實表達官方虛擬牌流程。

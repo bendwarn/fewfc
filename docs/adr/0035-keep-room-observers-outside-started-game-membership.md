@@ -4,129 +4,51 @@ status: accepted
 
 # Keep Room Observers outside started-game membership
 
-Public Online Game Rooms remain discoverable while waiting or playing, even
-when every Player Seat is occupied. Full waiting rooms and started Games admit
-Room Observers; finished Games are not a new live-observation entry point.
-Room Observers occupy no Player Seat, make no Player Decisions, and see only
-public Game information. Live
-observation does not inherit Replay Omniscience or another Player's private
-perspective. This revisits the discovery restriction and spectating non-goal in
-[issue 035](../local-issues/035-build-synchronized-online-game-rooms.md).
+公開線上房間在等待或遊戲中均可被發現，即使所有玩家席位皆已占用亦然。客滿等待室及已開始遊戲接納房間觀戰者；已結束遊戲不作為新的即時觀戰入口。房間觀戰者不占玩家席位、不作玩家決策，且只能看公開遊戲資訊。即時觀戰不繼承重播全知資訊或其他玩家的私密視角。此決策重新檢討 [issue 035](../local-issues/035-build-synchronized-online-game-rooms.md) 的發現限制及不支援觀戰目標。
 
 ## Admission and capacity
 
-This feature introduces no separate product limit on the number of Room
-Observers. They do not consume any of the room's two or four Player Seats;
-Player and Room Observer counts are presented separately. Any future
-observation-capacity limit is a separate decision informed by actual load.
+此功能不另設房間觀戰者人數的產品上限。觀戰者不占房間的兩個或四個玩家席位；玩家人數與房間觀戰者人數分別呈現。未來是否限制觀戰容量須依實際負載另行決策。
 
-Private rooms use the same observation and Seat Promotion rules, including
-admitting Room Observers when full or after the Game starts. They remain absent
-from public discovery. A new member must supply a valid room code or invitation
-link under the existing private-room admission policy; observation does not
-grant access merely from knowing a room's identity.
+私人房間採相同的觀戰及補位規則，包括客滿或遊戲開始後接納房間觀戰者，但仍不出現在公開搜尋中。依既有私人房間准入政策，新成員必須提供有效房間代碼或邀請連結；僅知道房間身分不構成觀戰權限。
 
-Joining a waiting room with an available Player Seat makes the newcomer a
-Player; joining a full waiting room or an already-started Game makes them a
-Room Observer. This role is assigned automatically, without a separate
-observe-only mode or an opt-out from Seat Promotion. The observation entry
-explicitly tells newcomers that a pre-start vacancy may automatically promote
-them to Player in join order.
+加入仍有空位的等待室時，新成員成為玩家；加入客滿等待室或已開始遊戲時則成為房間觀戰者。角色自動指派，沒有獨立的僅觀戰模式，也不能選擇退出補位。觀戰入口須明確告知：遊戲開始前若出現空位，可能依加入順序自動補為玩家。
 
 ## Seat Promotion and connectivity
 
-Before a Game starts, a departing Player's vacant seat automatically goes to
-the first connected Room Observer in the Observer Queue.
-Explicitly leaving loses that Observer's position; rejoining places them at
-the end. Once the room starts, including Game Preparation, Player membership
-remains fixed and Room Observers cannot replace Players. The start boundary
-continues to follow
-[ADR 0020](0020-keep-initial-pouch-selection-in-the-rules-engine.md).
+遊戲開始前，離開玩家的空位自動交給觀戰候補佇列中第一位已連線的房間觀戰者。主動離開會失去候補位置；重新加入時排在最後。房間開始後，包括遊戲準備期間，玩家成員身分固定，房間觀戰者不能取代玩家。開始邊界仍依 [ADR 0020](0020-keep-initial-pouch-selection-in-the-rules-engine.md)。
 
-Seat Promotion leaves the new Player unready. They must become ready themselves
-and use their own Deck List, with the Locked Deck List captured according to
-[ADR 0004](0004-lock-player-decks-when-ready.md); neither readiness nor a Deck
-List is inherited from the departing Player. Notify the promoted member with
-`已補為玩家，請準備` through the existing in-app notification mechanism, not
-a separate inline hint. The Seat Promotion notification must remain visible
-even when the recipient is currently viewing that room; the usual suppression
-of current-room notifications must not hide it.
+補位後的新玩家為未準備狀態，必須自行準備並使用自己的牌組清單；鎖定牌組清單依 [ADR 0004](0004-lock-player-decks-when-ready.md) 擷取，準備狀態與牌組清單均不繼承離開的玩家。透過既有應用程式內通知機制通知補位成員 `已補為玩家，請準備`，不另設行內提示。即使接收者正瀏覽該房間，此補位通知仍須可見，不得被一般目前房間通知抑制規則隱藏。
 
-Disconnecting does not end room membership or release an occupied Player Seat;
-an explicit departure or owner removal releases that seat. A disconnected Room
-Observer retains their original join position but is skipped when choosing
-someone for Seat Promotion, so the next connected Room Observer can fill the
-vacancy without waiting for the disconnected Observer.
+斷線不結束房間成員身分，也不釋出已占玩家席位；主動離開或房主移除才釋出席位。斷線的房間觀戰者保留原加入位置，但選擇補位人選時會跳過，因此下一位已連線觀戰者不必等候斷線者即可補位。
 
-When a Room Observer reconnects to a waiting room that still has vacant Player
-Seats, Seat Promotion immediately fills those seats from the currently
-connected Room Observers in their original join order. It does not require
-another Player departure. Reconnection never displaces someone already
-promoted into a seat, and a disconnected Observer does not reserve a vacancy.
+房間觀戰者重新連線至仍有玩家空位的等待室時，立即依原加入順序由目前已連線觀戰者補滿空位，不需要再次發生玩家離開。重新連線絕不取代已補位者，斷線觀戰者也不保留空位。
 
-An existing eligible Room Observer has priority over a newcomer for a vacant
-Player Seat. Joining, leaving, reconnecting, and starting a Game must preserve
-the same Seat Promotion and membership boundaries when they occur together.
+既有且符合條件的房間觀戰者比新加入者優先取得玩家空位。加入、離開、重新連線及開始遊戲同時發生時，仍須維持相同的補位與成員邊界。
 
 ## Observation does not advance Game history
 
-Room Observer admission, departure, removal, connection changes, queue
-maintenance, and pre-start Seat Promotion are room-membership changes, not
-Game events. Persist their membership and present notifications without
-appending to the room/command event log or advancing `nextSequence`,
-`GameRecord.sequence`, or the Rules Engine record. After Seat Promotion,
-the member's subsequent Player operations follow the ordinary Player path.
+房間觀戰者加入、離開、被移除、連線變更、佇列維護及開始前補位均是房間成員變更，不是遊戲事件。須持久化成員資料並呈現通知，但不附加至房間／命令事件日誌，也不推進 `nextSequence`、`GameRecord.sequence` 或規則引擎紀錄。補位後，該成員後續玩家操作遵循一般玩家路徑。
 
-An Observer may enter, disconnect, reconnect, or leave while a Player is
-acting without changing that Game's version or invalidating its command
-checkpoint. Do not make Observer actions advance the Game Record merely to
-keep its sequence aligned with room events; keep those actions outside the
-sequence entirely. This preserves the command concurrency check while
-keeping live observation independent of play and Replay history.
+觀戰者可在玩家行動期間加入、斷線、重新連線或離開，不改變遊戲版本或使其命令檢查點失效。不得為了讓遊戲紀錄序號與房間事件對齊而讓觀戰操作推進遊戲紀錄；這些操作完全不進入該序列。這可保留命令並行檢查，並使即時觀戰獨立於對局及重播歷史。
 
 ## Room lifecycle
 
-The room owner retains the existing lifecycle: they cannot leave independently
-or transfer ownership through Seat Promotion. They can dissolve the waiting
-room, which closes it for Players and Room Observers alike without triggering
-Seat Promotion. Dissolution remains unavailable after the Game starts.
+房主沿用既有生命週期：不能自行離開，也不能透過補位轉移房主身分。房主可解散等待室，關閉玩家及房間觀戰者的房間且不觸發補位；遊戲開始後仍不能解散。
 
-Room Observers may explicitly leave during any room phase. The owner can remove
-a Room Observer only in the waiting room; removal after the Game starts is not
-available. This is a product-scope decision because this release does not add
-an in-game room-management interface, rather than a requirement of the Rules
-Engine. Server authorization must enforce the same restriction. Leaving or
-being removed ends the Observer's membership and loses their queue position.
+房間觀戰者可在任何房間階段主動離開。房主僅能在等待室移除觀戰者，遊戲開始後不可移除。這是產品範圍決策，原因是此版本沒有新增遊戲中的房間管理介面，而非規則引擎要求；伺服器授權必須執行同樣限制。離開或被移除會結束觀戰者成員身分並失去候補位置。
 
-Game completion and the subsequent return to the waiting room preserve the
-existing Player Seats, Room Observer memberships, and Observer join order.
-Existing waiting-room readiness reset rules still apply. Completing a Game
-does not release Player Seats or automatically rotate Room Observers into the
-next Game; they continue waiting for a vacant seat.
+遊戲結束並返回等待室後，既有玩家席位、房間觀戰者身分及加入順序均保留，等待室既有準備狀態重設規則仍適用。遊戲完成不釋出玩家席位，也不自動輪替觀戰者進入下一局；他們繼續等候空位。
 
 ## Interface
 
-- Room lists show Player occupancy and the Room Observer count separately.
-  The entry action is labeled `觀戰` for full waiting rooms and started Games.
-- `我的房間` includes rooms joined as a Room Observer and marks that role as
-  `觀戰`. Back navigation and disconnection do not remove these memberships.
-- The waiting room has a separate Room Observer list in Observer Queue order,
-  with each Observer's connection state. The owner removes Room Observers from
-  this list; the active-game screen has no owner-removal controls.
-- A Room Observer has an explicit `離開觀戰` action that ends membership and
-  loses their queue position. The existing top-left `返回` remains navigation
-  only and preserves membership and queue position.
+- 房間清單分別顯示玩家占用情形及房間觀戰者人數。客滿等待室與已開始遊戲的入口標示為 `觀戰`。
+- `我的房間` 包含以房間觀戰者身分加入的房間，並標示 `觀戰`；返回及斷線不移除成員身分。
+- 等待室依觀戰候補佇列順序顯示獨立房間觀戰者清單及各人連線狀態。房主可由此清單移除觀戰者；遊戲中畫面沒有房主移除控制。
+- 房間觀戰者有明確的 `離開觀戰` 操作，執行後結束成員身分並失去候補位置。左上角既有 `返回` 仍只負責導覽，保留成員身分及位置。
 
 ## Preserved authority and rationale
 
-Room Observer membership does not grant the Players' authority to reset a
-finished Game or save its Replay. Existing explicit Replay sharing remains a
-separate policy; live observation does not change it. Owner removal retains
-its existing meaning as departure rather than an account ban, so a subsequent
-admission follows the ordinary entry rules and starts a new queue position.
+房間觀戰者身分不授予玩家重設已結束遊戲或儲存其重播的權限。既有明確重播分享仍是獨立政策，即時觀戰不改變它。房主移除仍維持離開而非帳號封禁的既有意義；之後重新加入依一般准入規則處理，並取得新的候補位置。
 
-Mid-game replacement was rejected because taking over a Player would transfer
-their private information and control of an identity already committed to the
-Game Record. Keeping Seat Promotion before that boundary supports automatic
-waiting-room backfill without introducing takeover rules or changing the
-meaning of historical Player decisions.
+不支援局中替換，因為接手玩家會轉移該玩家的私密資訊及已提交至遊戲紀錄的身分控制權。將補位限制在此邊界之前，可自動補滿等待室，同時不引入接手規則或改變歷史玩家決策的意義。

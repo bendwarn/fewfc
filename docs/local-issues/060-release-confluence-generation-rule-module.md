@@ -6,29 +6,25 @@ ready-for-agent
 
 ## What to build
 
-Add Confluence Generation as one complete Theme Rule Module using the official
-5.16 rules. Deliver all nine Professions, their cross-module inheritance,
-abilities, and Formations; persist public Limited Uses; and resolve every
-retrieval, Deck, Card-retention, and typed choice flow through deterministic
-events and replay.
+使用官方 5.16 規則，將匯流世代作為完整的單一主題規則模組加入。交付全部九種職業、跨模組繼承、能力及陣法；持久化公開次數限制；並透過確定性事件及重播結算所有回收、牌堆、保留牌及具型別選擇流程。
 
 ## Acceptance criteria
 
-- [x] Confluence Generation is independently selectable, requires all three Advanced Rule Modules, and is enabled by default in new games and rooms.
-- [x] Every Profession transition, inherited ability, Formation, and ordering rule conforms to the 5.16 PDF, including 道法師 and 虛空破滅者 interactions.
-- [x] Residual Element and Residual Level read the printed definition of the existing Retrievable Discard, and missing or moved discards make dependent actions unavailable.
-- [x] 調律 enforces its turn-scoped Card-use obligation, 易弦 widens only the published scope, and 天響 retrieves without that restriction.
-- [x] Limited Use consumption, maximum changes, recovery, shuffle recovery, and Profession-reacquisition resets are canonical, replayable, and publicly visible.
-- [x] Shared-Deck shuffles recover every eligible 順風; Personal Deck shuffles recover only the affected Pile Owner's use.
-- [x] Typed Pending Choices cover every Deck inspection, retained Card set, 五鳴術 selection, and 晴風 top-Card decision without leaking hidden information.
-- [x] Focused Rust, Web unit, and self-contained Brave Playwright tests cover all Profession systems, both Deck modes, replay, dependencies, and all-enabled compatibility.
+- [x] 匯流世代可獨立選用，依賴全部三個進階規則模組，並在新遊戲及房間預設啟用。
+- [x] 所有職業轉職、繼承能力、陣法及順序規則均符合 5.16 PDF，包括道法師及虛空破滅者互動。
+- [x] 餘行與餘級讀取現存可回收棄牌的牌面定義；棄牌不存在或被移走時，依賴它的行動不可用。
+- [x] 調律執行回合內用牌義務，易弦只擴大公開規則指定範圍，天響回收則不受此限制。
+- [x] 次數消耗、上限變化、回復、洗牌回復及重新取得職業時重設均為正規、可重播且公開可見。
+- [x] 共用牌堆洗牌回復所有符合條件的順風；個人牌組洗牌只回復受影響牌堆所有者的次數。
+- [x] 具型別待選擇事項涵蓋所有牌堆檢視、保留牌集合、五鳴術選擇及晴風牌頂決策，不洩漏隱藏資訊。
+- [x] 重點 Rust、Web 單元及自足 Brave Playwright 測試涵蓋所有職業系統、兩種牌堆模式、重播、依賴及全啟用相容性。
 
 ## Validation
 
-- `cargo test` and strict Clippy pass, including `tests/confluence_generation.rs`, both Deck modes, replay, and all-enabled regressions.
-- Web unit tests, Nuxt type checking, production build, and Playwright spec discovery pass.
-- Catalog contract tests cover all 9 Professions and 13 Profession Formations.
-- The complete self-contained Brave suite passes: 19 of 19, including `apps/web/tests/e2e/confluence-generation.spec.ts`.
+- `cargo test` 與嚴格 Clippy 通過，包含 `tests/confluence_generation.rs`、兩種牌堆模式、重播及全啟用回歸測試。
+- Web 單元測試、Nuxt 型別檢查、正式建置及 Playwright 規格探索通過。
+- 目錄契約測試涵蓋全部 9 個職業及 13 個職業陣法。
+- 完整自足 Brave 測試套件 19 項全部通過，包含 `apps/web/tests/e2e/confluence-generation.spec.ts`。
 
 ## Blocked by
 

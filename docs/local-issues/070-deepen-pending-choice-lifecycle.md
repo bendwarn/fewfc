@@ -6,127 +6,108 @@ ready-for-agent
 
 ## Problem Statement
 
-A Player decision currently crosses the Rules Engine, Public View, Web contract,
-and browser through several overlapping representations. Canonical Pending
-Choice variants mix legacy card-only forms with a generic multi-axis option bag;
-their continuations are identified by string pairs; the Web contract flattens
-mostly mutually exclusive options into one broad shape; and the browser rebuilds
-the legal answer by inspecting `kind` strings and non-empty arrays.
+玩家決策目前透過多種重疊表示方式跨越規則引擎、公開視圖、Web 契約及瀏覽器。正規待選擇事項變體將舊版僅限牌的形式與通用多軸選項袋混用；續接以字串配對識別；Web 契約將大多互斥的選項扁平化成單一寬泛結構；瀏覽器再檢查 `kind` 字串及非空陣列以重建合法答案。
 
-This shallow interface spreads one choice lifecycle across rule dispatch,
-projection, serialization, draft state, and presentation. It permits impossible
-states, makes stale answers hard to distinguish from current answers, requires
-coordinated edits in many callers, and has already allowed a special visual
-module to emit `select` while its caller listened for `choose`.
+這個淺層介面將同一選擇生命週期散布於規則分派、投影、序列化、草稿狀態及呈現。它允許不可能的狀態、難以區分過期與目前答案、需要協調修改許多呼叫端，且曾讓特殊視覺模組發出 `select`，呼叫端卻監聽 `choose`。
 
 ## Solution
 
-Build two deep modules joined by one closed typed Public Pending Choice contract.
-The Rules Engine Pending Choice module owns canonical creation, identity,
-continuation, validation, lifecycle events, and answer dispatch. The Web Pending
-Choice Interaction module owns client-local draft transitions, player-facing
-presentation, and construction of the one typed answer command.
+建立兩個深度模組，以單一封閉具型別公開待選擇契約連接。規則引擎待選擇模組負責正規建立、識別、續接、驗證、生命週期事件及答案分派。Web 待選擇互動模組負責客戶端本機草稿轉換、玩家呈現及單一具型別回答命令的建構。
 
-Public View filters hidden information before the contract crosses the Web seam.
-The answering Player receives one answer-shaped visible variant. Other viewers
-receive a hidden variant containing only the answering Player and an
-already-public reason for waiting. Initial Pouch Selection remains a distinct
-Game Preparation workflow while reusing the Web module's internal Pouch Card
-selection implementation with Chain.
+契約跨越 Web 接點前由公開視圖過濾隱藏資訊。作答玩家收到符合答案結構的可見變體；其他觀看者收到僅含作答玩家與已公開等待原因的隱藏變體。初始錦囊選擇仍是獨立遊戲準備流程，但與連環共用 Web 模組內部的錦囊牌選擇實作。
 
 ## User Stories
 
-1. As the answering Player, I want each Pending Choice to expose only its legal answer shape, so that I cannot submit an impossible combination of fields.
-2. As the answering Player, I want Card choices to state their exact minimum and maximum, so that I know when the answer is complete.
-3. As the answering Player, I want Player, Formation, Environment, and Decline choices to be explicit variants, so that the controls match the decision being made.
-4. As the answering Player, I want Chain and Sheep Stealing to retain named composite decisions, so that their multi-part answers remain coherent.
-5. As the answering Player, I want a stale browser answer rejected, so that it cannot answer a later Pending Choice with the same visible shape.
-6. As the answering Player, I want reconnect to show the current canonical Pending Choice with a fresh local draft, so that abandoned clicks are not mistaken for submitted decisions.
-7. As the answering Player, I want changing to a new Choice ID to clear the old selection draft, so that Cards from the previous decision cannot leak into the next one.
-8. As the answering Player, I want one answer command for every canonical Pending Choice, so that Turn Draw and rule-generated choices behave consistently.
-9. As a Player selecting an Initial Pouch, I want the familiar Pouch Card interaction reused, so that Initial Pouch Selection and Chain do not drift visually.
-10. As a Player selecting an Initial Pouch, I want Game Preparation semantics preserved, so that my selection is not misrepresented as a Formation continuation.
-11. As another Player, I want hidden Pending Choice options redacted, so that private Cards and answer constraints are not leaked.
-12. As another Player, I want to know which Player is deciding and the already-public reason for waiting, so that the paused game remains understandable.
-13. As an observer, I want the same hidden-choice policy as a non-answering Player, so that observation never reveals private options.
-14. As a replay viewer, I want canonical Choice Requested and Choice Made events replayed deterministically, so that every decision point has a stable identity.
-15. As a rules maintainer, I want each Pending Choice to have one record-local monotonic Choice ID, so that identity does not depend on payload hashes or semantic strings.
-16. As a rules maintainer, I want every Pending Choice to carry one typed Choice Continuation, so that invalid effect-ID and continuation-string pairs cannot exist.
-17. As a Rule Module maintainer, I want to contribute a typed choice request without allocating identity or constructing final Pending Choice state, so that lifecycle invariants remain local.
-18. As a Rule Module maintainer, I want to resume only Choice Continuations owned by that Rule Module, so that continuation dispatch is exhaustive and explicit.
-19. As a rules maintainer, I want legacy card-only variants removed, so that one answer-shaped model is authoritative before deployment.
-20. As a rules maintainer, I want Choice Requested and Choice Made to own the waiting-state lifecycle, so that domain consequence events do not also have to clear Pending Choice state.
-21. As an event-feed maintainer, I want domain-specific consequence events to remain distinct, so that Turn Discard, Echo Cost, and other outcomes retain their game meaning.
-22. As a Web maintainer, I want player-facing wording and visual policy outside canonical rules, so that UI concerns cannot enter replay or Game State.
-23. As a Web maintainer, I want special visual modules to be internal implementation details of one interaction module, so that their event naming cannot leak across callers.
-24. As a TypeScript caller, I want an exhaustive closed union rather than `kind: string`, so that adding a choice variant produces compile-time work at every required presentation branch.
-25. As a contract maintainer, I want every multiword action field protected by exact camelCase serialization tests, so that valid browser answers cannot become server errors.
-26. As an online-room maintainer, I want retry idempotency keyed by the online command ID, so that response loss does not duplicate a canonical answer.
-27. As an online-room maintainer, I want a new command referencing a completed Choice ID rejected as stale, so that command retry and choice identity remain separate concerns.
-28. As a test author, I want to test complete choice transitions through module interfaces, so that bugs are found without relying on broad E2E flows.
-29. As a test author, I want representative E2E coverage for each special interaction form, so that rendering and submission remain connected without duplicating every rules case.
-30. As a future maintainer, I want no compatibility path for the unreleased flattened contract, so that the new deep modules do not carry the old shallow interface indefinitely.
+1. 作為作答玩家，我希望每個待選擇事項只公開合法答案結構，避免提交不可能的欄位組合。
+2. 作為作答玩家，我希望選牌說明確切最小及最大數量，以便知道答案何時完成。
+3. 作為作答玩家，我希望玩家、陣法、環境及拒絕是明確變體，使控制與實際決策相符。
+4. 作為作答玩家，我希望連環及牽羊保留具名複合決策，使多部分答案保持一致。
+5. 作為作答玩家，我希望過期瀏覽器答案被拒絕，不能回答表面結構相同的後續待選擇事項。
+6. 作為作答玩家，我希望重新連線顯示目前正規待選擇事項及全新本機草稿，避免將放棄的點選誤認為已提交決策。
+7. 作為作答玩家，我希望換成新的 Choice ID 時清除舊草稿，避免前一決策的牌洩入下一決策。
+8. 作為作答玩家，我希望每個正規待選擇事項都使用一種回答命令，使回合抽牌與規則產生的選擇行為一致。
+9. 作為選擇初始錦囊的玩家，我希望重用熟悉的錦囊牌互動，避免初始選擇與連環的視覺呈現偏離。
+10. 作為選擇初始錦囊的玩家，我希望保留遊戲準備語意，避免選擇被誤稱為陣法續接。
+11. 作為其他玩家，我希望遮蔽隱藏待選擇選項，避免洩漏私密牌及答案限制。
+12. 作為其他玩家，我希望知道哪位玩家正在決策及已公開的等待原因，以便理解暫停狀態。
+13. 作為觀戰者，我希望遵守與非作答玩家相同的隱藏選擇政策，避免觀戰洩漏私密選項。
+14. 作為重播觀看者，我希望 Choice Requested 及 Choice Made 正規事件確定性重播，讓每個決策點具有穩定識別。
+15. 作為規則維護者，我希望每個待選擇事項具有紀錄內遞增的 Choice ID，使身分不依賴 payload 雜湊或語意字串。
+16. 作為規則維護者，我希望每個待選擇事項攜帶一個具型別選擇續接，避免無效效果 ID 與續接字串配對。
+17. 作為規則模組維護者，我希望能提供具型別選擇請求而不配置識別或建構最終待選擇狀態，使生命週期不變條件集中。
+18. 作為規則模組維護者，我希望只恢復本模組擁有的選擇續接，使續接分派明確且窮舉。
+19. 作為規則維護者，我希望移除舊版僅限牌的變體，使部署前只有一套具答案結構的權威模型。
+20. 作為規則維護者，我希望 Choice Requested 與 Choice Made 負責等待狀態生命週期，使領域結果事件不必再清除待選擇狀態。
+21. 作為事件動態維護者，我希望領域專屬結果事件保持獨立，使回合棄牌、迴響代價及其他結果保留遊戲意義。
+22. 作為 Web 維護者，我希望玩家文字及視覺政策位於正規規則外，避免介面考量進入重播或遊戲狀態。
+23. 作為 Web 維護者，我希望特殊視覺模組是單一互動模組的內部實作細節，使其事件命名不洩漏至呼叫端。
+24. 作為 TypeScript 呼叫者，我希望使用窮舉封閉 union 而非 `kind: string`，新增選擇變體時讓各必要呈現分支在編譯時顯示待辦。
+25. 作為契約維護者，我希望每個多詞行動欄位都有精確 camelCase 序列化測試保護，避免有效瀏覽器答案變成伺服器錯誤。
+26. 作為線上房間維護者，我希望重試冪等性以線上命令 ID 為鍵，避免回應遺失時重複正規答案。
+27. 作為線上房間維護者，我希望參照已完成 Choice ID 的新命令因過期而被拒絕，讓命令重試與選擇識別維持獨立。
+28. 作為測試撰寫者，我希望透過模組介面測試完整選擇轉換，不依賴廣泛 E2E 流程即可找出錯誤。
+29. 作為測試撰寫者，我希望每種特殊互動形式都有代表性 E2E 覆蓋，確保呈現與提交相連，不重複所有規則案例。
+30. 作為未來維護者，我希望未發布的扁平契約沒有相容路徑，避免新深度模組無限期攜帶舊淺層介面。
 
 ## Implementation Decisions
 
-- Use two deep modules: a Rules Engine Pending Choice module and a Web Pending Choice Interaction module.
-- Join the modules with one closed typed Public Pending Choice contract after Public View redaction.
-- Give every canonical Pending Choice one record-local monotonic Choice ID that is recorded by Choice Requested and supplied by the answer command.
-- Replace effect-ID and continuation-string pairs with typed Choice Continuations. Each Rule Module owns only its continuations.
-- Rule Modules submit typed choice requests; the Pending Choice module allocates the Choice ID, validates option invariants, and creates the canonical waiting state.
-- Replace legacy effect-generated and card-set variants with answer-shaped choices.
-- Do not use a generic option bag containing several independent choice dimensions. Use explicit Card, Player, Formation, and Environment variants, plus named composite variants where one decision genuinely spans several dimensions.
-- Treat Decline as an explicit capability of the variants that allow it.
-- Use one canonical answer command for Turn Draw Discard and every rule-generated Pending Choice.
-- Require the answer command to carry the answering Player, Choice ID, and closed typed answer.
-- A mismatched Player, mismatched Choice ID, invalid answer variant, invalid selection count, or disallowed option is a Validation Failure that emits no Game Events and leaves the Pending Choice unchanged.
-- Keep online command-ID idempotency in the online command transaction module. A different command ID referencing a completed Choice ID is stale and must fail validation.
-- Use Choice Requested to create Pending Choice state and Choice Made to record the typed answer and clear that state.
-- Keep domain-specific consequence events separate from the generic lifecycle events.
-- Allow one answer command to resolve deterministic consequences until the next interactive Pending Choice, Pending Randomness, or stable Player-ready state. Every subsequent Pending Choice receives a new Choice ID.
-- Public View emits a typed visible variant only to the answering Player. Other viewers receive a hidden variant with the Player and only an already-public waiting reason.
-- Do not expose the canonical Choice Continuation through Public View.
-- The Rules Engine and Public View expose domain facts and typed public context; the Web module owns Chinese wording, control choice, focus behavior, and draft transitions.
-- Keep unsubmitted selection drafts client-local. Reset them when the Choice ID or viewer changes and reconstruct an empty draft after reconnect.
-- Keep Initial Pouch Selection as Game Preparation, not a Pending Choice. Reuse internal Pouch Card selection implementation between Initial Pouch Selection and Chain without sharing their canonical lifecycle.
-- Keep substantial special visual modules internal to the Web interaction implementation. They emit local selection intent; they do not own answer legality or canonical answer construction.
-- Replace the old canonical variants and flattened Web contract atomically before deployment. Do not add dual-read, dual-write, migration, or compatibility shims for unreleased behavior.
-- Preserve the existing Ruleset, Game Record, Public View, hidden-information, trusted-randomness, Formation, Echo, Pouch, and Turn semantics except where required to express the unified Pending Choice lifecycle.
+- 使用規則引擎待選擇模組及 Web 待選擇互動模組兩個深度模組。
+- 公開視圖遮蔽後，以單一封閉具型別公開待選擇契約連接模組。
+- 每個正規待選擇事項有一個紀錄內遞增 Choice ID，由 Choice Requested 記錄，回答命令提供。
+- 以具型別選擇續接取代效果 ID 與續接字串配對；各規則模組只擁有自己的續接。
+- 規則模組提交具型別選擇請求；待選擇模組配置 Choice ID、驗證選項不變條件並建立正規等待狀態。
+- 以符合答案結構的選擇取代舊版效果產生及牌集合變體。
+- 不使用包含多個獨立選擇維度的通用選項袋；使用明確的牌、玩家、陣法及環境變體，真正跨多維度的單次決策使用具名複合變體。
+- 在允許拒絕的變體中，將拒絕視為明確能力。
+- 回合抽牌棄牌及所有規則產生的待選擇事項共用一個正規回答命令。
+- 回答命令必須攜帶作答玩家、Choice ID 及封閉具型別答案。
+- 玩家或 Choice ID 不符、答案變體錯誤、選取數量無效或選項不允許，均為驗證失敗，不發出遊戲事件且待選擇事項不變。
+- 線上命令 ID 冪等性留在線上命令交易模組；不同命令 ID 若參照已完成 Choice ID 即為過期，必須驗證失敗。
+- 使用 Choice Requested 建立待選擇狀態，使用 Choice Made 記錄具型別答案並清除該狀態。
+- 領域專屬結果事件與通用生命週期事件保持分離。
+- 一個回答命令可結算確定性結果，直到下一個互動式待選擇事項、待隨機處理或穩定的可供玩家操作狀態；每個後續待選擇事項取得新 Choice ID。
+- 公開視圖僅向作答玩家發出具型別可見變體；其他觀看者收到含玩家及已公開等待原因的隱藏變體。
+- 不透過公開視圖暴露正規選擇續接。
+- 規則引擎與公開視圖公開領域事實及具型別公開情境；Web 模組負責中文文案、控制選擇、焦點行為及草稿轉換。
+- 未提交選擇草稿留在客戶端本機；Choice ID 或觀看者變更時重設，重新連線後重建空草稿。
+- 初始錦囊選擇仍為遊戲準備，而非待選擇事項。初始選擇與連環共用內部錦囊牌選擇實作，但不共享正規生命週期。
+- 大型特殊視覺模組留在 Web 互動實作內部，只發出本機選擇意圖，不負責答案合法性或正規答案建構。
+- 除表達統一待選擇生命週期所需變更外，保留既有規則集、遊戲紀錄、公開視圖、隱藏資訊、可信任隨機性、陣法、迴響、錦囊及回合語意。
 
 ## Testing Decisions
 
-- Test external behavior through the highest relevant interface. Avoid assertions about private helper calls, source text, or internal module arrangement.
-- Add table-driven Rules Engine Pending Choice module tests covering every answer-shaped variant, selection bounds, optional Decline, composite answers, wrong Player, stale Choice ID, wrong answer shape, unavailable options, and zero-event validation failure.
-- Add lifecycle tests proving that Choice Requested allocates sequential record-local Choice IDs, Choice Made clears exactly the matching Pending Choice, and replay reconstructs the same IDs and state.
-- Add Rule Module continuation tests proving exhaustive typed dispatch and sequential Pending Choices with distinct IDs.
-- Retain existing rule integration tests for the domain consequences of Turn Draw, Echo, Tribulation, Pouch, Profession, and other choices.
-- Add Public View tests for the answering Player's visible typed variant and every other viewer's hidden variant. Assert that private options, counts, answer shape, and canonical continuation are absent when hidden.
-- Add Rust serialization contract tests for every public choice and answer variant, including exact camelCase names for multiword fields.
-- Add Web interaction tests that start from each public variant, exercise draft transitions, derive valid and invalid submission states, build the correct typed answer, and reset on Choice ID or viewer change.
-- Test Initial Pouch Selection and Chain through the same internal Pouch Card interaction behavior while asserting their distinct canonical commands and outcomes.
-- Retain focused tests for special visual behavior such as Card matrices and Formation grouping, but test them through the parent interaction interface when the behavior crosses module seams.
-- Keep one representative E2E flow for each materially distinct visual interaction. Do not use E2E to enumerate every rules variant already covered below the Web seam.
-- Remove tests whose only purpose is reading the large application source or proving details of deleted shallow helpers.
-- Validate with focused Rust tests, related Web tests, TypeScript type checking, the relevant representative E2E flows, full `cargo test`, formatting checks, and diff checks.
+- 透過最高相關介面測試外部行為，避免斷言私有輔助呼叫、原始碼文字或內部模組排列。
+- 新增表格驅動的規則引擎待選擇模組測試，涵蓋所有答案結構變體、選取界限、選用拒絕、複合答案、錯誤玩家、過期 Choice ID、錯誤答案結構、不可用選項及零事件驗證失敗。
+- 新增生命週期測試，證明 Choice Requested 配置紀錄內連續 Choice ID、Choice Made 恰好清除對應待選擇事項，且重播重建相同 ID 與狀態。
+- 新增規則模組續接測試，證明具型別分派窮舉，且連續待選擇事項具有不同 ID。
+- 保留回合抽牌、迴響、天劫、錦囊、職業及其他選擇的領域結果既有規則整合測試。
+- 新增公開視圖測試，涵蓋作答玩家可見的具型別變體及其他每位觀看者的隱藏變體；斷言隱藏時不含私密選項、數量、答案結構及正規續接。
+- 為每種公開選擇及答案變體新增 Rust 序列化契約測試，包括多詞欄位的精確 camelCase 名稱。
+- 新增 Web 互動測試，從每個公開變體開始，測試草稿轉換、推導有效與無效提交狀態、建立正確具型別答案，並在 Choice ID 或觀看者改變時重設。
+- 透過相同內部錦囊牌互動測試初始錦囊選擇與連環，同時斷言其不同正規命令及結果。
+- 保留牌矩陣與陣法分組等特殊視覺行為重點測試；跨模組接點時透過父互動介面測試。
+- 每種實質不同的視覺互動保留一個代表性 E2E 流程，不以 E2E 枚舉 Web 接點以下已覆蓋的所有規則變體。
+- 移除僅用來讀取大型應用程式原始碼或證明已刪除淺層輔助程式細節的測試。
+- 執行重點 Rust、相關 Web 測試、TypeScript 型別檢查、相關代表性 E2E 流程、完整 `cargo test`、格式及 diff 檢查。
 
 ## Out of Scope
 
-- Moving Initial Pouch Selection out of Game Preparation or representing it as canonical Pending Choice state.
-- Persisting or synchronizing unsubmitted browser selection drafts.
-- Exposing canonical Choice Continuations, hidden Cards, or private option constraints to non-answering viewers.
-- Building a runtime Rule Module plugin system, public continuation trait, or adapter framework for the closed official catalog.
-- Redesigning Pending Randomness, trusted shuffle ownership, or online command transactions beyond the Choice ID interaction described here.
-- Changing the game effects or timing of Turn Draw, Echo, Tribulation, Pouch, Profession Abilities, Spirit Skills, or Formations.
-- Introducing backward-compatibility support for unreleased canonical events or Web DTOs.
-- Refactoring unrelated route modules, Game Room session behavior, Player-Facing Action Detail, Tuning Card Obligation, or Official Rule Module composition.
+- 將初始錦囊選擇移出遊戲準備，或表示為正規待選擇狀態。
+- 持久化或同步未提交的瀏覽器選擇草稿。
+- 向非作答觀看者公開正規選擇續接、隱藏牌或私密選項限制。
+- 為封閉官方目錄建立執行期規則模組外掛系統、公開續接 trait 或介面卡框架。
+- 除此處描述的 Choice ID 互動外，重新設計待隨機處理、可信任洗牌擁有權或線上命令交易。
+- 改變回合抽牌、迴響、天劫、錦囊、職業能力、精靈技能或陣法的遊戲效果與時點。
+- 為未發布的正規事件或 Web DTO 引入向後相容支援。
+- 重構無關的路由模組、遊戲房間工作階段行為、玩家行動詳情、調律牌義務或官方規則模組組合。
 
 ## Further Notes
 
-- Governing decision: `docs/adr/0026-deepen-the-pending-choice-lifecycle.md`.
-- Related decisions: ADR-0015 for typed Pending Choice answers and ADR-0020 for Initial Pouch Selection ownership.
-- The glossary definitions for Pending Choice, Choice ID, Choice Continuation, Choice Requested, and Choice Made are authoritative.
-- Existing dirty worktree changes outside this issue belong to the user and must be preserved.
+- 管轄決策：`docs/adr/0026-deepen-the-pending-choice-lifecycle.md`。
+- 相關決策：ADR-0015 的具型別待選擇答案，以及 ADR-0020 的初始錦囊選擇擁有權。
+- Pending Choice、Choice ID、Choice Continuation、Choice Requested 及 Choice Made 的詞彙表定義具權威性。
+- 本議題範圍外的既有未提交工作樹變更屬於使用者，必須保留。
 
 ## Blocked by
 
-- none
+- 無

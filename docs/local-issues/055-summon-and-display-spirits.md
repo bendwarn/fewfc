@@ -6,27 +6,23 @@ ready-for-agent
 
 ## What to build
 
-Add the first complete Spirit Theme Rule Module slice. New official rooms enable
-Spirit by default together with its required Advanced Rule Modules. Players can
-summon any of the five elemental Spirits, replace their current Spirit, charge
-it through the matching Turn Draw discard, and see every Player's public Spirit
-and Spirit Power through direct play, replay, reconnect, and the online room UI.
+加入第一個完整精靈主題規則模組切片。新官方房間預設啟用精靈及其必要進階規則模組。玩家可召喚五種屬性的任意精靈、取代目前精靈、透過回合抽牌捨棄同屬性牌補充靈力，並在直接遊戲、重播、重新連線及線上房間介面中查看每位玩家公開的精靈與靈力。
 
 ## Acceptance criteria
 
-- [x] Spirit is an official Theme Rule Module with one stable identity shared by setup, Game State, persistence, Web DTOs, room metadata, and UI.
-- [x] Spirit setup is valid only when Star, Five Directions Legend, and Hero Schools are all enabled; invalid combinations fail before events or mutation.
-- [x] New rooms enable every available Rule Module, including Spirit, while existing stored rooms retain their module list.
-- [x] Enabling Spirit in a waiting room enables all three dependencies; disabling any dependency disables Spirit; the server rejects bypassed invalid combinations.
-- [x] Rule Module changes preserve the existing readiness and Locked Deck List invalidation behavior.
-- [x] 金靈喚術、木靈喚術、水靈喚術、火靈喚術、and 土靈喚術 are exact two-Card Active Spells available only with Spirit enabled.
-- [x] Successful Spirit Summoning gives the Player the declared Spirit at two Spirit Power and replaces any previously owned Spirit, including the same kind.
-- [x] Each Player owns at most one Spirit, while different Players may own the same Spirit kind.
-- [x] Choosing a matching-element Turn Draw discard adds one Spirit Power only to the discarding Player's Spirit and caps it at six.
-- [x] Canonical Spirit Summoning and Spirit Power events reproduce identical state through direct execution, replay, and recorded-decision verification.
-- [x] Public State exposes every Spirit's owner, kind, and current power; the online room displays that information without an `already used` presentation field.
-- [x] Focused Rust, Web unit, and self-contained Brave Playwright tests cover module dependencies, default-on rooms, disabled Spirit, replacement, charging, reconnect, and two-Player and four-Player ownership.
+- [x] 精靈是官方主題規則模組，在設定、遊戲狀態、持久化、Web DTO、房間中繼資料及介面中共用穩定識別。
+- [x] 僅在星辰圖記、五方傳說及英雄學派均啟用時精靈設定才有效；無效組合在事件或狀態變更前失敗。
+- [x] 新房間啟用所有可用規則模組，包含精靈；既有儲存房間保留原模組清單。
+- [x] 在等待室啟用精靈會啟用三項依賴；停用任一依賴會停用精靈；伺服器拒絕繞過介面提交的無效組合。
+- [x] 規則模組變更保留既有準備狀態及鎖定牌組清單失效行為。
+- [x] 金靈喚術、木靈喚術、水靈喚術、火靈喚術及土靈喚術均為精確兩張牌的主動術式，僅在啟用精靈時可用。
+- [x] 成功召喚精靈使玩家獲得指定精靈及兩點靈力，並取代任何原有精靈，包括相同種類。
+- [x] 每位玩家至多擁有一個精靈；不同玩家可擁有同種類精靈。
+- [x] 回合抽牌選擇捨棄同屬性牌時，只增加捨棄玩家精靈的一點靈力，上限為六。
+- [x] 正規召喚精靈及靈力事件在直接執行、重播與已記錄決策驗證中重現相同狀態。
+- [x] 公開狀態顯示所有精靈的擁有者、種類及目前靈力；線上房間顯示這些資訊，不另設 `already used` 呈現欄位。
+- [x] 重點 Rust、Web 單元與自足的 Brave Playwright 測試涵蓋模組依賴、預設啟用房間、停用精靈、取代、充能、重新連線及雙人與四人擁有權。
 
 ## Blocked by
 
-None - can start immediately
+無，可立即開始

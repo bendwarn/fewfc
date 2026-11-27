@@ -4,9 +4,4 @@ status: accepted
 
 # Resolve simultaneous 綻放 atomically
 
-When a Team's HP reaches zero, every eligible six-power Wood Spirit owned by
-that Team uses 綻放 simultaneously. One canonical resolution consumes all
-triggering Spirits' power and applies their combined recovery before evaluating
-the HP-based Game Outcome. Separate per-Spirit resolutions were rejected because
-the first recovery would create a false intermediate state in which later
-simultaneous 綻放 uses no longer appear eligible.
+隊伍生命值歸零時，該隊伍所有符合條件、靈力為六的木精靈同時使用綻放。一次正規結算耗盡所有觸發精靈的靈力，並合併回復生命，再判定依生命值決定的遊戲結果。不逐一結算精靈，因為第一次回復會造成虛假的中間狀態，使其他同時發動的綻放看似不再符合條件。

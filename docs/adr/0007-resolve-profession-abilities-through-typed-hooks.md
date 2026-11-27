@@ -4,31 +4,10 @@ status: accepted
 
 # Resolve Profession Abilities through typed rule hooks
 
-Profession Abilities integrate through explicit, typed Hero Schools module
-hooks at the rule stages they modify, including Formation matching, costs,
-Attack calculation, immunity, Counter Effects, and post-Formation consequences.
-Hooks return declarative modifiers or intents for the shared pipeline to record
-and apply; they do not mutate Game State or emit Game Events directly.
+職業能力透過明確且具型別的英雄學派模組鉤子，接入它們所修改的規則階段，包括陣法匹配、代價、攻擊計算、免疫、反制效果及陣法後續結果。鉤子回傳宣告式修正或意圖，由共用流程記錄並套用；鉤子不直接修改遊戲狀態，也不直接發出遊戲事件。
 
-Activated Profession Abilities use a separate typed provider contract because
-they begin a Player-selected Active Effect rather than modifying an existing
-rule stage. Hero Schools, Jianghu, Confluence Generation, and Dark Glimmer each
-provide a closed ability enum plus offer and effect plans. The shared Profession
-module owns ability availability, the once-per-turn allowance, Action Card
-Selection validation, exact completion input, player-facing detail, and the
-initial canonical event batch. It records exactly one
-`ProfessionAbilityActivated` event first, followed by provider consequences and
-at most one final typed Choice or Randomness continuation.
+職業的發動能力使用獨立的具型別提供者介面，因為它是開始玩家選擇的主動效果，而非修改既有規則階段。英雄學派、江湖、匯流世代及黑暗微光各自提供封閉的能力 enum，以及可用選項和效果計畫。共用職業模組負責能力可用性、每回合使用次數、行動選牌驗證、完成能力所需的確切輸入、玩家可見詳情及初始正規事件批次。它先記錄恰好一個 `ProfessionAbilityActivated` 事件，再記錄提供者產生的結果，最後至多記錄一個具型別的選擇或隨機性續接。
 
-Providers may build consequences against a scratch projection so a later rule
-step observes earlier costs. They still do not mutate the authoritative Game
-State. The provider contract is statically dispatched and exhaustively matched;
-it is not a runtime registry or a plug-in seam.
+提供者可依暫用投影建立結果，使後續規則步驟看見先前代價，但仍不得修改權威遊戲狀態。提供者介面採靜態分派及窮舉匹配，不是執行期登錄表或外掛接點。
 
-Generic Status Effect entries were rejected because a Profession Ability exists
-by owning its Profession rather than by applying an ongoing effect. Centralized
-Profession-specific conditionals were rejected because they couple the Base
-Ruleset to one optional module and make cross-module ordering implicit.
-Per-ability runtime registration was rejected because the official Ruleset is a
-closed composition and compile-time exhaustive dispatch detects missing ability
-handling more reliably.
+不使用一般狀態效果條目，因為職業能力源自持有職業，而非施加持續效果。不集中撰寫各職業專屬條件，因為那會使基礎規則集與單一選用模組耦合，並隱藏跨模組順序。也不在執行期逐項登錄能力：官方規則集是封閉組合，編譯時窮舉分派能更可靠地發現遺漏的能力處理。

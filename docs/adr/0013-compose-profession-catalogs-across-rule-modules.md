@@ -4,22 +4,8 @@ status: accepted
 
 # Compose Profession catalogs across Rule Modules
 
-Keep one Player-owned Profession slot while composing the official Profession
-catalog from every enabled Rule Module. Each module owns its Profession
-definitions, Formations, and typed ability hooks; Profession IDs are globally
-unique, and explicit parent links may cross module boundaries so rules such as
-道法師 and 影戰士 can inherit Hero Schools abilities. Effective abilities are
-derived from the composed catalog rather than copied into Game State.
+每位玩家維持一個職業欄位，官方職業目錄則由所有已啟用規則模組組成。各模組負責自己的職業定義、陣法及具型別能力鉤子；職業 ID 全域唯一，明確的父職業連結可跨越模組邊界，使道法師、影戰士等職業能繼承英雄學派能力。有效能力由組合後的目錄推導，不複製到遊戲狀態。
 
-Profession inheritance is an ordered acyclic graph rather than the current
-single-parent tree: a definition may name multiple parents, and effective
-abilities are deduplicated by stable ability identity. Transition predicates
-remain separate from inheritance because a Profession's allowed current roles
-and its inherited ability providers are not always the same relationship.
+職業繼承採有序無環圖，而非目前的單一父節點樹：定義可指定多個父節點，並依穩定的能力識別去除重複能力。轉職條件與繼承保持分離，因為職業允許轉入的既有角色與提供繼承能力的職業，兩者關係不一定相同。
 
-A single expanded Hero Schools catalog was rejected because it would make
-Jianghu, Confluence Generation, and Dark Glimmer execute while their modules
-are disabled and would concentrate unrelated rule behavior in `hero.rs`.
-Separate Profession slots per module were rejected because the published rules
-treat all Professions as mutually replacing roles and define transitions across
-module boundaries.
+不將所有職業擴充進單一英雄學派目錄，因為那會在江湖、匯流世代及黑暗微光模組停用時仍執行其規則，並把不相關的規則集中於 `hero.rs`。也不為各模組分設職業欄位，因為公開規則將所有職業視為互相取代的角色，並定義跨模組轉職。

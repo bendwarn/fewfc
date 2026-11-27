@@ -4,41 +4,20 @@ status: accepted
 
 # Compose the Base Ruleset with closed official rule modules
 
-The Rules Engine always runs the Base Ruleset and may enable compile-time
-Rule Modules from a closed official catalog. A Ruleset configuration is the Base
-Ruleset plus its enabled modules; Game Setup and Game State retain that
-configuration so command handling, automatic advancement, Formation queries,
-replay, and Public View use the same rule knowledge without caller selection.
+規則引擎一律執行基礎規則集（Base Ruleset），並可啟用封閉官方目錄中於編譯時確定的規則模組（Rule Module）。規則集由基礎規則集及已啟用模組組成；遊戲設定和遊戲狀態均保留此設定，讓命令處理、自動推進、陣法查詢、重播及公開視圖使用相同的規則知識，無須由呼叫端另行選擇。
 
-The deep rule-execution interface owns setup rules, event decisions, automatic
-advancement, and playable-Formation queries. Formation registries, matchers,
-Effect Plans, resolvers, module hooks, and Pending Choice continuations remain
-implementation details. Tests use this interface as their primary test surface
-and run conformance cases with each supported module configuration.
+規則執行介面負責設定規則、事件決策、自動推進及可施展陣法查詢。陣法登錄表、匹配器、效果計畫、解析器、模組鉤子及待選擇事項的續接均屬實作細節。測試以此介面為主要測試介面，並針對每種支援的模組組合執行規則符合性案例。
 
 ## Considered options
 
-- A separate Star Ruleset was rejected because the Base Ruleset is mandatory and
-  Star rules only augment it.
-- A public trait for downstream rule modules was rejected because the closed
-  official catalog does not justify freezing an external interface.
-- Runtime plugins or data-loaded rule modules were rejected because they add
-  versioning and safety costs to deterministic replay and Wasm deployment.
-- Separate query and command modules were rejected because Formation matching
-  and command validation must use the same rule knowledge.
-- Separate canonical schemas were rejected because the Base Ruleset and enabled
-  modules use the same Rules Engine, projection, replay, and viewer-filtering
-  semantics.
+- 不另設星辰規則集：基礎規則集不可省略，星辰規則只是擴充它。
+- 不為下游規則模組公開 trait：封閉的官方目錄不足以構成固定外部介面的理由。
+- 不採用執行期外掛或從資料載入規則模組：這會增加確定性重播及 Wasm 部署的版本管理與安全成本。
+- 不拆開查詢與命令模組：陣法匹配與命令驗證必須使用相同的規則知識。
+- 不分別定義正規資料結構：基礎規則集及已啟用模組共用規則引擎、投影、重播與依觀看者過濾的語意。
 
 ## Consequences
 
-The deferral of Rule Version identity and global module defaults below are superseded by
-[ADR-0038](0038-bind-games-to-rule-versions.md). Record schema compatibility
-remains a separate decision.
+下文延後處理規則版本識別與全域模組預設值的決定已由 [ADR-0038](0038-bind-games-to-rule-versions.md) 取代；紀錄資料結構的相容性仍是獨立決策。
 
-Adding an official Rule Module requires extending the exhaustive catalog and may
-extend the shared canonical schema. Available modules are enabled by default in
-new Web rooms and remain independently configurable; disabling all modules
-leaves the complete Base Ruleset active. Before the first public release,
-persisted Game Record compatibility across schema changes is not guaranteed; no
-version or migration mechanism is added yet.
+新增官方規則模組須擴充窮舉式目錄，也可能擴充共用的正規資料結構。新 Web 房間預設啟用可用模組，且每個模組仍可獨立設定；全部停用時仍保有完整基礎規則集。

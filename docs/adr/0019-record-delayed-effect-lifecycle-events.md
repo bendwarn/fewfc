@@ -4,9 +4,4 @@ status: accepted
 
 # Record delayed-effect lifecycle events
 
-Echo and 變宮‧植土 record explicit canonical events for decline, scheduling,
-resolution start, completion, and expiry instead of requiring replay, reconnect,
-or event presentation to infer semantic boundaries from lower-level state
-deltas. Their main effects continue to emit the existing HP, Status, Card move,
-choice, and shuffle events, while Echo and 植土 retain distinct lifecycle event
-identities because neither is a new Formation Use.
+迴響及變宮‧植土針對拒絕、排程、開始結算、完成及到期記錄明確的正規事件，讓重播、重新連線與事件呈現無須從低層狀態變化推測語意邊界。其主效果仍發出既有的生命值、狀態、牌移動、選擇及洗牌事件；迴響與植土保留各自的生命週期事件身分，因為兩者都不是重新施展陣法。

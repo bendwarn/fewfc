@@ -6,130 +6,75 @@ ready-for-agent
 
 ## Goal
 
-Keep a room member aware of received Player Notifications through room-list
-dots after their floating prompts disappear, while keeping one notification per
-Online Game Room.
+浮動提示消失後，透過房間清單圓點讓房間成員仍能察覺已收到的玩家通知，同時每個線上房間只保留一則通知。
 
 ## Confirmed Decisions
 
-The following directions were settled during grill-with-docs and handed to a
-Terra subagent for implementation at the user's request. The final simplified
-clearing behavior below follows the recommendation at that handoff.
+以下方向在 grill-with-docs 期間確定，並依使用者要求交由 Terra 子代理實作。下方最終簡化的清除行為遵循交接時的建議。
 
-- Automatically hide a floating notification after five seconds without
-  deleting its retained notification, except for the transient-only removal
-  and dissolution notices described below.
-- Retain received notifications in browser `localStorage`, rather than adding
-  a server notification store.
-- Keep at most one notification per room, not a chronological event history.
-- Do not add a notification list, notification page, or new profile page.
-- Mark rooms with notifications using a dot in the room list.
-- Leave the header connection status and its interaction unchanged. This
-  supersedes the earlier proposal to open a notification list from that control.
-- A floating prompt's close control only hides that prompt; it does not consume
-  the retained notification or clear the room dot.
-- Successfully entering a room consumes that room's retained notification and
-  clears its dot.
-- Retain entries for seven days, with at most 100 distinct rooms; exceeding
-  that cap removes the oldest entries. Replace the current eight-room cap.
-- Store notifications separately by user ID. Logout does not delete the stored
-  entries; the same account can restore them in the same browser, and another
-  account must not display them.
-- A notice that the room was dissolved or the recipient was removed does not
-  offer an action to enter that room.
-- Do not introduce a manual-clearing control. Ordinary entries remain until
-  successful room entry, seven-day expiry, or eviction by the 100-room cap.
-- Removal and dissolution notices appear as five-second prompts only and are
-  not retained. Receiving either also clears any older retained notification
-  for that room.
+- 浮動通知五秒後自動隱藏，但不刪除保留通知；下述僅短暫顯示的移除及解散通知例外。
+- 已收到通知保留在瀏覽器 `localStorage`，不新增伺服器通知儲存。
+- 每個房間至多保留一則通知，不形成依時間排列的事件歷史。
+- 不新增通知清單、通知頁或新個人資料頁。
+- 房間清單以圓點標示有通知的房間。
+- 頁首連線狀態及其互動保持不變；此決定取代先前從該控制開啟通知清單的提案。
+- 浮動提示的關閉控制只隱藏提示，不消費保留通知或清除房間圓點。
+- 成功進入房間會消費該房間的保留通知並清除圓點。
+- 項目保留七天，最多涵蓋 100 個不同房間；超過上限時移除最舊項目。取代目前八房間上限。
+- 依使用者 ID 分開儲存通知。登出不刪除儲存項目；同帳號可在同一瀏覽器恢復，其他帳號不得顯示這些通知。
+- 房間已解散或接收者已被移除的通知不提供進入房間操作。
+- 不引入手動清除控制。一般項目保留至成功進入房間、七天到期或超過 100 房間上限遭移除。
+- 移除及解散通知只以五秒提示顯示，不予保留；收到任一通知時也清除該房間較舊的保留通知。
 
 ## Storage Boundary
 
-The existing server delivers notifications only to connected clients and does
-not retain or replay them. Local storage can retain messages this browser
-received; it cannot retrieve messages missed while offline or synchronize
-notifications across devices. Clearing browser storage removes those retained
-notifications.
+既有伺服器只向已連線客戶端傳送通知，不保留或重播。本機儲存可保留此瀏覽器收到的訊息，但不能取回離線期間錯過的訊息，也不能跨裝置同步通知。清除瀏覽器儲存會移除這些保留通知。
 
-Local issue 35 originally specified notifications that were neither persisted
-nor replayed. This follow-up changes browser retention only; it does not add a
-server inbox or make notifications authoritative room state. The room API and
-My rooms remain authoritative after reconnect.
+本機議題 35 原先規定通知不持久化、不重播；本後續工作只改變瀏覽器保留，不新增伺服器收件匣，也不使通知成為權威房間狀態。重新連線後仍以房間 API 及「我的房間」為權威。
 
 ## Existing Constraints To Preserve
 
-- Player Notifications remain owned above route lifetimes by the authenticated
-  layout, as established by ADR 0027.
-- Room-state invalidation messages (`roomsChanged`) are not Player
-  Notifications and do not become list entries.
-- ADR 0035 requires Seat Promotion to be shown even inside the affected room.
-  An ordinary same-room update must not immediately replace that notice.
-- A retained notification is not authority for the current turn, room
-  membership, or permission to enter a room.
-- Restoring retained notifications must not replay live-delivery side effects,
-  such as navigating away because of an old removal notification.
-- Floating-prompt visibility, retained notification data, and authoritative
-  room state must not be conflated. Today one array also drives lobby attention
-  labels and removal navigation, so adding a timeout to the current dismiss
-  function would lose more than the floating prompt.
+- 依 ADR 0027，玩家通知仍由位於路由生命週期之上的已驗證版面擁有。
+- 房間狀態失效訊息（`roomsChanged`）不是玩家通知，不成為清單項目。
+- ADR 0035 要求即使位於受影響房間內也須顯示補位；一般同房更新不得立即取代該通知。
+- 保留通知不是目前回合、房間成員身分或進房權限的權威。
+- 恢復保留通知不得重播即時傳送副作用，例如因舊移除通知導覽離開。
+- 浮動提示可見性、保留通知資料及權威房間狀態不得混為一談。目前同一陣列還驅動大廳注意標籤及移除後導覽，因此直接為現有關閉函式加逾時會失去不只浮動提示。
 
 ## Acceptance Criteria
 
-- [x] A newly received ordinary notification shows a five-second floating
-  prompt and leaves a dot on the matching room after that prompt closes.
-- [x] Closing the prompt manually hides only the prompt.
-- [x] Refreshing restores retained room dots without showing old prompts or
-  replaying live-delivery navigation effects.
-- [x] Each room has at most one retained notification; Seat Promotion keeps
-  its existing protection against an immediate ordinary room update.
-- [x] Successfully loading a room consumes its retained notification; failed
-  navigation or loading does not consume it.
-- [x] Seven-day expiry and the 100-room cap bound retained notifications.
-- [x] Logout preserves the current account's stored notifications; another
-  account cannot see them, and the original account can restore them.
-- [x] Removal and dissolution show a transient reason without an enter-room
-  action, clear older retained entries for that room, and are not persisted.
-- [x] The room-list dot is accessible and does not claim that the notification
-  itself proves it is currently that Player's turn.
-- [x] The connection-status control and existing navigation remain unchanged;
-  no notification list, profile page, or manual-clearing control is added.
+- [x] 新收到的一般通知顯示五秒浮動提示，提示關閉後相符房間仍有圓點。
+- [x] 手動關閉提示只隱藏提示。
+- [x] 重新整理恢復保留房間圓點，不顯示舊提示，也不重播即時傳送導覽效果。
+- [x] 每個房間至多一則保留通知；補位仍受既有保護，不會立即被一般房間更新取代。
+- [x] 成功載入房間會消費其保留通知；導覽或載入失敗則不消費。
+- [x] 保留通知受七天到期及 100 房間上限限制。
+- [x] 登出保留目前帳號的儲存通知；其他帳號不能看見，原帳號可恢復。
+- [x] 移除與解散顯示短暫原因且不提供進房操作，清除該房間較舊保留項目，且自身不持久化。
+- [x] 房間清單圓點可存取，不宣稱通知本身證明目前輪到該玩家。
+- [x] 連線狀態控制及既有導覽不變；不新增通知清單、個人資料頁或手動清除控制。
 
 ## Implementation And Verification
 
-Completed by a Terra subagent with independent parent-agent review and Brave
-browser verification. The authenticated layout retains notification ownership;
-the composable separates retained notifications from live floating prompts.
-Storage validation, account changes, failed storage writes, expiry timers, and
-delayed cross-tab storage events are covered by focused tests. Restoring saved
-entries never restores floating prompts or live removal navigation.
+由 Terra 子代理完成，並經父代理獨立審查及 Brave 瀏覽器驗證。已驗證版面保留通知擁有權；composable 將保留通知與即時浮動提示分離。重點測試涵蓋儲存驗證、帳號變更、儲存寫入失敗、到期計時器及延遲跨分頁儲存事件。恢復已儲存項目時絕不恢復浮動提示或即時移除導覽。
 
-The room-list action remains `進入`; a notification dot does not assert that it
-is still the recipient's turn. Removal and dissolution keep their five-second
-reason visible after returning to the lobby without retaining those entries.
+房間清單操作仍為 `進入`；通知圓點不宣稱目前仍輪到接收者。移除與解散原因在返回大廳後仍顯示五秒，但不保留這些項目。
 
-Verified on 2026-08-27:
+2026-08-27 已驗證：
 
-- `cargo test --quiet`: passed.
-- `bun run test:unit`: 137 tests passed across 41 files.
-- `bun run test:component tests/component/LobbyRoomList.nuxt.spec.ts tests/component/PlayerNotifications.nuxt.spec.ts`:
-  8 tests passed across 2 files.
-- `bun run typecheck`: passed.
-- `PLAYWRIGHT_REUSE_SERVER=0 bun run test:e2e tests/e2e/player-notifications.spec.ts --reporter=line`:
-  3 Brave tests passed against a fresh build and isolated local Worker storage.
-  Coverage includes five-second expiry, manual prompt closing, reload, failed
-  room entry preserving the dot, successful entry consuming it, and transient
-  removal/dissolution navigation and persistence.
-- `bun run test:e2e:built tests/e2e/room-observer-lifecycle.spec.ts --grep 'back navigation' --reporter=line`:
-  the existing Brave Seat Promotion and reconnect regression passed against the
-  same build with fresh local Worker storage.
-- `git diff --check`: passed.
+- `cargo test --quiet`：通過。
+- `bun run test:unit`：41 個檔案共 137 項測試通過。
+- `bun run test:component tests/component/LobbyRoomList.nuxt.spec.ts tests/component/PlayerNotifications.nuxt.spec.ts`：2 個檔案共 8 項測試通過。
+- `bun run typecheck`：通過。
+- `PLAYWRIGHT_REUSE_SERVER=0 bun run test:e2e tests/e2e/player-notifications.spec.ts --reporter=line`：使用新建置與隔離的本機 Worker 儲存，3 項 Brave 測試通過。覆蓋五秒到期、手動關閉提示、重新載入、進房失敗保留圓點、成功進房消費通知，以及短暫移除／解散的導覽與持久化行為。
+- `bun run test:e2e:built tests/e2e/room-observer-lifecycle.spec.ts --grep 'back navigation' --reporter=line`：以同一建置及全新本機 Worker 儲存，既有 Brave 補位與重新連線回歸測試通過。
+- `git diff --check`：通過。
 
-No server notification persistence, notification list, deployment, or canonical
-Game Record change was introduced.
+未新增伺服器通知持久化、通知清單、部署或正規遊戲紀錄變更。
 
 ## Related Documentation
 
-- `CONTEXT.md`: Player Notification and Online Game Room.
-- Local issue 35: original transient notification contract.
-- ADR 0027: authenticated-layout ownership of notifications.
-- ADR 0035: Seat Promotion visibility and separation from Game history.
+- `CONTEXT.md`：Player Notification 及 Online Game Room。
+- 本機議題 35：原有短暫通知契約。
+- ADR 0027：通知由已驗證版面擁有。
+- ADR 0035：補位可見性及其與遊戲歷史的分離。

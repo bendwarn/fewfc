@@ -6,26 +6,22 @@ ready-for-agent
 
 ## What to build
 
-Implement 虛空破星術 as an active Spell available when the Star Rule Module is
-enabled and formed from three same-level Card Instances. When it resolves, it
-breaks every currently owned Star and directly removes 20 HP from each affected
-Team as one atomic Formation Use.
+將虛空破星術實作為啟用星辰圖記時可用的主動術式，由三張同級實體牌組成。結算時破除所有目前被擁有的星辰，並直接扣除各受影響隊伍 20 點生命，構成一次原子陣法施展。
 
-Use the existing Spell, passive-counter, HP delta, Game Outcome, replay, Public
-View, and Web Formation paths rather than creating a standalone action.
+沿用現有術式、被動反制、生命值變化、遊戲結果、重播、公開視圖及 Web 陣法路徑，不新增獨立行動。
 
 ## Acceptance criteria
 
-- [x] Three same-level Card Instances match 虛空破星術 only when the Star Rule Module is enabled.
-- [x] 虛空破星術 is an active Spell submitted through the normal Formation Use command.
-- [x] Seal cancels the Spell before any Star is broken or HP is changed.
-- [x] Successful resolution emits one `StarBroken` event for every affected Team Star.
-- [x] Each Team whose Star is broken loses 20 HP directly; Teams without a Star lose no HP.
-- [x] The HP loss does not interact with Player Shields.
-- [x] All Star Breaking and HP changes resolve before Game Outcome evaluation.
-- [x] If every Team reaches zero HP, the result is a draw.
-- [x] Public State View and Public Event Feed show the complete viewer-safe result.
-- [x] Direct execution and replay produce identical Star, HP, and Game Outcome state.
+- [x] 只有啟用星辰圖記時，三張同級實體牌才匹配虛空破星術。
+- [x] 虛空破星術為透過正常陣法施展命令提交的主動術式。
+- [x] 封印在任何星辰破除或生命值變化前使術式無效。
+- [x] 成功結算時，為每個受影響的隊伍星辰發出一個 `StarBroken` 事件。
+- [x] 星辰被破除的每隊直接扣除 20 點生命；沒有星辰的隊伍不扣除生命。
+- [x] 生命值扣減不與玩家防護罩互動。
+- [x] 全部星辰破除及生命值變化均在判定遊戲結果前結算。
+- [x] 所有隊伍生命值均歸零時結果為平局。
+- [x] 公開狀態視圖及公開事件動態顯示完整且符合觀看權限的結果。
+- [x] 直接執行及重播產生相同星辰、生命值及遊戲結果狀態。
 
 ## Blocked by
 

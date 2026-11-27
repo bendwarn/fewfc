@@ -6,24 +6,23 @@ AFK
 
 ## Parent
 
-Derived from `docs/rules-engine-decisions.md` sections 25 and 31, and closed GitHub issues #11 and #18.
+源自 `docs/rules-engine-decisions.md` 第 25、31 和已結案 GitHub 議題 #11、#18。
 
 ## What to build
 
-Implement the remaining base active spell effects that currently return `EffectNotImplemented`. Each spell should resolve through the normal `PerformFormation` pipeline, consume the action only after validation succeeds, produce replayable semantic events, and use effect intents rather than mutating state directly.
+實作目前回傳 `EffectNotImplemented` 的其餘基礎主動術式效果。每個術式均應經正常 `PerformFormation` 流程結算，僅在驗證成功後消耗行動，產生可重播語意事件，並使用效果意圖而非直接修改狀態。
 
 ## Acceptance criteria
 
-- [ ] `generating-formation` has a deterministic first-version effect.
-- [ ] `overcoming-formation` has a deterministic first-version effect.
-- [ ] `radiance` has a deterministic first-version effect.
-- [ ] `return-to-origin` has a deterministic first-version effect.
-- [ ] `chaos` has a deterministic first-version effect.
-- [ ] `five-elements-cycle` has a deterministic first-version effect.
-- [ ] Known active spell behavior is covered by command-level integration tests and replay consistency tests.
-- [ ] Legal but still intentionally deferred effects remain represented by explicit implementation errors, if any remain.
+- [ ] `generating-formation` 有確定性的首版效果。
+- [ ] `overcoming-formation` 有確定性的首版效果。
+- [ ] `radiance` 有確定性的首版效果。
+- [ ] `return-to-origin` 有確定性的首版效果。
+- [ ] `chaos` 有確定性的首版效果。
+- [ ] `five-elements-cycle` 有確定性的首版效果。
+- [ ] 命令層整合測試與重播一致性測試涵蓋已知主動術式行為。
+- [ ] 若仍有合法但刻意延後的效果，以明確實作錯誤表示。
 
 ## Blocked by
 
 - #25
-

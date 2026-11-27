@@ -4,44 +4,19 @@ status: accepted
 
 # Let Nuxt route modules own screen lifecycles
 
-Nuxt routes are the only source of screen identity. The root application module
-only composes layouts, pages, and route announcements; it does not derive a
-screen enum from paths or orchestrate route-specific loading. Auth middleware
-owns navigation policy, the default and auth layouts own their distinct shells,
-and every user-reachable URL has a real page module.
+Nuxt 路由是畫面身分的唯一來源。根應用程式模組只組合版面、頁面與路由宣告，不從路徑推導畫面 enum，也不協調路由專屬載入。驗證 middleware 負責導覽政策，預設與驗證版面各自擁有不同外殼，每個使用者可到達的 URL 均有實際頁面模組。
 
-Each page module owns its view, loading, errors, ephemeral state, focus, keyboard
-behavior, and route lifecycle. The Game Room session is scoped to the Game page
-and reloads authoritative room state after navigation, while Player Notifications
-remain in the authenticated layout. Rules Catalog is a shared cached module
-because Deck, Lobby, and Game pages are real callers. Leaving a route discards
-unsubmitted page state rather than promoting it into the global shell.
+每個頁面模組負責自身視圖、載入、錯誤、暫存狀態、焦點、鍵盤行為及路由生命週期。遊戲房間工作階段限定在遊戲頁，導覽後重新載入權威房間狀態；玩家通知則保留在已驗證版面。規則目錄是共用快取模組，因為牌組、大廳與遊戲頁皆為實際呼叫者。離開路由時捨棄未提交的頁面狀態，不將其升級為全域外殼狀態。
 
-Existing URLs, invite and replay query semantics, observable UI behavior, and
-server-owned state remain unchanged. CSS moves with module ownership without a
-visual redesign. Live-game and replay Public State presentation are not unified
-by this decision, and large page modules are not split merely to reduce file
-length. Implementation is sequenced after local issue 70 because Pending Choice
-deepening first removes overlapping interaction knowledge from the current root
-application module.
+既有 URL、邀請與重播查詢語意、可觀察介面行為及伺服器擁有的狀態保持不變。CSS 隨模組擁有權移動，不重新設計視覺。此決策不統一即時遊戲與重播的公開狀態呈現，也不僅為縮短檔案而拆分大型頁面模組。實作排在本機議題 70 之後，因為深化待選擇事項會先移除目前根應用程式模組內重疊的互動知識。
 
 ## Considered options
 
-- Keeping one root application orchestrator was rejected because the page
-  modules were pass-through adapters and route knowledge, data loading, focus,
-  and errors had no locality.
-- Creating one composable for every page was rejected because single-caller
-  pass-through modules would add interface without depth. A new seam requires
-  independent behavior, multiple real callers, or a positive deletion test.
-- Passing a complete room response from Lobby to Game was rejected because it
-  couples page lifecycles and can be stale by the time navigation completes.
-- Persisting unsaved page drafts across navigation was rejected because local UI
-  state is neither canonical nor shared state.
+- 不保留單一根應用程式協調器：頁面模組只是轉傳介面卡，路由知識、載入、焦點與錯誤缺少歸屬。
+- 不為每個頁面建立 composable：單一呼叫者的轉傳模組只會增加介面而無深度。新接點須具有獨立行為、多個實際呼叫者，或通過刪除測試。
+- 不從大廳向遊戲頁傳遞完整房間回應：這會耦合頁面生命週期，且導覽完成時資料可能已過期。
+- 不在導覽期間持久化未儲存的頁面草稿：本機介面狀態既非正規狀態，也非共享狀態。
 
 ## Consequences
 
-Route middleware tests authentication and safe redirects; pure module tests cover
-navigation and Rules Catalog policy; TypeScript type checking protects page and
-layout contracts; and Brave Playwright flows cover deep links, navigation,
-route-local loading, focus, and session teardown. Tests that read the root
-application source as text are replaced with observable route or DOM assertions.
+路由 middleware 測試驗證及安全重新導向；純模組測試涵蓋導覽及規則目錄政策；TypeScript 型別檢查保護頁面與版面契約；Brave Playwright 流程涵蓋深層連結、導覽、路由內載入、焦點與工作階段清理。以文字讀取根應用程式原始碼的測試改成可觀察的路由或 DOM 斷言。

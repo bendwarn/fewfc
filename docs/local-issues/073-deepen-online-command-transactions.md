@@ -6,111 +6,87 @@ ready-for-agent
 
 ## Problem Statement
 
-The Online Game Room currently spreads one Player command across the HTTP
-route, browser composable, `GameRoom` Durable Object, Rules Engine adapter,
-Pending Command Draft storage, canonical room events, snapshots, and
-notifications. The browser does not provide a stable Command ID, intermediate
-choice resolution is held in a second snapshot inside Pending Command Draft,
-and the final event, sequence, snapshot, metadata, and draft cleanup are
-written as separate awaited operations.
+線上遊戲房間目前將單一玩家命令散布於 HTTP 路由、瀏覽器 composable、`GameRoom` Durable Object、規則引擎介面卡、待處理命令草稿儲存、正規房間事件、快照與通知。瀏覽器不提供穩定命令 ID；中間選擇結算存放在待處理命令草稿內的第二份快照；最終事件、序號、快照、中繼資料及草稿清理則以分開的 await 操作寫入。
 
-This makes response-loss retries unsafe, permits partial canonical commits,
-and treats a multi-step resolution as though it belongs only to the Player who
-submitted the root Action. That ownership is incompatible with canonical
-Pending Choices that legitimately continue through another Player. The
-Durable Object's in-memory request queue reduces concurrency but is not a
-transaction boundary and must not be the only protection against stale writes.
+這使回應遺失後的重試不安全、允許部分正規提交，並將多步驟結算視為只屬於提交根行動的玩家。此擁有權與可合法由另一位玩家續接的正規待選擇事項不相容。Durable Object 記憶體中的請求佇列可降低並行，但不是交易邊界，也不能成為防止過期寫入的唯一保護。
 
 ## Solution
 
-Introduce one deep Online Command Transaction module with a single primary
-`executePlayerCommand` entry point. The module owns authenticated Player
-binding, Game Instance and command identity, idempotency receipts, resolution
-transaction correlation, Rules Engine execution, canonical waiting
-checkpoints, trusted-randomness continuation, optimistic sequence validation,
-and atomic canonical commits.
+引入具有單一主要 `executePlayerCommand` 入口的深度線上命令交易模組。此模組負責已驗證玩家綁定、遊戲實例及命令身分、冪等收據、結算交易關聯、規則引擎執行、正規等待檢查點、可信任隨機性續接、樂觀序號驗證及原子正規提交。
 
-The canonical Game Record remains the only authoritative game state. Remove
-Pending Command Draft and never place another Game Record or snapshot inside
-transaction metadata. Every accepted Player Command and every externally
-waiting Pending Choice or Pending Randomness becomes a durable canonical
-checkpoint immediately. A resolution Transaction correlates those checkpoints;
-it is not a long-lived database transaction.
+正規遊戲紀錄仍是唯一權威遊戲狀態。移除待處理命令草稿，絕不在交易中繼資料中放入另一份遊戲紀錄或快照。每個已接受玩家命令及每個等待外部輸入的待選擇事項或待隨機處理，立即成為持久正規檢查點。結算交易將這些檢查點關聯起來，不是長期開啟的資料庫交易。
 
 ## User Stories
 
-1. As a Player, I want retrying after a lost response to apply my command exactly once, so that reconnect and network failure cannot duplicate game effects.
-2. As a Player, I want a retry to return the latest authoritative room state, so that I do not receive a stale UI snapshot captured by the original response.
-3. As a Player, I want a reused Command ID with different input rejected, so that an idempotency collision cannot perform the wrong Action.
-4. As a Player answering a Pending Choice, I want authorization based on that choice's canonical Player, so that a resolution can legitimately continue across Players.
-5. As a reconnecting Player, I want an accepted Action waiting on a mandatory choice to remain resumable, so that disconnect does not cancel canonical game progress.
-6. As a room participant, I want a failed canonical write to commit nothing, so that event history, sequence, snapshot, and transaction state cannot disagree.
-7. As a room participant, I want notification failure to leave an already committed command successful, so that delivery concerns cannot roll back game history.
-8. As a replay auditor, I want every accepted command and trusted randomness answer correlated with stable identities and committed sequence numbers, so that resolution history can be explained without rerunning entropy.
-9. As a rules maintainer, I want the Game Record to remain the sole authority for Pending Choice and Pending Randomness, so that transaction recovery cannot select between competing snapshots.
-10. As an online-room maintainer, I want deterministic Validation Failures distinguished from retryable infrastructure and implementation failures, so that Command IDs have predictable retry behavior.
-11. As a test author, I want to exercise complete transactions through one module interface, so that atomicity and recovery can be verified without exposing orchestration helpers.
-12. As a future maintainer, I want a clean replacement of the unreleased transaction schema, so that the module does not carry legacy Pending Command Draft migration paths.
+1. 作為玩家，我希望回應遺失後重試只套用一次命令，避免重新連線及網路故障重複遊戲效果。
+2. 作為玩家，我希望重試回傳最新權威房間狀態，不收到原始回應擷取的過期介面快照。
+3. 作為玩家，我希望相同命令 ID 搭配不同輸入時被拒絕，避免冪等衝突執行錯誤行動。
+4. 作為回答待選擇事項的玩家，我希望依該選擇的正規玩家授權，使結算可合法跨玩家續接。
+5. 作為重新連線玩家，我希望已接受且等待必填選擇的行動仍可恢復，避免斷線取消正規遊戲進度。
+6. 作為房間參與者，我希望正規寫入失敗時完全不提交，避免事件歷史、序號、快照及交易狀態不一致。
+7. 作為房間參與者，我希望通知失敗不影響已提交命令的成功，避免傳送問題回滾遊戲歷史。
+8. 作為重播稽核者，我希望每個已接受命令及可信任隨機答案都與穩定身分和已提交序號關聯，無須重新產生熵即可解釋結算歷史。
+9. 作為規則維護者，我希望遊戲紀錄仍是待選擇事項及待隨機處理的唯一權威，避免交易復原必須在競爭快照間選擇。
+10. 作為線上房間維護者，我希望區分確定性驗證失敗與可重試的基礎設施及實作失敗，使命令 ID 重試行為可預測。
+11. 作為測試撰寫者，我希望透過單一模組介面測試完整交易，不暴露協調輔助程式即可驗證原子性與復原。
 
 ## Implementation Decisions
 
-- Give every new game one immutable `gameInstanceId`. A reset starts a new Game Instance and invalidates delayed commands from the previous game.
-- Have the browser generate one stable Command ID before each Player submission and reuse that ID only when retrying the identical submission. Do not generate the normal browser Command ID inside the server route.
-- Give the accepted root Action one Transaction ID. Keep that Transaction ID across all Pending Choice and Pending Randomness continuations until the canonical Game Record reaches a stable Player-ready state.
-- Bind a Command ID to its Game Instance, Transaction, authenticated actor, and exact validated Action payload. The payload identity includes the Choice ID, answer, Cards, targets, and every other submitted parameter.
-- Treat the same Command ID with identical identity as a duplicate. Treat any actor, Transaction, Game Instance, or payload mismatch as an idempotency conflict.
-- Persist an immutable receipt for every accepted Player Command. It records at least the Command ID, Transaction ID, actual authenticated actor, committed sequence, payload identity, and transaction status at that checkpoint.
-- Return the latest authoritative room state plus the immutable receipt for a duplicate retry. Idempotency guarantees the same effect, not a byte-identical stale response.
-- Persist deterministic Validation Failures as noncanonical rejection receipts bound to the Command identity, observed sequence, and stable error code. They emit no Game Events, do not mutate Game State, and do not advance the canonical sequence. A retry with the same identity returns the same rejection even if room state has since changed.
-- Do not create terminal receipts for Rule Implementation Error, Engine Invariant Error, storage failure, network failure, or other 5xx outcomes. The same Command ID may retry after the underlying fault is corrected.
-- Use one open resolution Transaction per room. Record the root actor for correlation, but authorize every continuation from canonical state: Pending Choice uses `PendingChoice.player`, while Pending Randomness is accepted only from the trusted application adapter.
-- Make the canonical Game Record the only authority for the transaction's current waiting state. Derive `awaitingChoice`, `awaitingRandomness`, or `complete` from that record rather than maintaining a separately mutable status. Both waiting states being present together is an Engine Invariant Error.
-- Commit every accepted Player Command immediately, including one that creates another Pending Choice. Persist Pending Randomness before invoking the trusted adapter, and commit every trusted answer before proceeding to a later randomness request or stable Player-ready state.
-- Reuse the Rules Engine's canonical `PendingRandomness.requestId` and typed trusted-randomness answer. The Rules Engine receives and validates the answer; it never calls an entropy source internally. Do not duplicate randomness identity or pending state in transaction metadata.
-- Require every canonical commit to carry `expectedSequence`. Atomically verify that sequence and write the canonical events, next sequence, Game Record snapshot/checkpoint, room metadata, transaction correlation, and Command or trusted-decision receipt. A mismatch writes nothing and returns a stale-write conflict.
-- Implement the atomic boundary with the SQLite-backed Durable Object storage owned privately by the module. Keep Durable Object serialization as coordination and optimization, but do not rely on the class-level promise queue for correctness.
-- Remove `PendingCommandDraft` and its duplicated snapshot. Transaction metadata contains only identities and correlation facts that are not already authoritative in the Game Record.
-- Expose one primary `executePlayerCommand` interface. Keep receipt lookup, actor binding, Rules Engine calls, randomness draining, sequence checks, commits, and recovery internal to the module.
-- Keep HTTP decoding, authentication transport, read-only room queries, WebSocket broadcast, and notifications outside the transaction module. Broadcast and notifications run only after commit and cannot change the transaction result.
-- Do not add generic cancellation or timeout. An unsubmitted browser draft is client-local; an optional canonical choice may decline only through its typed `Decline` answer. Mandatory choices remain open across disconnect. Future timeout, auto-answer, or forfeit behavior must be an explicit rule and canonical Command.
-- Retain receipts only for the matching Game Instance's replay lifetime. Commands must carry `gameInstanceId`, so a delayed command from a discarded instance fails with `gameInstanceMismatch` and cannot affect the new game.
-- Replace the current persisted room transaction shape atomically. Do not add dual-read, dual-write, migration, or compatibility behavior for old rooms or legacy Pending Command Drafts.
-- Do not introduce a public generic storage repository for hypothetical adapters. Use module-private seams only where they enable transaction-level tests and fault injection.
+- 每個新遊戲取得不可變 `gameInstanceId`；重設建立新遊戲實例，並使前局延遲命令失效。
+- 瀏覽器每次提交玩家命令前產生穩定命令 ID，僅在重試完全相同提交時重用；一般瀏覽器命令 ID 不在伺服器路由產生。
+- 已接受根行動取得一個交易 ID，貫穿全部待選擇事項及待隨機處理續接，直到正規遊戲紀錄達到穩定的可供玩家操作狀態。
+- 命令 ID 綁定遊戲實例、交易、已驗證操作者及精確驗證後行動 payload。payload 身分包含 Choice ID、答案、牌、目標及其他全部提交參數。
+- 相同命令 ID 且身分完全一致視為重複；操作者、交易、遊戲實例或 payload 任一不符均為冪等衝突。
+- 為每個已接受玩家命令持久化不可變收據，至少記錄命令 ID、交易 ID、實際已驗證操作者、提交序號、payload 身分及該檢查點交易狀態。
+- 重複重試回傳最新權威房間狀態及不可變收據。冪等性保證效果相同，不保證逐位元組相同的過期回應。
+- 確定性驗證失敗持久化為非正規拒絕收據，綁定命令身分、觀察到的序號及穩定錯誤碼。它不發出遊戲事件、不修改遊戲狀態，也不推進正規序號；即使房間狀態之後改變，相同身分重試仍回傳相同拒絕。
+- 規則實作錯誤、引擎不變條件錯誤、儲存失敗、網路失敗或其他 5xx 結果不建立終止收據；底層故障修復後可用相同命令 ID 重試。
+- 每個房間使用一個開啟中的結算交易。記錄根操作者以供關聯，但每次續接依正規狀態授權：待選擇事項使用 `PendingChoice.player`，待隨機處理只接受可信任應用程式介面卡。
+- 正規遊戲紀錄是交易目前等待狀態的唯一權威。從紀錄推導 `awaitingChoice`、`awaitingRandomness` 或 `complete`，不另維護可變狀態。兩種等待狀態同時存在屬引擎不變條件錯誤。
+- 每個已接受玩家命令立即提交，包括建立下一個待選擇事項的命令。呼叫可信任介面卡前持久化待隨機處理；進入後續隨機請求或穩定可供玩家操作狀態前，提交每個可信任答案。
+- 重用規則引擎正規 `PendingRandomness.requestId` 及具型別可信任隨機答案。規則引擎接收並驗證答案，絕不在內部呼叫熵來源；交易中繼資料不重複隨機身分或等待狀態。
+- 每次正規提交必須攜帶 `expectedSequence`，並原子驗證該序號、寫入正規事件、下一序號、遊戲紀錄快照／檢查點、房間中繼資料、交易關聯及命令或可信任決策收據。不符時不寫入任何內容並回傳過期寫入衝突。
+- 原子邊界使用模組私有、以 SQLite 為後端的 Durable Object 儲存。Durable Object 序列化仍用於協調及最佳化，但正確性不依賴類別層 promise 佇列。
+- 移除 `PendingCommandDraft` 及其重複快照；交易中繼資料只包含遊戲紀錄尚未權威記錄的身分及關聯事實。
+- 公開單一主要 `executePlayerCommand` 介面；收據查詢、操作者綁定、規則引擎呼叫、處理全部隨機性、序號檢查、提交及復原均留在模組內部。
+- HTTP 解碼、驗證傳輸、唯讀房間查詢、WebSocket 廣播及通知留在交易模組外。廣播與通知只在提交後執行，不能改變交易結果。
+- 不新增通用取消或逾時。未提交瀏覽器草稿留在客戶端；選用正規選擇只能透過具型別 `Decline` 答案拒絕。強制選擇在斷線後仍開啟。未來逾時、自動回答或判負行為必須是明確規則及正規命令。
+- 收據只保留至對應遊戲實例的重播生命週期結束。命令必須攜帶 `gameInstanceId`，因此已丟棄實例的延遲命令以 `gameInstanceMismatch` 失敗，不能影響新遊戲。
+- 不為假設的介面卡引入公開通用儲存 repository；只在支援交易層測試及故障注入時使用模組私有接點。
 
 ## Testing Decisions
 
-- Test the module primarily through `executePlayerCommand` as a black-box contract. Avoid assertions about private helper calls, source layout, or the internal storage representation.
-- Add a response-loss test proving that retrying the same Command ID and payload applies the effect once and returns the latest room state with the original receipt.
-- Add identity tests for same-ID actor, Game Instance, Transaction, and payload mismatches, including a new Command ID that references an already completed Choice ID.
-- Add transaction tests proving that every accepted command which creates Pending Choice is immediately durable and that a later authorized Player can continue the same Transaction.
-- Add trusted-randomness recovery tests covering persistence before entropy, Worker restart, repeated request identity, multiple sequential requests, validated answers, and canonical replay without rerunning entropy.
-- Add fault injection at each canonical write boundary and prove that event, sequence, snapshot, metadata, and receipts either all commit or all remain unchanged.
-- Add an `expectedSequence` conflict test proving that stale computation writes nothing even when the outer Durable Object request queue is bypassed by the test seam.
-- Add rejection tests proving that Validation Failure receipts are stable and noncanonical, while Rule Implementation Error, Engine Invariant Error, and infrastructure failures remain retryable with the same Command ID.
-- Add a post-commit delivery test proving that WebSocket or notification failure cannot change a successful transaction response or duplicate canonical effects.
-- Protect all new Rust-to-TypeScript multiword fields with exact camelCase serialization contract tests.
-- Keep only representative HTTP and Durable Object integration coverage above the module. Do not repeat every transaction branch in broad E2E tests.
-- Validate with focused Web tests, related Rust command and replay tests, TypeScript checking, full `cargo test`, formatting checks, and diff checks.
+- 主要透過 `executePlayerCommand` 黑箱契約測試模組，避免斷言私有輔助呼叫、原始碼排列或內部儲存表示。
+- 新增回應遺失測試，證明以相同命令 ID 及 payload 重試只套用一次效果，並回傳最新房間狀態及原收據。
+- 新增相同 ID 的操作者、遊戲實例、交易及 payload 不符身分測試，包含參照已完成 Choice ID 的新命令 ID。
+- 新增交易測試，證明每個建立待選擇事項的已接受命令均立即持久化，且後續獲授權玩家可續接同一交易。
+- 新增可信任隨機性復原測試，涵蓋產生熵前持久化、Worker 重啟、重複請求身分、依序多請求、驗證後答案及無須重新產生熵的正規重播。
+- 在每個正規寫入邊界注入故障，證明事件、序號、快照、中繼資料及收據要麼全部提交，要麼全部不變。
+- 新增 `expectedSequence` 衝突測試，證明即使測試接點繞過外層 Durable Object 請求佇列，過期計算也不寫入。
+- 新增拒絕測試，證明驗證失敗收據穩定且非正規；規則實作錯誤、引擎不變條件錯誤及基礎設施失敗仍可用相同命令 ID 重試。
+- 新增提交後傳送測試，證明 WebSocket 或通知失敗不能改變成功交易回應或重複正規效果。
+- 所有新增 Rust 至 TypeScript 多詞欄位均以精確 camelCase 序列化契約測試保護。
+- 模組之上只保留代表性 HTTP 及 Durable Object 整合測試，不在廣泛 E2E 測試重複所有交易分支。
+- 執行重點 Web 測試、相關 Rust 命令及重播測試、TypeScript 檢查、完整 `cargo test`、格式及 diff 檢查。
 
 ## Out of Scope
 
-- Changing Formation, Pending Choice, Pending Randomness, or other game-rule semantics.
-- Redesigning the typed Pending Choice lifecycle or browser interaction module established by issue #70.
-- Moving entropy generation into the deterministic Rules Engine or accepting Player-provided shuffle order.
-- Persisting unsubmitted browser drafts.
-- Adding generic transaction cancellation, disconnection cancellation, timeout, auto-answer, or forfeit rules.
-- Moving room creation, joining, access control, read-only queries, broadcasting, or notifications into the transaction module.
-- Building a generic transaction framework or storage abstraction for other applications.
-- Migrating, preserving, or repairing rooms stored with the legacy transaction schema.
+- 改變陣法、待選擇事項、待隨機處理或其他遊戲規則語意。
+- 重新設計議題 #70 確立的具型別待選擇生命週期或瀏覽器互動模組。
+- 將熵產生移入確定性規則引擎，或接受玩家提供洗牌順序。
+- 持久化未提交瀏覽器草稿。
+- 新增通用交易取消、斷線取消、逾時、自動回答或判負規則。
+- 將房間建立、加入、存取控制、唯讀查詢、廣播或通知移入交易模組。
+- 為其他應用程式建立通用交易框架或儲存抽象。
 
 ## Further Notes
 
-- ADR-0014 remains authoritative for trusted midgame randomness and deterministic replay.
-- ADR-0026 and completed issue #70 remain authoritative for Choice ID, typed Pending Choice answers, canonical choice lifecycle events, and stale-choice validation.
-- Completed issue #69 is prior art for the ready-versus-needs-randomness Rules Engine adapter contract.
-- Game Record, Pending Choice, Pending Randomness, Validation Failure, Rule Implementation Error, and Engine Invariant Error retain their glossary meanings in `CONTEXT.md`.
-- Existing dirty worktree changes outside this issue belong to the user and must be preserved.
+- ADR-0014 仍是可信任遊戲中隨機性及確定性重播的權威依據。
+- ADR-0026 及已完成議題 #70 仍是 Choice ID、具型別待選擇答案、正規選擇生命週期事件及過期選擇驗證的權威依據。
+- 已完成議題 #69 是規則引擎介面卡 ready 與 needs-randomness 契約的先前依據。
+- Game Record、Pending Choice、Pending Randomness、Validation Failure、Rule Implementation Error 及 Engine Invariant Error 保留 `CONTEXT.md` 中的詞彙表定義。
+- 本議題範圍外的既有未提交工作樹變更屬於使用者，必須保留。
 
 ## Blocked by
 
-- none
+- 無

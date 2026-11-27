@@ -4,12 +4,6 @@ status: accepted
 
 # Use one closed catalog across official rule categories
 
-The Rules Engine models Advanced Rules, Optional Rules, and future official
-categories as kinds of Rule Module in one closed catalog. Their official
-category remains domain-visible for presets, documentation, and UI, but all
-modules share the same Ruleset configuration, deterministic event model,
-replay, Public View, and deep rule-execution interface.
+規則引擎在同一個封閉目錄中，將進階規則、選用規則及未來的官方類別建模為規則模組的種類。官方類別仍供預設組合、文件及介面辨識，但所有模組共用規則集設定、確定性事件模型、重播、公開視圖及規則執行介面。
 
-Separate execution systems per official category were rejected because modules
-can interact across categories, while flattening every module into “Advanced
-Rule Module” was rejected because it contradicts the official rule language.
+不依官方類別分設執行系統，因為模組可能跨類別互動；也不將所有模組統稱為「進階規則模組」，因為這與官方規則用語不符。

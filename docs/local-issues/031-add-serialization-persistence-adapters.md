@@ -6,22 +6,21 @@ AFK
 
 ## Parent
 
-Derived from `docs/rules-engine-decisions.md` sections 4 and 33, and closed GitHub issue #22.
+源自 `docs/rules-engine-decisions.md` 第 4、33 和已結案 GitHub 議題 #22。
 
 ## What to build
 
-Add real serialization-ready adapters around the persistence shapes. Event logs should be encodable/decodable as stable external data, and a filesystem adapter should save/load canonical event logs and optional snapshots without changing replay semantics.
+在持久化資料結構外新增可實際序列化的介面卡。事件日誌應能編碼／解碼為穩定的外部資料；檔案系統介面卡應能儲存／載入正規事件日誌與選用快照，且不改變重播語意。
 
 ## Acceptance criteria
 
-- [ ] Persistence shapes derive or implement stable serialization/deserialization.
-- [ ] Filesystem adapter implements event-log storage and snapshot storage ports.
-- [ ] Serialized event logs include metadata, setup, recorded events, and optional snapshot data.
-- [ ] Loading from serialized event logs reconstructs state through replay, not command re-decision.
-- [ ] Snapshot loading is optional and never replaces authoritative event-log replay.
-- [ ] Tests cover serialization round trip, filesystem save/load, missing snapshot behavior, and replay equivalence after load.
+- [ ] 持久化資料結構衍生或實作穩定的序列化／反序列化。
+- [ ] 檔案系統介面卡實作事件日誌儲存及快照儲存端口。
+- [ ] 序列化事件日誌包含中繼資料、設定、已記錄事件及選用快照資料。
+- [ ] 從序列化事件日誌載入時，透過重播重建狀態，不重新決定命令。
+- [ ] 快照載入為選用，絕不取代權威事件日誌重播。
+- [ ] 測試涵蓋序列化往返、檔案系統儲存／載入、缺少快照的行為及載入後重播等價性。
 
 ## Blocked by
 
 - #30
-

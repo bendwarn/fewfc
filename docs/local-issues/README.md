@@ -1,6 +1,6 @@
 # Local Rules Engine Issues
 
-This folder is the local issue tracker for follow-up work derived from `docs/rules-engine-decisions.md` after GitHub issues #1-#22 were completed.
+此資料夾是本機議題追蹤器，記錄 GitHub 議題 #1–#22 完成後，源自 `docs/rules-engine-decisions.md` 的後續工作。
 
 ## Open Local Issues
 

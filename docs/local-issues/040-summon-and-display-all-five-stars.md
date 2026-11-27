@@ -6,33 +6,25 @@ ready-for-agent
 
 ## What to build
 
-Add the Star Rule Module to the closed official module catalog and implement
-Star Summoning for 金星‧太白, 木星‧歲星, 水星‧辰星, 火星‧熒惑, and
-土星‧鎮星. When the module is enabled, a qualifying use of 鍠金, 樸木, 洄水,
-熾火, or 坱土 grants the associated Star to the attacking Player's Team,
-records the Player's personal summoning history, and applies replacement and
-opposing-Star breaking rules.
+將星辰圖記規則模組加入封閉官方模組目錄，並實作金星‧太白、木星‧歲星、水星‧辰星、火星‧熒惑及土星‧鎮星的召喚星辰。啟用模組時，符合條件的鍠金、樸木、洄水、熾火或坱土使攻擊玩家所屬隊伍獲得對應星辰，記錄玩家個人召喚歷史，並套用取代與破除相剋星辰的規則。
 
-Project the resulting canonical Star data through replay, Public State View,
-Public Event Feed, Web DTOs, and the game display. Follow the official
-[Star advanced rules](https://www.cfecards.org/rule/latest/star) and the terminology in
-`CONTEXT.md`.
+將正規星辰資料投影至重播、公開狀態視圖、公開事件動態、Web DTO 及遊戲畫面。遵循官方[星辰進階規則](https://www.cfecards.org/rule/latest/star)及 `CONTEXT.md` 用語。
 
 ## Acceptance criteria
 
-- [x] The official module catalog enables the Star Rule Module alongside the mandatory Base Ruleset.
-- [x] Base-only games never summon or expose Stars.
-- [x] Each of the five named Base Formations summons its associated Star when its Attack points are at least 30.
-- [x] Summoning qualification uses Attack points before elemental interaction, Counter Effects, Shields, or HP resolution.
-- [x] Star Formations, copied effects, and other three-card attacks cannot summon a Star.
-- [x] A Team owns at most one Star; a newly summoned Star replaces that Team's previous Star.
-- [x] A Star can be owned by at most one Team, and an already-owned Star is not summoned again or added again to Player history.
-- [x] Each Star summons with the official opposing-Star breaking relationship.
-- [x] `StarSummoned` and `StarBroken` are semantic canonical Game Events rather than Status Effect strings.
-- [x] Game State retains current Team Stars and distinct Star kinds summoned by each Player.
-- [x] Public State View and Public Event Feed expose Star ownership and summoning without exposing canonical replay data directly.
-- [x] The Web game display shows current Team Stars and viewer-safe summoning progress.
-- [x] Direct execution and replay produce identical Star state in two-player and team-mode games.
+- [x] 官方模組目錄在必備基礎規則集之外啟用星辰圖記規則模組。
+- [x] 僅使用基礎規則的遊戲不召喚或公開星辰。
+- [x] 五種指定基礎陣法各自在攻擊點數至少為 30 時召喚對應星辰。
+- [x] 召喚條件使用五行生剋、反制效果、防護罩或生命值結算之前的攻擊點數。
+- [x] 星辰技、複製效果與其他三張攻擊不能召喚星辰。
+- [x] 每隊至多擁有一個星辰；新召喚星辰取代該隊原有星辰。
+- [x] 同一星辰至多屬於一隊；已被擁有的星辰不再次召喚，也不再次加入玩家歷史。
+- [x] 每個星辰召喚時依官方相剋關係破除對應星辰。
+- [x] `StarSummoned` 與 `StarBroken` 是具語意的正規遊戲事件，而非狀態效果字串。
+- [x] 遊戲狀態保留隊伍目前星辰及各玩家已召喚的不同星辰。
+- [x] 公開狀態視圖及公開事件動態呈現星辰擁有權與召喚，但不直接暴露正規重播資料。
+- [x] Web 遊戲畫面顯示隊伍目前星辰及觀看者可見的召喚進度。
+- [x] 雙人及團隊模式下，直接執行與重播產生相同星辰狀態。
 
 ## Blocked by
 

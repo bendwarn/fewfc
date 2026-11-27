@@ -4,17 +4,6 @@ status: accepted
 
 # Compose physical Card Interpretations by dimension
 
-Physical Card Interpretation Layers apply in effect order. A layer replaces
-only the dimensions it declares, or adjusts the current value when its rule
-explicitly says to add or subtract a bounded amount; unrelated dimensions
-continue to compose. Formation matching, previews, point calculation, and
-effect resolution all consume the same resolved element and level instead of
-re-reading printed Card facts after a match has been accepted.
+實體牌解讀層依效果順序套用。每層只取代它宣告的維度；若規則明確要求在界限內增加或減少數值，則調整目前值。其他維度繼續組合。陣法匹配、預覽、點數計算及效果結算均使用同一組解讀後屬性與等級，不會在匹配成立後重新讀取牌面資料。
 
-Sacred Art Multiplicity applies after element and level interpretation, gives
-both match slots the same effective values, and is incompatible with Star
-Element Substitution both before and after expansion. The previous
-single-source model was rejected because Fire Spirit, Pouch, Blazing Yang Art,
-Dark Spirit, and Star effects must compose by dimension without mutating Card
-data. Virtual Formation Cards are Formation components rather than Card
-Interpretation Layers and are governed by ADR 0025.
+聖術視為兩張的效果在屬性及等級解讀後套用，使兩個匹配位置具有相同的有效值；展開前後均不能與星辰變牌併用。不採先前的單一來源模型，因為火精靈、錦囊、烈陽訣、暗靈及星辰效果必須能依維度組合而不修改牌資料。虛擬牌是陣法組成，而非牌解讀層；其規則見 ADR 0025。

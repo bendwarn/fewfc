@@ -6,22 +6,21 @@ AFK
 
 ## Parent
 
-Derived from `docs/rules-engine-decisions.md` section 34 and closed GitHub issue #4.
+源自 `docs/rules-engine-decisions.md` 第 34 和已結案 GitHub 議題 #4。
 
 ## What to build
 
-Expand recorded event metadata so event feeds can identify setup, automatic, and command-produced events with enough information for debugging, UI acknowledgement, networking, and audit. Replay should continue to depend only on event sequence and canonical event payloads.
+擴充已記錄事件的中繼資料，讓事件動態能辨識設定、自動及命令產生的事件，並提供足夠資訊供除錯、介面確認、網路傳輸與稽核。重播仍應只依賴事件順序及正規事件 payload。
 
 ## Acceptance criteria
 
-- [ ] `RecordedEvent` metadata retains monotonic sequence numbers.
-- [ ] Event source distinguishes setup, automatic, and command events.
-- [ ] Automatic event metadata includes a deterministic reason where useful.
-- [ ] Command event metadata can identify the command/player context without persisting a separate command log.
-- [ ] Replay uses only the canonical `GameEvent` sequence, not command metadata.
-- [ ] Tests cover metadata source classification for setup events, automatic events, command events, and replay independence from metadata.
+- [ ] `RecordedEvent` 中繼資料保留單調遞增序號。
+- [ ] 事件來源區分設定、自動及命令事件。
+- [ ] 自動事件中繼資料在有幫助時包含確定性原因。
+- [ ] 命令事件中繼資料可辨識命令／玩家情境，無須持久化獨立命令日誌。
+- [ ] 重播僅使用正規 `GameEvent` 序列，不依賴命令中繼資料。
+- [ ] 測試涵蓋設定、自動及命令事件的中繼資料來源分類，以及重播獨立於中繼資料。
 
 ## Blocked by
 
-- None - can start immediately
-
+- 無，可立即開始

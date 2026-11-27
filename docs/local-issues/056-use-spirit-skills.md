@@ -6,27 +6,23 @@ ready-for-agent
 
 ## What to build
 
-Let Players use every Metal, Wood, Water, Fire, and Earth Spirit Skill as a
-complete active-effect path. Preserve hidden hand information, compose
-turn-scoped Card Interpretation Layers across Star and Hero Schools, and make
-skill legality, semantic history, playable actions, reconnect, and the online
-Ability panel agree.
+讓玩家能以完整主動效果流程使用金、木、水、火、土精靈的所有技能。保護隱藏手牌資訊，跨星辰及英雄學派組合回合內牌解讀層，並確保技能合法性、語意歷史、可執行行動、重新連線及線上能力面板一致。
 
 ## Acceptance criteria
 
-- [x] Spirit Skills are typed active-effect commands that do not close the Action opportunity and remain legal while the Player has Cannot Act.
-- [x] Each individual Spirit may successfully use one Skill per Player turn; replacing a Spirit provides the new Spirit its own allowance.
-- [x] Validation checks printed timing, input, and Spirit Power requirements but does not require a beneficial result; failure emits no events and consumes no power.
-- [x] 飛刃、劍雨、芬芳、manual 綻放、川流、浩瀚、螢光、絢爛、石盾、and 岩壁 implement their official costs and effects.
-- [x] Metal Skill HP loss bypasses Shields and Attack modifiers; Wood recovery respects initial Team HP; Water card movement respects Card Origin and Personal Deck piles.
-- [x] Fire Skills create turn-scoped Card Interpretation Layers whose later values replace only the dimensions they specify and expire at Turn End.
-- [x] Fire interpretation affects every level read in the turn, including Formation matching and points, Profession requirements and costs, and Star qualification.
-- [x] Fire's selected Card remains visible only to its owner until ordinary Card movement reveals it; the Skill and declared level remain public.
-- [x] Sacred Art Multiplicity may compose with Fire level interpretation but never with Star Element Substitution; both match slots share one element and level and cannot be reinterpreted independently.
-- [x] Stone Shield prevents only the next Player's attack damage during that Player's next turn, then expires; it prevents Sacred Beast damage without cancelling other Attack effects.
-- [x] Spirit kind and power remain in Public State while successful Skill uses are represented by Public Event Feed history rather than a duplicate presentation flag.
-- [x] Direct execution, replay, recorded-decision verification, playable actions, Web commands, event presentation, and reconnect agree for every Skill.
-- [x] Focused Rust, Web unit, and Brave Playwright tests cover all ten Skills, invalid and ineffective uses, Cannot Act, replacement, hidden Fire targets, cross-module interpretations, Personal Deck, and Sacred Beast interaction.
+- [x] 精靈技能為具型別的主動效果命令，不結束行動機會，且玩家無法行動時仍可合法使用。
+- [x] 每個精靈在每位玩家回合中可成功使用一次技能；取代精靈後，新精靈有自己的次數。
+- [x] 驗證檢查規則所列時點、輸入及靈力要求，但不要求結果有利；失敗不發出事件或消耗靈力。
+- [x] 飛刃、劍雨、芬芳、手動綻放、川流、浩瀚、螢光、絢爛、石盾及岩壁實作官方代價與效果。
+- [x] 金精靈技能扣除生命不經防護罩及攻擊修正；木精靈回復受隊伍初始生命值上限限制；水精靈牌移動遵守牌來源及個人牌組牌堆。
+- [x] 火精靈技能建立回合內牌解讀層，後值只取代其指定維度，並在回合結束時到期。
+- [x] 火精靈解讀影響該回合所有等級讀取，包括陣法匹配及點數、職業條件及代價，以及星辰召喚資格。
+- [x] 火精靈所選牌在正常牌移動公開前僅擁有者可見；技能及宣告等級保持公開。
+- [x] 聖術視為兩張可與火精靈等級解讀組合，但不能與星辰變牌組合；兩個匹配位置共用同一屬性及等級，不可分別重新解讀。
+- [x] 石盾只防止下家下回合的攻擊傷害，隨後到期；它防止聖獸傷害但不取消其他攻擊效果。
+- [x] 精靈種類與靈力保留在公開狀態中；成功使用技能以公開事件動態歷史表示，不另設重複呈現旗標。
+- [x] 每個技能的直接執行、重播、已記錄決策驗證、可執行行動、Web 命令、事件呈現及重新連線一致。
+- [x] 重點 Rust、Web 單元及 Brave Playwright 測試涵蓋十項技能、無效及無效果使用、無法行動、取代、隱藏火精靈目標、跨模組解讀、個人牌組及聖獸互動。
 
 ## Blocked by
 

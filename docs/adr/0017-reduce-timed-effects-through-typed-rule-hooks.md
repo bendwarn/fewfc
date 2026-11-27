@@ -4,19 +4,6 @@ status: accepted
 
 # Reduce timed effects through typed rule hooks
 
-變徵‧淨火 asks each enabled Rule Module for typed duration-reduction changes
-to that module's timed effects, then records and applies the combined changes as
-one atomic resolution. Each module retains its specialized effect state and
-returns declarative deltas; the Echo module neither converts every effect into a
-generic Status Effect nor switches directly over other modules' internal types.
-Within a hook, multiple state components produced by one logical effect are
-grouped and reduced together: 光芒's Cannot Act and Cannot Draw statuses remain
-synchronized, while separate 光芒 uses remain independent. The established
-serialized Status Effect contract is unchanged.
+變徵‧淨火向每個已啟用規則模組取得該模組限時效果的具型別持續時間縮減，再將合併結果記錄並套用為一次原子結算。各模組保留專屬效果狀態並回傳宣告式變化；迴響模組既不將所有效果轉成一般狀態效果，也不直接匹配其他模組的內部型別。同一鉤子內，單一邏輯效果產生的多個狀態組件會分組並一起縮減：光芒的無法行動與無法抽牌狀態保持同步，不同次光芒則各自獨立。既有序列化狀態效果契約不變。
 
-Hooks opt effects in by their published source semantics rather than by scanning
-every state value with a duration. Timed Formation effects, Covered Passives,
-public Counter Effects, active Delayed Spells, and effects explicitly named by
-the rulebook are eligible; unrelated Profession, Spirit Skill, and permanent
-effects do not become eligible merely because their representation has expiry
-data.
+鉤子依效果的公開來源語意決定納入對象，不掃描每個帶有持續時間的狀態值。時效性陣法效果、蓋牌、公開反制效果、生效中的延時術式及規則書明列的效果均適用；無關的職業、精靈技能及永久效果不會僅因資料表示含到期資訊而適用。

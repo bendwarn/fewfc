@@ -4,37 +4,15 @@ status: accepted
 
 # Use explicit social Authentication Methods
 
-Google and GitHub are optional Authentication Methods for a Player Identity.
-They are enabled only when their complete client-id and client-secret pair is
-configured. OAuth tokens are encrypted at rest. Email and password remains an
-Authentication Method, while password recovery is deliberately out of scope.
+Google 與 GitHub 是玩家身分的選用驗證方式，只有在完整設定 client ID 與 client secret 時才啟用。OAuth token 在儲存時加密。電子郵件與密碼仍是驗證方式，但密碼復原刻意排除在範圍外。
 
-The system never implicitly links identities merely because their email addresses
-match. A signed-in Player may explicitly link a Google or GitHub identity, even
-when its email differs. This intentionally accepts the risk of a stolen active
-session gaining a durable credential; OAuth state and CSRF protections remain
-mandatory. A provider identity already attached to another permanent Player
-Identity is rejected, rather than merging two permanent identities. Removing the
-last Authentication Method is also rejected.
+系統不會僅因電子郵件相同而隱含連結身分。已登入玩家可明確連結 Google 或 GitHub 身分，即使其電子郵件不同也可以。此設計有意接受遭竊的有效工作階段可能取得長期憑證的風險；OAuth state 與 CSRF 防護仍為必要條件。若提供者身分已連結另一個永久玩家身分，則拒絕操作，不合併兩個永久身分。也拒絕移除最後一種驗證方式。
 
-An Anonymous Player Identity may upgrade through the same social flow only after
-leaving every waiting or active online room. A successful upgrade transfers its
-Player Profile, custom Deck List, and saved Replay references without rewriting
-any Durable Object Player Seat. For a new social identity, the anonymous profile
-and Deck List transfer. When the provider already belongs to a permanent Player
-Identity, that existing profile and Deck List win; an absent Deck List is filled
-from the anonymous one, and replay conflicts retain the existing identity's
-version. An unset Player Profile avatar may be filled from a provider image, but
-a configured game avatar and game display name are never overwritten.
+匿名玩家身分必須先離開所有等待中或進行中的線上房間，才能透過相同社群登入流程升級。升級成功會轉移玩家資料、自訂牌組清單及已儲存重播的參照，但不改寫任何 Durable Object 玩家席位。若社群身分是新身分，轉移匿名資料及牌組清單；若提供者已屬於永久玩家身分，則以該永久身分的既有資料及牌組清單為優先，缺少牌組清單時由匿名資料補上，重播衝突則保留既有身分的版本。未設定的玩家頭像可由提供者圖片補上，但不得覆蓋已設定的遊戲頭像或遊戲顯示名稱。
 
 ## Considered options
 
-- Implicit same-email linking was rejected because email equality is not a
-  sufficient authorization signal for attaching a durable credential.
-- Rewriting active Durable Object Player Seats was rejected because a seat is a
-  stable online Game Room identity and changing it would split room authority
-  across D1 and Durable Object state.
-- Requiring fresh re-authentication for explicit linking was rejected for this
-  product release; the accepted active-session risk is documented above.
-- Merging two permanent Player Identities was rejected because neither one has a
-  trustworthy universal precedence rule for profile, Deck List, and replay data.
+- 不因電子郵件相同而隱含連結：地址相同不足以授權附加長期憑證。
+- 不改寫作用中的 Durable Object 玩家席位：席位是穩定的線上房間身分，修改會使房間權限分散於 D1 與 Durable Object 狀態。
+- 此版本不要求明確連結時重新驗證；上文已記錄接受的有效工作階段風險。
+- 不合併兩個永久玩家身分：個人資料、牌組清單及重播資料沒有可信且通用的優先規則。

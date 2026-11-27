@@ -1,25 +1,7 @@
 # Keep initial Pouch selection in the Rules Engine
 
-Initial Pouch Selection is an engine-managed, pre-deal stage rather than room
-or Web-adapter configuration. Every Player may independently choose one private
-Card Instance from their unshuffled Personal Deck while the shared stage is
-open. Each accepted choice commits immediately in server arrival order and
-records its face-down placement; it does not wait for, reserve, or block another
-Player's choice. The choices commute because each Player changes only their own
-Deck and Pouch, so their final projected game state is independent of canonical
-arrival order even though the event log preserves that order.
+初始錦囊選擇是引擎管理的發牌前階段，不是房間或 Web 介面卡設定。共享階段開啟期間，每位玩家可獨立且私密地從自己尚未洗牌的個人牌組選擇一張實體牌。每個已接受的選擇依伺服器收到的順序立即提交並記錄覆蓋，不等待、保留或阻擋其他玩家的選擇。由於各玩家只改變自己的牌堆及錦囊，這些選擇可交換；事件日誌雖保留到達順序，最終投影的遊戲狀態不受該順序影響。
 
-After every Player has chosen, a distinct canonical completion event closes the
-selection stage. A trusted adapter then shuffles each remaining Personal Deck
-in Turn Order and submits the result as canonical randomness; only after those
-shuffles does the engine deal initial hands and begin the first Turn. This
-preserves deterministic replay, validates that each Pouch came from the correct
-Deck, and keeps its hidden information under the existing Public View boundary.
+所有玩家選擇後，以獨立正規完成事件結束選擇階段。可信任介面卡接著依行動順序洗勻各玩家剩餘的個人牌組，並將結果作為正規隨機資料提交；全部洗牌完成後，引擎才發初始手牌並開始第一回合。這可維持確定性重播、驗證各錦囊來自正確牌堆，並依既有公開視圖邊界保護隱藏資訊。
 
-The lifecycle is modeled as Game Preparation - Initial Pouch Selection,
-Pending Deck Shuffle, and Initial Deal - rather than adding pre-turn values to
-the Turn Phase enum or representing the Players' choices as Pending Choices.
-The game becomes Ongoing only after preparation completes. Starting the room
-locks membership, rules, and Deck Lists immediately and moves Players to this
-public, reconnectable in-game preparation state; Initial Pouch Selection is not
-a waiting-room workflow.
+生命週期建模為遊戲準備中的初始錦囊選擇、待牌堆洗牌與初始發牌，而不在回合階段 enum 加入回合前值，也不將玩家選擇表示為待選擇事項。準備完成後遊戲才進入進行中狀態。房間開始時立即鎖定成員、規則與牌組清單，並讓玩家進入可公開呈現、可重新連線的遊戲內準備狀態；初始錦囊選擇不是等待室流程。

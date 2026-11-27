@@ -6,49 +6,34 @@ in-progress
 
 ## What to build
 
-Make the Web `PlayableAction.summary` for Echo Melodies match the complete rule
-consequences visible at action-commit time. Do not treat the engine
-`FormationDef.rule_text` as sufficient UI action detail for Echo.
+使迴響曲調的 Web `PlayableAction.summary` 與玩家提交行動時可見的完整規則結果一致。不得將引擎 `FormationDef.rule_text` 視為足夠的迴響介面行動詳情。
 
 ## Problem
 
-Echo currently exposes playable action summaries by forwarding each candidate's
-`rule_text`. For Echo Melodies, that text describes only the Formation pattern
-and main effect. It omits the rule consequence that happens after that main
-effect:
+目前迴響的可執行行動摘要直接轉送各候選的 `rule_text`。對迴響曲調而言，該文字只描述陣法組合及主效果，遺漏主效果之後的規則結果：
 
-- optional Echo Cost for the five basic Melodies,
-- automatic no-cost Echo for 變徵‧淨火,
-- no Echo for 變宮‧植土,
-- delayed Turn Start execution of only the main effect, not a new Formation Use.
+- 五種基本曲調的選用迴響代價；
+- 變徵‧淨火自動、無代價的迴響；
+- 變宮‧植土不迴響；
+- 回合開始時延遲執行的僅為主效果，不是重新施展陣法。
 
-This makes action detail inconsistent with the actual rule players are choosing
-to enter.
+這使行動詳情與玩家實際選擇進入的規則不一致。
 
 ## Acceptance criteria
 
-- [x] Web action detail for each Echo Melody includes its matching requirement,
-  main effect, and Echo policy in player-facing wording.
-- [x] The five optional-cost Melodies show the correct allowed printed-element
-  Echo Cost:
-  - 商調‧鳴金: 金 or 土
-  - 角調‧落木: 木 or 水
-  - 羽調‧流水: 水 or 金
-  - 徵調‧戰火: 火 or 木
-  - 宮調‧裂土: 土 or 火
-- [x] 變徵‧淨火 action detail states that Echo is automatically scheduled with
-  no cost after the main effect resolves.
-- [x] 變宮‧植土 action detail states that it schedules a next-Turn-Start choice
-  of a basic Melody main effect and does not schedule Echo.
-- [x] Action detail does not imply that Scheduled Echo or 植土 is a new
-  Formation Use, consumes Formation Cards, triggers Covered Passive, updates
-  previous Formation, or can recursively schedule Echo.
-- [x] Existing Star substitution action detail remains intact and composes with
-  the richer Echo action detail when applicable.
-- [x] Rust Web serialization contract tests cover the Echo summaries for at
-  least one optional-cost Melody, 變徵‧淨火, and 變宮‧植土.
-- [x] A focused Web or E2E assertion verifies that the battlefield displays the
-  Echo action detail without relying on screenshot comparison.
+- [x] 每種迴響曲調的 Web 行動詳情均以玩家用語包含匹配條件、主效果及迴響政策。
+- [x] 五種選用代價曲調顯示正確允許的牌面屬性迴響代價：
+  - 商調‧鳴金：金或土
+  - 角調‧落木：木或水
+  - 羽調‧流水：水或金
+  - 徵調‧戰火：火或木
+  - 宮調‧裂土：土或火
+- [x] 變徵‧淨火行動詳情說明主效果結算後自動排程無代價迴響。
+- [x] 變宮‧植土行動詳情說明其排程下次回合開始選擇一種基本曲調主效果，且不排程迴響。
+- [x] 行動詳情不暗示已排程迴響或植土屬於新的陣法施展、消耗陣法牌、觸發蓋牌、更新上回合陣法或可遞迴排程迴響。
+- [x] 既有星辰替代行動詳情保持不變，且在適用時與更完整的迴響行動詳情組合。
+- [x] Rust Web 序列化契約測試涵蓋至少一種選用代價曲調、變徵‧淨火及變宮‧植土的迴響摘要。
+- [x] 重點 Web 或 E2E 斷言驗證戰場顯示迴響行動詳情，不依賴螢幕截圖比較。
 
 ## Validation
 
@@ -59,13 +44,10 @@ to enter.
 
 ## Notes
 
-- Keep `FormationDef.rule_text` concise if it remains useful for catalog and
-  engine-facing descriptions.
-- Prefer a rule-aware summary composer in the Web adapter over hard-coding
-  Echo-only tooltip text in Vue.
-- See ADR 0023 for the boundary between catalog rule text and player-facing
-  action detail.
+- 若 `FormationDef.rule_text` 仍有助於目錄及引擎描述，應維持精簡。
+- 優先在 Web 介面卡使用理解規則的摘要組合器，而非在 Vue 硬編碼迴響專屬提示文字。
+- 目錄規則文字與玩家行動詳情的邊界見 ADR 0023。
 
 ## Blocked by
 
-- none
+- 無
