@@ -5,6 +5,7 @@
       ref="shell"
       class="modal-shell"
       :class="rootClass"
+      :style="rootStyle"
       @click.self="requestClose"
     >
       <button
@@ -35,13 +36,14 @@
 </template>
 
 <script setup lang="ts">
-import { watch, onBeforeUnmount, nextTick, ref } from 'vue'
+import { watch, onBeforeUnmount, nextTick, ref, type StyleValue } from 'vue'
 const props = withDefaults(defineProps<{
   open: boolean
   labelledby?: string
   describedby?: string
   ariaLabel?: string
   rootClass?: string
+  rootStyle?: StyleValue
   panelClass?: string
   initialFocusSelector?: string
   closeDisabled?: boolean
@@ -50,6 +52,7 @@ const props = withDefaults(defineProps<{
   describedby: undefined,
   ariaLabel: undefined,
   rootClass: undefined,
+  rootStyle: undefined,
   panelClass: undefined,
   initialFocusSelector: undefined,
   closeDisabled: false,

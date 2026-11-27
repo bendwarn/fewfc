@@ -139,7 +139,7 @@ export function createDeckCompositionPolicy(
     for (const card of deck.cards) {
       const definition = byId.get(card)
       if (!definition) {
-        errors.push(`未知卡牌：${card}`)
+        errors.push('牌組包含無法辨識的卡牌')
         continue
       }
       levelTotal += definition.level
@@ -156,8 +156,10 @@ export function createDeckCompositionPolicy(
       )
     }
     for (const [card, count] of counts) {
-      const maximum = byId.get(card)?.personalDeckCopyLimit ?? 0
-      if (count > maximum) errors.push(`${card} 最多 ${maximum} 張，目前為 ${count} 張`)
+      const definition = byId.get(card)
+      if (definition && count > definition.personalDeckCopyLimit) {
+        errors.push(`${definition.name}${definition.level} 級最多 ${definition.personalDeckCopyLimit} 張，目前為 ${count} 張`)
+      }
     }
 
     return {

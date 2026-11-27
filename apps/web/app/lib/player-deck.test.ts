@@ -48,7 +48,9 @@ test('deck policy interprets the supplied composition instead of hard-coding lim
     levelTotal: 3,
     errors: [],
   })
-  expect(policy.validate({ name: 'too many', cards: ['fire-2', 'fire-2'] }).valid).toBe(false)
+  const invalid = policy.validate({ name: 'too many', cards: ['fire-2', 'fire-2'] })
+  expect(invalid.valid).toBe(false)
+  expect(invalid.errors).toContain('火2 級最多 1 張，目前為 2 張')
 })
 
 test('invalid custom decks fall back to the catalog preconstructed deck', () => {
