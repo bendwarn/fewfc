@@ -381,6 +381,7 @@ export type GameOutcome =
 export type GameEndCause =
   | { type: 'teamHpDepleted'; teams: TeamId[] }
   | { type: 'directVictory'; rule: string; team: TeamId }
+  | { type: 'roomTimeExpired'; teams: TeamId[] }
 
 export type StatusPresentation =
   | 'cannotAct'

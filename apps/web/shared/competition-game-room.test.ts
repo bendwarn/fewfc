@@ -1,3 +1,4 @@
+import { competitionClockOperationsForTransition } from './game-timing'
 import { expect, spyOn, test } from 'bun:test'
 import { createHash } from 'node:crypto'
 import {
@@ -18,7 +19,6 @@ import {
   type CompetitionGameReleaseRequest,
   type CompetitionGameRevokeRequest,
   type CompetitionGameInitialStartEvidence,
-  competitionClockOperationsForTransition,
   competitionDeckEquals,
   competitionGameBindingEquals,
   competitionGameBindingRefForRequest,

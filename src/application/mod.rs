@@ -1,14 +1,16 @@
 //! 應用程式服務：命令處理、自動推進與回放。
 
+mod game_timing;
 mod recorded_event_log;
 
 use crate::domain::{
     CardInstanceId, Command, CommandId, GameError, GameEvent, GameResult, GameSetup, GameState,
-    TrustedRandomnessAnswer,
+    PlayerId, TrustedRandomnessAnswer,
 };
 use crate::ports::DeckPreparation as DeckPreparationPort;
 use crate::public_view::{PublicGameEvent, PublicGameState, Viewer};
 use crate::rules::{OfficialRules, PlayableAction};
+use game_timing::room_time_expiry_event;
 use recorded_event_log::{RecordedEventLog, automatic_reason};
 
 pub use recorded_event_log::{
@@ -67,8 +69,8 @@ pub struct GameRecord {
 /// 適合唯讀回放檢視器使用的標準記錄前綴。
 ///
 /// `step` 特意以玩家命令表示，而不是標準事件：設定階段與第一個命令前的
-/// 所有決策都屬於第零步；之後每一步包含一個命令，以及直到下一個命令前
-/// 所有後續的自動/隨機性決策。
+/// 所有決策都屬於第零步；玩家命令與房間逾時各開啟新步驟，同一步驟包含
+/// 後續的自動與隨機性決策。
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ReplayFrame {
     pub step: usize,
@@ -210,6 +212,14 @@ impl GameRecord {
             apply_event(&mut self.current_state, event);
         }
         Ok(EventBatch::new(events))
+    }
+
+    /// 房間伺服器確認期限；重播驗證只使用已記錄的逾時玩家和當時的遊戲狀態。
+    pub fn expire_room_time(&mut self, players: Vec<PlayerId>) -> GameResult<()> {
+        let event = room_time_expiry_event(self.state(), &players)?;
+        apply_event(&mut self.current_state, &event);
+        self.event_log.append_room_time_expiry(players, event);
+        Ok(())
     }
 
     pub fn verify_replay(&self) -> Result<GameState, ReplayVerificationError> {
@@ -402,7 +412,10 @@ pub fn replay_decision_groups(
 ) -> Vec<Vec<&RecordedDecision>> {
     let mut groups = vec![Vec::new()];
     for decision in recorded_decisions {
-        if matches!(decision.source, RecordedDecisionSource::Command { .. }) {
+        if matches!(
+            decision.source,
+            RecordedDecisionSource::Command { .. } | RecordedDecisionSource::RoomTimeExpired { .. }
+        ) {
             groups.push(Vec::new());
         }
         groups
@@ -478,6 +491,15 @@ pub fn verify_recorded_decisions(
                     }
                 })?
             }
+            RecordedDecisionSource::RoomTimeExpired { players } => {
+                vec![room_time_expiry_event(&state, players).map_err(|error| {
+                    ReplayVerificationError::DecisionFailed {
+                        sequence,
+                        source: source.clone(),
+                        error: Box::new(error),
+                    }
+                })?]
+            }
             RecordedDecisionSource::Command { command, .. } => {
                 handle_command(&state, command.clone()).map_err(|error| {
                     ReplayVerificationError::DecisionFailed {
@@ -518,6 +540,9 @@ fn source_for_recorded_decision(decision: &RecordedDecision) -> EventSource {
         },
         RecordedDecisionSource::Randomness { answer } => EventSource::Randomness {
             request_id: answer.request_id.clone(),
+        },
+        RecordedDecisionSource::RoomTimeExpired { .. } => EventSource::Automatic {
+            reason: AutomaticReason::RoomTimeExpired,
         },
         RecordedDecisionSource::Command {
             command_id,

@@ -1,4 +1,5 @@
 import type { GameRoomAccess, GameRoomCapacity, GameRoomEntryResponse } from '../../shared/game-room'
+import { isRoomTimeLimit } from '../../shared/game-timing'
 
 function roomAccess(value: unknown): GameRoomAccess {
   return value === 'public' ? 'public' : 'private'
@@ -26,7 +27,12 @@ export default defineEventHandler(async (event) => {
     capacity?: unknown
     ruleVersion?: '5.16' | '5.17'
     enabledRuleModules?: unknown
+    operationTimeLimitSeconds?: unknown
   }>(event)
+  const timeLimit = body.operationTimeLimitSeconds
+  if (timeLimit !== undefined && !isRoomTimeLimit(timeLimit)) {
+    throw createError({ statusCode: 400, statusMessage: '限時模式僅支援 30、60 或 120 秒。' })
+  }
   const gameId = crypto.randomUUID()
   let enabledRuleModules: string[]
   try {
@@ -46,6 +52,7 @@ export default defineEventHandler(async (event) => {
     actorName: session.user.name,
     access: roomAccess(body.access),
     capacity: roomCapacity(body.capacity),
+    operationTimeLimitSeconds: timeLimit,
     name,
     ruleVersion: body.ruleVersion ?? '5.17',
     enabledRuleModules,

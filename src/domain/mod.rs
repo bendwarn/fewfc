@@ -675,6 +675,7 @@ impl GameConclusion {
 pub enum GameEndCause {
     TeamHpDepleted { teams: Vec<TeamId> },
     DirectVictory { rule: String, team: TeamId },
+    RoomTimeExpired { teams: Vec<TeamId> },
 }
 
 #[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq)]
@@ -2786,6 +2787,7 @@ pub enum ValidationError {
         total_steps: usize,
     },
     GameFinished,
+    InvalidRoomTimeExpiry,
     GamePreparationInProgress,
     InitialPouchSelectionUnavailable,
     InitialPouchAlreadyChosen {

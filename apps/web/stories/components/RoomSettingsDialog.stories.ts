@@ -19,4 +19,5 @@ type Story = StoryObj<typeof meta>
 
 export const PrivateDuel: Story = {}
 export const PublicTeamRoom: Story = { args: { mode: 'team', access: 'public' } }
+export const TimedTeamRoom: Story = { args: { mode: 'team', access: 'public', operationTimeLimitSeconds: 60 } }
 export const Submitting: Story = { args: { busy: true } }

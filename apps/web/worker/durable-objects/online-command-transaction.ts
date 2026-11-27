@@ -14,9 +14,8 @@ import {
 } from '../../shared/game-room'
 import type { PlayerId } from '../../app/types/fewfc'
 import {
-  competitionClockTransitionState,
-  type CompetitionClockTransitionState,
-} from '../../shared/competition-game-room'
+  gameTimingState, nextRoomOperationClock, type GameTimingState,
+} from '../../shared/game-timing'
 import { RulesEngineError } from '../rules-engine-error'
 
 type PlayerCommandRequest = Extract<GameRoomRequest, { type: 'submitCommand' }>
@@ -32,7 +31,7 @@ interface ResolutionTransaction {
   transactionId: string
   rootActorUserId: string
   rootActor: PlayerId
-  clockTransitionState?: CompetitionClockTransitionState
+  clockTransitionState?: GameTimingState
 }
 
 interface TransactionStorage {
@@ -40,6 +39,7 @@ interface TransactionStorage {
   put(entries: Record<string, unknown>): Promise<void>
   delete(key: string): Promise<boolean>
   setAlarm?(scheduledTime: number | Date): Promise<void>
+  deleteAlarm?(): Promise<void>
   transaction<T>(callback: (storage: TransactionStorage) => Promise<T>): Promise<T>
 }
 
@@ -78,7 +78,7 @@ interface OnlineCommandTransactionHost {
   shuffle<T>(values: T[]): T[]
   competitionDelivery?(
     record: GameRecord,
-    previous: CompetitionClockTransitionState,
+    previous: GameTimingState,
     result: RulesReadyResult,
     commandId: string,
     nextSequence: number,
@@ -241,12 +241,12 @@ export async function executePlayerCommand(
     action,
     payloadIdentity,
     clockTransitionState: current.type === 'needsRandomness' && previousRules
-      ? competitionClockTransitionState(previousRules.state)
+      ? gameTimingState(previousRules.state)
       : undefined,
     competitionDelivery: current.type === 'ready' && previousRules
       ? await host.competitionDelivery?.(
           record,
-          competitionClockTransitionState(previousRules.state),
+          gameTimingState(previousRules.state),
           current,
           request.commandId,
           record.sequence + 1,
@@ -259,7 +259,7 @@ export async function executePlayerCommand(
     accepted.record,
     current,
     current.type === 'needsRandomness' && previousRules
-      ? competitionClockTransitionState(previousRules.state)
+      ? gameTimingState(previousRules.state)
       : undefined,
   )
   const finalMetadata = finalCheckpoint.metadata
@@ -331,18 +331,28 @@ async function commitPlayerCheckpoint(
     actor: PlayerId
     action: OnlineGameAction
     payloadIdentity: string
-    clockTransitionState?: CompetitionClockTransitionState
+    clockTransitionState?: GameTimingState
     competitionDelivery?: CanonicalCompetitionDeliveryCommit
   },
 ) {
   const nextSequence = input.record.sequence + 1
-  const now = new Date().toISOString()
+  const nowMs = Date.now()
+  const now = new Date(nowMs).toISOString()
   const transactionStatus = statusFor(input.result)
   const nextRecord: GameRecord = {
     ...input.record,
     sequence: nextSequence,
     rulesRecord: input.result.record,
   }
+  const clock = nextRoomOperationClock(
+    input.metadata.operationTimeLimitSeconds,
+    input.record.operationClock,
+    input.result.type === 'ready' ? input.result.state : undefined,
+    nowMs,
+    input.action.type === 'answerChoice',
+  )
+  if (clock) nextRecord.operationClock = clock
+  else delete nextRecord.operationClock
   const finishedAt = input.result.type === 'ready' && input.result.state.status === 'Finished'
     ? now
     : input.record.finishedAt
@@ -402,7 +412,7 @@ async function drainTrustedRandomness(
   metadata: GameRoomMetadata,
   record: GameRecord,
   initial: RulesEngineResult,
-  initialClockTransitionState?: CompetitionClockTransitionState,
+  initialClockTransitionState?: GameTimingState,
 ): Promise<{ record: GameRecord; metadata: GameRoomMetadata; nextPlayer?: PlayerId | null }> {
   if (initial.type === 'ready') {
     return { record, metadata, nextPlayer: initial.state.currentPlayer }
@@ -429,12 +439,21 @@ async function drainTrustedRandomness(
     }
     const result = await host.callRules(answer, 'observer', currentRecord)
     const nextSequence = currentRecord.sequence + 1
-    const now = new Date().toISOString()
+    const nowMs = Date.now()
+    const now = new Date(nowMs).toISOString()
     const checkpoint: GameRecord = {
       ...currentRecord,
       sequence: nextSequence,
       rulesRecord: result.record,
     }
+    const clock = nextRoomOperationClock(
+      currentMetadata.operationTimeLimitSeconds,
+      currentRecord.operationClock,
+      result.type === 'ready' ? result.state : undefined,
+      nowMs,
+    )
+    if (clock) checkpoint.operationClock = clock
+    else delete checkpoint.operationClock
     const finishedAt = result.type === 'ready' && result.state.status === 'Finished'
       ? now
       : currentRecord.finishedAt
@@ -537,8 +556,42 @@ async function commitRejectedReceipt(
   return receipt
 }
 
+export async function commitRoomTimeExpiry(
+  storage: TransactionStorage,
+  metadata: GameRoomMetadata,
+  record: GameRecord,
+  result: RulesReadyResult,
+  now: number,
+): Promise<GameRoomMetadata> {
+  const clock = record.operationClock
+  if (!clock || now < clock.deadlineMs || result.state.status !== 'Finished') {
+    throw new Error('逾時結算缺少有效的終局或期限。')
+  }
+  const updatedAt = new Date(now).toISOString()
+  const sequence = record.sequence + 1
+  const { operationClock: _, ...baseRecord } = record
+  const finished: GameRoomMetadata = { ...metadata, status: 'Finished', updatedAt }
+  await commitCanonical({ storage }, {
+    expectedSequence: record.sequence,
+    record: {
+      ...baseRecord,
+      sequence,
+      rulesRecord: result.record,
+      finishedAt: new Date(clock.deadlineMs).toISOString(),
+    },
+    metadata: finished,
+    event: {
+      sequence,
+      type: 'RoomTimeExpired',
+      payload: { players: clock.players, deadlineMs: clock.deadlineMs },
+      createdAt: updatedAt,
+    },
+  })
+  return finished
+}
+
 async function commitCanonical(
-  host: OnlineCommandTransactionHost,
+  host: Pick<OnlineCommandTransactionHost, 'storage' | 'competitionCommandFrozen'>,
   input: {
     expectedSequence: number
     record: GameRecord
@@ -579,6 +632,13 @@ async function commitCanonical(
         throw new Error('terminal outbox storage does not support alarms')
       }
       await storage.setAlarm(input.competitionDelivery.alarmAt)
+    } else if (input.metadata.operationTimeLimitSeconds) {
+      if (!storage.setAlarm || !storage.deleteAlarm) {
+        throw new Error('room operation clock storage does not support alarms')
+      }
+      const clock = input.record.operationClock
+      if (clock) await storage.setAlarm(clock.deadlineMs)
+      else await storage.deleteAlarm()
     }
     if (await host.competitionCommandFrozen?.(storage, input.record.gameInstanceId)) {
       throw new OnlineCommandTransactionError(

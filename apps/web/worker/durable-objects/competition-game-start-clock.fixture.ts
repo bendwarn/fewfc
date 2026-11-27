@@ -1,6 +1,7 @@
 // 只由同目錄的正式測試以獨立 Bun 子行程執行，隔離 global mock.module。
 import { expect, mock, test } from 'bun:test'
-import type { CompetitionGameBinding, CompetitionClockOperation } from '../../shared/competition-game-room'
+import type { CompetitionGameBinding } from '../../shared/competition-game-room'
+import type { CompetitionClockOperation } from '../../shared/game-timing'
 import { competitionGameBindingRefForRequest } from '../../shared/competition-game-room'
 import type { GameRecord, GameRoomMetadata, RulesReadyResult } from '../../shared/game-room'
 

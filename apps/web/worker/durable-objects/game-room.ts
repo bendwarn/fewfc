@@ -35,7 +35,6 @@ import {
 } from '../../shared/game-room'
 import {
   competitionDeckEquals,
-  competitionClockOperationsForTransition,
   competitionGameBindingEquals,
   competitionGameBindingRefForRequest,
   competitionGameNoShowCommandId,
@@ -46,10 +45,8 @@ import {
   isCompetitionGameConclusion,
   CompetitionGameBindingError,
   type CompetitionClockDeliveryRequest,
-  type CompetitionClockTransitionState,
   type CompetitionClockControlRequest,
   type CompetitionClockControlAck,
-  type CompetitionClockOperation,
   type CompetitionGameBinding,
   type CompetitionGameBindingRef,
   type CompetitionGameNoShowDecision,
@@ -102,9 +99,11 @@ import { RulesEngineError } from '../rules-engine-error'
 import {
   type CanonicalCompetitionDeliveryCommit,
   type OnlineCommandReadStorage,
+  commitRoomTimeExpiry,
   executePlayerCommand,
   OnlineCommandTransactionError,
 } from './online-command-transaction'
+import { competitionClockOperationsForTransition, isRoomTimeLimit, nextRoomOperationClock, type CompetitionClockOperation, type GameTimingState } from '../../shared/game-timing'
 
 async function callRulesEngine(request: unknown): Promise<RulesReadyResult> {
   return requireReadyRulesResult(await callRulesEngineResult(request))
@@ -308,6 +307,7 @@ type RulesEngineAction =
       candidateAction: OnlineGameAction
     }
   | { type: 'resolveRandomness'; requestId: string; shuffledOrder: number[] }
+  | { type: 'expireRoomTime'; players: PlayerId[] }
 
 export class GameRoom extends DurableObject<GameRoomEnv> {
   private replySocketId: string | undefined
@@ -370,11 +370,7 @@ export class GameRoom extends DurableObject<GameRoomEnv> {
         const result = await socketResponse(requestId, response)
         peer.send(JSON.stringify(result))
         if (result.ok && result.data && typeof result.data === 'object' && 'metadata' in result.data) {
-          // 回覆不等待大廳索引，但同房索引依序寫入，避免快速棄牌讓舊狀態最後覆寫。
-          this.directoryUpdates = this.directoryUpdates
-            .then(() => updatePublicRoom(realtimeEvent(this.env), result.data as GameRoomResponse))
-            .catch(error => console.error('room directory update failed', error))
-          this.ctx.waitUntil(this.directoryUpdates)
+          this.updateRoomDirectory(result.data as GameRoomResponse)
         }
         if (result.ok && (request.operation === 'leave' || request.operation === 'dissolve')) peer.close(1000, 'room closed')
       } catch (error) {
@@ -1881,6 +1877,9 @@ export class GameRoom extends DurableObject<GameRoomEnv> {
       name: request.name?.trim() || request.gameId,
       access: request.access ?? 'private',
       capacity,
+      ...(isRoomTimeLimit(request.operationTimeLimitSeconds)
+        ? { operationTimeLimitSeconds: request.operationTimeLimitSeconds }
+        : {}),
       ruleset: 'fewfc-base',
       ruleVersion: request.ruleVersion ?? '5.17',
       enabledRuleModules: (await callRuleModuleResolution(request.enabledRuleModules, request.ruleVersion ?? '5.17')).modules,
@@ -2011,7 +2010,10 @@ export class GameRoom extends DurableObject<GameRoomEnv> {
       )
     }
 
-    return this.json(await this.response(metadata, actorUserId))
+    const current = metadata.operationTimeLimitSeconds
+      ? await this.expireRoomTime(metadata, Date.now())
+      : metadata
+    return this.json(await this.response(current, actorUserId))
   }
 
   private async validCredential(
@@ -2350,7 +2352,8 @@ export class GameRoom extends DurableObject<GameRoomEnv> {
       setup,
       deckSeed,
     })
-    const now = new Date().toISOString()
+    const nowMs = Date.now()
+    const now = new Date(nowMs).toISOString()
     const sequence = await this.nextSequence()
     const event: StoredGameEvent = {
       sequence,
@@ -2373,6 +2376,8 @@ export class GameRoom extends DurableObject<GameRoomEnv> {
       setup,
       rulesRecord: rules.record,
     }
+    const clock = nextRoomOperationClock(metadata.operationTimeLimitSeconds, undefined, rules.state, nowMs)
+    if (clock) snapshot.operationClock = clock
     const updatedMetadata: GameRoomMetadata = {
       ...metadata,
       gameInstanceId,
@@ -2380,10 +2385,20 @@ export class GameRoom extends DurableObject<GameRoomEnv> {
       updatedAt: now,
     }
 
-    await this.ctx.storage.put('metadata', updatedMetadata)
-    await this.ctx.storage.put('nextSequence', sequence + 1)
-    await this.ctx.storage.put('gameRecord', snapshot)
-    await this.ctx.storage.put(this.eventKey(sequence), event)
+    const values = {
+      metadata: updatedMetadata,
+      nextSequence: sequence + 1,
+      gameRecord: snapshot,
+      [this.eventKey(sequence)]: event,
+    }
+    if (clock) {
+      await this.ctx.storage.transaction(async storage => {
+        await storage.put(values)
+        await storage.setAlarm(clock.deadlineMs)
+      })
+    } else {
+      await this.ctx.storage.put(values)
+    }
 
     this.ctx.waitUntil(Promise.all([
       this.broadcast(updatedMetadata),
@@ -3164,8 +3179,12 @@ export class GameRoom extends DurableObject<GameRoomEnv> {
   private async submitCommand(
     request: Extract<GameRoomRequest, { type: 'submitCommand' }>,
   ): Promise<Response> {
-    if (await this.isCompetitionRoom() && request.action.type === 'start') {
+    if (request.action.type === 'start' && await this.isCompetitionRoom()) {
       return this.competitionMutationRejected()
+    }
+    const metadata = await this.metadata()
+    if (metadata?.operationTimeLimitSeconds && this.memberFor(metadata, request.actorUserId)) {
+      await this.expireRoomTime(metadata, Date.now())
     }
     const executed = await executePlayerCommand({
       storage: this.ctx.storage,
@@ -3246,6 +3265,19 @@ export class GameRoom extends DurableObject<GameRoomEnv> {
     return this.json(executed.response)
   }
 
+  private async expireRoomTime(metadata: GameRoomMetadata, now: number): Promise<GameRoomMetadata> {
+    if (metadata.status !== 'Active') return metadata
+    const record = await this.requireGameRecord()
+    const clock = record.operationClock
+    if (!clock || now < clock.deadlineMs) return metadata
+
+    const result = await this.callReadyRules({ type: 'expireRoomTime', players: clock.players }, 'observer', record)
+    const finished = await commitRoomTimeExpiry(this.ctx.storage, metadata, record, result, now)
+    if (this.env.DB) this.updateRoomDirectory({ metadata: finished })
+    this.ctx.waitUntil(this.broadcast(finished, true))
+    return finished
+  }
+
   /** Durable Objects 每個房間共用唯一 alarm；alarm 與玩家命令共用 serialized 邊界。 */
   async alarm() {
     // 子房可在公告點前備妥；公告通知只在 T-五分鐘後送出。
@@ -3256,7 +3288,19 @@ export class GameRoom extends DurableObject<GameRoomEnv> {
       const metadata = binding
         ? await this.ctx.storage.get<GameRoomMetadata>('metadata')
         : await this.metadata()
-      if (binding && metadata?.status === 'Waiting') {
+      if (!binding) {
+        if (metadata?.operationTimeLimitSeconds && metadata.status === 'Active') {
+          const now = Date.now()
+          const { operationClock } = await this.requireGameRecord()
+          if (operationClock && now < operationClock.deadlineMs) {
+            await this.ctx.storage.setAlarm(operationClock.deadlineMs)
+          } else {
+            await this.expireRoomTime(metadata, now)
+          }
+        }
+        return { kind: 'ordinary-room' as const }
+      }
+      if (metadata?.status === 'Waiting') {
         let admission = await this.ctx.storage.get<unknown>(competitionAdmissionKey)
         const queue = await this.ctx.storage.get<unknown>(this.competitionDeliveryQueueKey())
         if (binding.gameNumber === 1 && isCompetitionGameAdmission(admission) && admission.status === 'released'
@@ -3492,8 +3536,16 @@ export class GameRoom extends DurableObject<GameRoomEnv> {
     }
   }
 
-  private async broadcast(metadata?: GameRoomMetadata) {
-    const excludeSocketId = this.replySocketId
+  private updateRoomDirectory(response: Pick<GameRoomResponse, 'metadata' | 'invitation'>) {
+    // 同一房間依序更新大廳索引，避免較舊的狀態覆寫終局。
+    this.directoryUpdates = this.directoryUpdates
+      .then(() => updatePublicRoom(realtimeEvent(this.env), response))
+      .catch(error => console.error('room directory update failed', error))
+    this.ctx.waitUntil(this.directoryUpdates)
+  }
+
+  private async broadcast(metadata?: GameRoomMetadata, includeReplySocket = false) {
+    const excludeSocketId = includeReplySocket ? undefined : this.replySocketId
     // 不使用呼叫端暫存的 metadata，避免舊廣播外洩離房後的私人房間狀態。
     const currentMetadata = await this.requireMetadata()
     const competition = await this.competitionBinding()
@@ -3725,6 +3777,13 @@ export class GameRoom extends DurableObject<GameRoomEnv> {
         gameInstanceId: snapshot.gameInstanceId,
         recordSequence: snapshot.sequence,
       },
+      ...(responseMetadata.status === 'Active' && snapshot.operationClock
+        ? { operationClock: {
+            players: snapshot.operationClock.players,
+            deadlineMs: snapshot.operationClock.deadlineMs,
+            serverTimeMs: Date.now(),
+          } }
+        : {}),
       receipt,
     }
   }
@@ -3802,7 +3861,7 @@ export class GameRoom extends DurableObject<GameRoomEnv> {
 
   private async competitionDeliveryFor(
     record: GameRecord,
-    previous: CompetitionClockTransitionState,
+    previous: GameTimingState,
     result: RulesReadyResult,
     sourceCommandId: string,
     nextSequence: number,

@@ -86,8 +86,12 @@ export const CreateRoom: Story = {
     await userEvent.click(within(dialog).getByRole('button', { name: /團隊對戰/ }))
     await userEvent.click(within(dialog).getByRole('button', { name: '私人房間' }))
     await expect(within(dialog).getByRole('button', { name: /團隊對戰/ })).toHaveAttribute('aria-pressed', 'true')
+    await expect(within(dialog).getByRole('button', { name: '不限時', exact: true })).toHaveAttribute('aria-pressed', 'true')
+    await userEvent.click(within(dialog).getByRole('button', { name: '限時模式' }))
+    await expect(within(dialog).getByLabelText('操作時限')).toHaveValue('60')
+    await userEvent.selectOptions(within(dialog).getByLabelText('操作時限'), '120')
     await userEvent.click(within(dialog).getByRole('button', { name: '建立房間 →' }))
-    await expect(args.onSubmit).toHaveBeenCalledWith({ name: '好友切磋', mode: 'team', access: 'private', ruleVersion: '5.17' })
+    await expect(args.onSubmit).toHaveBeenCalledWith({ name: '好友切磋', mode: 'team', access: 'private', ruleVersion: '5.17', operationTimeLimitSeconds: 120 })
     await waitFor(() => expect(trigger).toHaveFocus())
   },
 }

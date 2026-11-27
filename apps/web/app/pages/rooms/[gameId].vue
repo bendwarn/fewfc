@@ -21,6 +21,11 @@
       :session-user-id="session.userId.value || null"
       :member-user-id="currentMember?.userId ?? null"
     />
+    <RoomOperationClock
+      v-if="game.operationClock.value"
+      :clock="game.operationClock.value"
+      :player-label="playerLabel"
+    />
     <div class="battle-layout battle-scene" :style="battleLayoutStyle">
         <div class="battlefield-nav" aria-label="戰局導覽">
           <NuxtLink
@@ -328,11 +333,10 @@
           </template>
           <template #overlay>
 
-          <ModalShell
+          <RoomChoiceDialog
             v-if="virtualFormationCardDraft"
-            :open="true"
-            root-class="choice-overlay"
-            panel-class="choice-overlay-panel"
+            :clock="game.operationClock.value"
+            :player-label="playerLabel"
             labelledby="virtual-formation-card-title"
             initial-focus-selector=".virtual-formation-card-option"
             @close="closeVirtualFormationCardDraft"
@@ -387,13 +391,12 @@
                 取消
               </button>
             </div>
-          </ModalShell>
+          </RoomChoiceDialog>
 
-          <ModalShell
+          <RoomChoiceDialog
             v-if="state.status === 'Preparing' && game.interaction.value.canChooseInitialPouch"
-            :open="true"
-            root-class="choice-overlay"
-            panel-class="choice-overlay-panel"
+            :clock="game.operationClock.value"
+            :player-label="playerLabel"
             aria-label="選擇初始錦囊"
             :close-disabled="true"
           >
@@ -409,7 +412,7 @@
                 @choose="chooseInitialPouchCard"
               />
             </div>
-          </ModalShell>
+          </RoomChoiceDialog>
 
           <div
             v-else-if="state.status === 'Preparing'"
@@ -431,11 +434,10 @@
             </div>
           </div>
 
-          <ModalShell
+          <RoomChoiceDialog
             v-if="secretStrategyDraft"
-            :open="true"
-            root-class="choice-overlay"
-            panel-class="choice-overlay-panel"
+            :clock="game.operationClock.value"
+            :player-label="playerLabel"
             :aria-label="`秘計‧${strategyLabel(secretStrategyOptionStrategy(secretStrategyDraft))}：選擇輸入`"
             @close="resetSecretStrategyDraft"
           >
@@ -529,13 +531,12 @@
                 </button>
               </div>
             </div>
-          </ModalShell>
+          </RoomChoiceDialog>
 
-          <ModalShell
+          <RoomChoiceDialog
             v-if="pouchChoiceKind && !detailsOpen"
-            :open="true"
-            root-class="choice-overlay"
-            panel-class="choice-overlay-panel"
+            :clock="game.operationClock.value"
+            :player-label="playerLabel"
             :aria-label="pouchChoiceKind === 'chain' ? '連環：選擇錦囊' : '牽羊：交換牌'"
             :close-disabled="Boolean(state.pendingChoice)"
             @close="resetPouchChoice"
@@ -614,16 +615,15 @@
                 <button v-if="!state.pendingChoice" type="button" @click="resetPouchChoice">取消</button>
               </div>
             </div>
-          </ModalShell>
+          </RoomChoiceDialog>
 
-          <ModalShell
+          <RoomChoiceDialog
             v-if="state.pendingChoice?.visibility === 'visible'
               && !pouchChoiceKind
               && viewer === state.pendingChoice.player
               && !detailsOpen"
-            :open="true"
-            root-class="choice-overlay"
-            panel-class="choice-overlay-panel"
+            :clock="game.operationClock.value"
+            :player-label="playerLabel"
             :aria-label="pendingChoiceLabel(state.pendingChoice)"
             :close-disabled="true"
           >
@@ -754,7 +754,7 @@
                 {{ state.pendingChoice.reason.type === 'echoCost' ? '放棄迴響' : '放棄選擇' }}
               </button>
             </div>
-          </ModalShell>
+          </RoomChoiceDialog>
 
           <div
             v-if="state.pendingChoice && !pouchChoiceKind
@@ -820,6 +820,9 @@
             <template #main>
                 <h2>{{ activeRoomName }}</h2>
                 <p>{{ waitingRoomSummary }}</p>
+                <p v-if="onlineMetadata?.operationTimeLimitSeconds" class="muted">
+                  限時模式 · 每次操作 {{ onlineMetadata.operationTimeLimitSeconds }} 秒
+                </p>
                 <p v-if="game.lockedDeckName.value" class="muted">
                   本局使用：{{ game.lockedDeckName.value }}
                 </p>
@@ -1006,6 +1009,8 @@ import type {
   ViewerId,
 } from '~/types/fewfc'
 import type { GameRoomMember, GameRoomResponse } from '#shared/game-room'
+import RoomOperationClock from '~/components/RoomOperationClock.vue'
+import RoomChoiceDialog from '~/components/RoomChoiceDialog.vue'
 import { createRuleModulePolicy, presentationForRuleModule } from '#shared/utils/rule-modules'
 import { presentPendingChoice } from '~/lib/pending-choice-presentation'
 import { presentDirectSecretStrategyAction, presentDiscardRetrievalAction, presentPlayableAction, presentSecretStrategyOption } from '~/lib/action-detail-presentation'
@@ -1541,6 +1546,12 @@ const competitionReturnPath = computed(() => competitionRoomMode.value.kind === 
   : null)
 const roomWaiting = computed(() => onlineMetadata.value?.status === 'Waiting')
 const gameFinished = computed(() => state.value.status === 'Finished')
+watch(gameFinished, finished => {
+  if (finished && state.value.gameConclusion?.causes.some(cause => cause.type === 'roomTimeExpired')) {
+    battlefield.value?.closeDetail()
+    expediteSetupReveal()
+  }
+})
 const firstPlayer = computed<PlayerId | null>(() => (
   roomWaiting.value ? null : state.value.turnOrder[0] ?? null
 ))

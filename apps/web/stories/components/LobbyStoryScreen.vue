@@ -9,7 +9,7 @@
       </nav>
     </BattleHeader>
     <LobbyScreen ref="screen" v-model:room-code="roomCode" v-bind="props" @create="settingsOpen = true" @join="emit('join', roomCode)" @open="emit('open', $event)" @refresh="emit('refresh')">
-      <RoomSettingsDialog v-if="settingsOpen" v-model:name="name" v-model:mode="mode" v-model:access="access" v-model:rule-version="ruleVersion" :busy="busy" @close="closeSettings" @submit="submitSettings" />
+      <RoomSettingsDialog v-if="settingsOpen" v-model:name="name" v-model:mode="mode" v-model:access="access" v-model:rule-version="ruleVersion" v-model:operation-time-limit-seconds="operationTimeLimitSeconds" :busy="busy" @close="closeSettings" @submit="submitSettings" />
     </LobbyScreen>
   </div>
 </template>
@@ -21,9 +21,10 @@ import LobbyScreen from '~/components/LobbyScreen.vue'
 import RoomSettingsDialog from '~/components/RoomSettingsDialog.vue'
 import ThemeSelector from '~/components/ThemeSelector.vue'
 import type { LobbyRoomListItem } from '~/lib/lobby-presentation'
+import type { RoomTimeLimit } from '#shared/game-timing'
 
 const props = defineProps<{ publicRooms: LobbyRoomListItem[]; myRooms: LobbyRoomListItem[]; loading: boolean; busy: boolean; error?: string }>()
-const emit = defineEmits<{ join: [code: string]; open: [gameId: string]; refresh: []; submit: [settings: { name: string; mode: string; access: string; ruleVersion: string }] }>()
+const emit = defineEmits<{ join: [code: string]; open: [gameId: string]; refresh: []; submit: [settings: { name: string; mode: string; access: string; ruleVersion: string; operationTimeLimitSeconds?: RoomTimeLimit }] }>()
 const screen = ref<InstanceType<typeof LobbyScreen> | null>(null)
 const roomCode = ref('')
 const settingsOpen = ref(false)
@@ -31,12 +32,13 @@ const name = ref('小明的房間')
 const mode = ref<'duel' | 'team'>('duel')
 const access = ref<'public' | 'private'>('public')
 const ruleVersion = ref<'5.16' | '5.17'>('5.17')
+const operationTimeLimitSeconds = ref<RoomTimeLimit>()
 function closeSettings() {
   settingsOpen.value = false
   void nextTick(() => screen.value?.focusCreateRoom())
 }
 function submitSettings() {
-  emit('submit', { name: name.value, mode: mode.value, access: access.value, ruleVersion: ruleVersion.value })
+  emit('submit', { name: name.value, mode: mode.value, access: access.value, ruleVersion: ruleVersion.value, operationTimeLimitSeconds: operationTimeLimitSeconds.value })
   closeSettings()
 }
 </script>

@@ -18,6 +18,7 @@
       v-model:rule-version="roomRuleVersion"
       v-model:mode="roomMode"
       v-model:access="roomAccess"
+      v-model:operation-time-limit-seconds="operationTimeLimitSeconds"
       :busy="lobbyBusy"
       :error="lobbyError"
       @close="closeRoomSettings"
@@ -31,6 +32,7 @@ import LobbyScreen from '~/components/LobbyScreen.vue'
 import type { LobbyRoomListItem } from '~/lib/lobby-presentation'
 import { modulesForVersion } from '#shared/utils/rule-versions'
 import type { GameRoomLobbyItem } from '#shared/game-room'
+import type { RoomTimeLimit } from '#shared/game-timing'
 import { presentApiError } from '~/lib/api-error-presentation'
 import { selectJoinablePublicRooms } from '~/lib/lobby-room-selection'
 import { presentRoomRuleDifferences } from '#shared/utils/ruleset-presentation'
@@ -47,6 +49,7 @@ const lobbyScreen = ref<InstanceType<typeof LobbyScreen> | null>(null)
 const roomName = ref('')
 const roomMode = ref<'duel' | 'team'>('duel')
 const roomAccess = ref<'private' | 'public'>('public')
+const operationTimeLimitSeconds = ref<RoomTimeLimit>()
 const joinRoomCode = ref('')
 const lobbyBusy = ref(false)
 const lobbyLoading = ref(false)
@@ -95,6 +98,7 @@ async function createRoom() {
       access: roomAccess.value,
       capacity: roomCapacity.value,
       ruleVersion: roomRuleVersion.value,
+      operationTimeLimitSeconds: operationTimeLimitSeconds.value,
     })
     await router.push(`/rooms/${encodeURIComponent(response.gameId)}`)
   } catch (error) {

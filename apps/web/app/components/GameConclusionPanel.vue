@@ -69,6 +69,9 @@ const endReasonText = computed(() => {
       const teams = cause.teams.map(props.teamLabel)
       return teams.length ? `${teams.join('、')} 的生命值歸零` : '隊伍生命值歸零'
     }
+    if (cause.type === 'roomTimeExpired') {
+      return `${cause.teams.map(props.teamLabel).join('、')} 操作逾時`
+    }
 
     const directVictoryLabels: Record<string, string> = {
       'five-star-alignment': '達成五星連珠',

@@ -37,7 +37,7 @@ Issues are tracked as local markdown files under `docs/local-issues/`. See `docs
 
 ### Triage labels
 
-Use the default five-role triage vocabulary unless a local issue explicitly says otherwise. See `docs/agents/triage-labels.md`.
+Use the triage labels in `docs/agents/triage-labels.md` unless a local issue explicitly says otherwise.
 
 ### Domain docs
 

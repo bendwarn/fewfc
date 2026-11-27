@@ -448,8 +448,17 @@ pub enum WebGameOutcome {
     rename_all_fields = "camelCase"
 )]
 pub enum WebGameEndCause {
-    TeamHpDepleted { teams: Vec<DomainTeamId> },
-    DirectVictory { rule: String, team: DomainTeamId },
+    TeamHpDepleted {
+        teams: Vec<DomainTeamId>,
+    },
+    DirectVictory {
+        rule: String,
+        team: DomainTeamId,
+    },
+    #[serde(skip_deserializing)]
+    RoomTimeExpired {
+        teams: Vec<DomainTeamId>,
+    },
 }
 
 /// Web bridge 的 ruling DTO；尤其固定 `RulingOutcome` 的外部 enum JSON，
@@ -607,13 +616,24 @@ impl TryFrom<WebGameConclusion> for GameConclusion {
         let causes = value
             .causes
             .into_iter()
-            .map(|cause| match cause {
-                WebGameEndCause::TeamHpDepleted { teams } => GameEndCause::TeamHpDepleted { teams },
-                WebGameEndCause::DirectVictory { rule, team } => {
-                    GameEndCause::DirectVictory { rule, team }
-                }
+            .map(|cause| {
+                Ok(match cause {
+                    WebGameEndCause::TeamHpDepleted { teams } => {
+                        GameEndCause::TeamHpDepleted { teams }
+                    }
+                    WebGameEndCause::DirectVictory { rule, team } => {
+                        GameEndCause::DirectVictory { rule, team }
+                    }
+                    WebGameEndCause::RoomTimeExpired { .. } => {
+                        return Err(BridgeError::new(
+                            "invalidConclusion",
+                            "validation",
+                            "一般房間逾時不能用於競賽判定",
+                        ));
+                    }
+                })
             })
-            .collect();
+            .collect::<Result<Vec<_>, _>>()?;
         Ok(GameConclusion::new(outcome, causes))
     }
 }
@@ -1582,6 +1602,9 @@ fn web_game_conclusion(conclusion: &GameConclusion) -> WebGameConclusion {
             GameEndCause::DirectVictory { rule, team } => WebGameEndCause::DirectVictory {
                 rule: rule.clone(),
                 team: team.clone(),
+            },
+            GameEndCause::RoomTimeExpired { teams } => WebGameEndCause::RoomTimeExpired {
+                teams: teams.clone(),
             },
         })
         .collect();

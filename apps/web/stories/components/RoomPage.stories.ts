@@ -31,6 +31,9 @@ export const InitialPouch = room('initial-pouch')
 export const Chain = room('chain')
 export const CardChoice = room('card-choice')
 export const PouchAbility = room('pouch-ability')
+export const TimedWaiting = room('timed-waiting')
+export const TimedPreparation = room('timed-preparation')
+export const TimedPlaying = room('timed-playing')
 
 export const ActionQueryStates: Story = {
   ...room('actions'),

@@ -76,6 +76,13 @@ impl RecordedEventLog {
         self.append_decision(RecordedDecisionSource::Randomness { answer }, events);
     }
 
+    pub(super) fn append_room_time_expiry(&mut self, players: Vec<PlayerId>, event: GameEvent) {
+        self.append_decision(
+            RecordedDecisionSource::RoomTimeExpired { players },
+            vec![event],
+        );
+    }
+
     fn append_setup(&mut self, events: Vec<GameEvent>) {
         self.append_decision(RecordedDecisionSource::Setup, events);
     }
@@ -133,6 +140,9 @@ fn event_source(
         },
         RecordedDecisionSource::Randomness { answer } => EventSource::Randomness {
             request_id: answer.request_id.clone(),
+        },
+        RecordedDecisionSource::RoomTimeExpired { .. } => EventSource::Automatic {
+            reason: AutomaticReason::RoomTimeExpired,
         },
         RecordedDecisionSource::Command {
             command_id,
@@ -333,6 +343,9 @@ pub struct RecordedDecision {
 pub enum RecordedDecisionSource {
     Setup,
     Automatic,
+    RoomTimeExpired {
+        players: Vec<PlayerId>,
+    },
     Randomness {
         answer: TrustedRandomnessAnswer,
     },
@@ -378,6 +391,7 @@ pub enum AutomaticReason {
     StatusExpired,
     TurnEnd,
     EchoResolution,
+    RoomTimeExpired,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]

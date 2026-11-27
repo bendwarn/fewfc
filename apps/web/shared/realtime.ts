@@ -1,3 +1,4 @@
+import { isRoomTimeLimit, type RoomTimeLimit } from './game-timing'
 import type {
   GameRoomEntryResponse, GameRoomLobbyResponse, GameRoomRequest, GameRoomResponse,
   PlayableActionsResponse, RuleVersion,
@@ -24,7 +25,7 @@ export interface RoomOperations {
 export interface LobbyOperations {
   list: { input: undefined; output: GameRoomLobbyResponse }
   create: {
-    input: { name?: string; access?: 'public' | 'private'; capacity?: 2 | 4; ruleVersion?: RuleVersion; enabledRuleModules?: string[] }
+    input: { name?: string; access?: 'public' | 'private'; capacity?: 2 | 4; ruleVersion?: RuleVersion; enabledRuleModules?: string[]; operationTimeLimitSeconds?: RoomTimeLimit }
     output: GameRoomEntryResponse
   }
   joinCode: { input: { code: string }; output: GameRoomEntryResponse }
@@ -86,10 +87,11 @@ export function parseSocketRequest(value: unknown, channel: 'room' | 'lobby') {
     switch (value.operation) {
       case 'list': valid = input === undefined || input === null; break
       case 'create':
-        valid = object(input) && keys(input, ['name', 'access', 'capacity', 'ruleVersion', 'enabledRuleModules'])
+        valid = object(input) && keys(input, ['name', 'access', 'capacity', 'ruleVersion', 'enabledRuleModules', 'operationTimeLimitSeconds'])
           && (input.name === undefined || (typeof input.name === 'string' && input.name.length <= 200))
           && (input.access === undefined || input.access === 'public' || input.access === 'private')
           && (input.capacity === undefined || input.capacity === 2 || input.capacity === 4)
+          && (input.operationTimeLimitSeconds === undefined || isRoomTimeLimit(input.operationTimeLimitSeconds))
           && version(input.ruleVersion) && modules(input.enabledRuleModules)
         break
       case 'joinCode': valid = object(input) && keys(input, ['code']) && identity(input.code); break

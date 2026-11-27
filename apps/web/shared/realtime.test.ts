@@ -17,6 +17,15 @@ test('lobby requests are bounded, typed and separated from room commands', () =>
   expect(parseSocketRequest(request, 'room')).toBeUndefined()
   expect(parseSocketRequest({ ...request, input: { capacity: 99 } }, 'lobby')).toBeUndefined()
   expect(parseSocketRequest({ ...request, input: { name: 'a'.repeat(201) } }, 'lobby')).toBeUndefined()
+  const timed = { ...request, input: { ...request.input, operationTimeLimitSeconds: 60 } } as const
+  expect(parseSocketRequest(timed, 'lobby')).toEqual(timed)
+  for (const limit of [0, -30, 45, '60', null]) {
+    expect(parseSocketRequest({ ...request, input: { operationTimeLimitSeconds: limit } }, 'lobby')).toBeUndefined()
+  }
+  expect(parseSocketRequest({ ...request, operation: 'command', input: {
+    commandId: 'command-a', transactionId: 'transaction-a', gameInstanceId: 'game-a',
+    action: { type: 'expireRoomTime', players: ['player-1'] },
+  } }, 'room')).toBeUndefined()
 })
 
 test('clock reads use the connected room binding without client identity or time overrides', () => {

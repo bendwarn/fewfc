@@ -11,6 +11,8 @@ import type {
   SecretStrategyDecision,
 } from '../app/types/fewfc'
 import type { DevelopmentScenario } from './development-scenarios'
+import type { RoomOperationClock, RoomTimeLimit, StoredRoomOperationClock } from './game-timing'
+import { isRoomTimeLimit } from './game-timing'
 export interface PlayerDeckList {
   name: string
   cards: string[]
@@ -70,6 +72,7 @@ export interface GameRoomMetadata {
   name: string
   access: GameRoomAccess
   capacity: GameRoomCapacity
+  operationTimeLimitSeconds?: RoomTimeLimit
   ruleVersion: RuleVersion
   ruleset: 'fewfc-base'
   enabledRuleModules: string[]
@@ -133,6 +136,9 @@ export function normalizeGameRoomMetadata(
     name: stored.name?.trim() || stored.gameId,
     access: stored.access,
     capacity,
+    ...(isRoomTimeLimit(stored.operationTimeLimitSeconds)
+      ? { operationTimeLimitSeconds: stored.operationTimeLimitSeconds }
+      : {}),
     ruleVersion: stored.ruleVersion ?? '5.16',
     ruleset: stored.ruleset,
     enabledRuleModules: stored.enabledRuleModules ?? [],
@@ -195,6 +201,7 @@ export interface GameRecord {
   deckSeed: string
   setup: RulesGameSetup
   rulesRecord: RecordedDecision[]
+  operationClock?: StoredRoomOperationClock
   finishedAt?: string
 }
 
@@ -316,6 +323,7 @@ export type GameRoomRequest =
       actorName: string
       access?: GameRoomAccess
       capacity?: GameRoomCapacity
+      operationTimeLimitSeconds?: RoomTimeLimit
       name?: string
       ruleVersion?: RuleVersion
       enabledRuleModules?: string[]
@@ -451,6 +459,7 @@ export interface GameRoomResponse extends Omit<
     recordSequence: number
   }
   receipt?: CommandReceipt
+  operationClock?: RoomOperationClock & { serverTimeMs: number }
 }
 
 export type CommandTransactionStatus = 'awaitingChoice' | 'awaitingRandomness' | 'complete'

@@ -74,7 +74,7 @@ mock.module('../rules-engine', () => ({
     }
   },
   callRulesEngine: async (request: {
-    action?: { type?: string; requestId?: string }
+    action?: { type?: string; requestId?: string; players?: string[] }
     viewer?: string
     record?: unknown[]
     setup?: unknown
@@ -175,6 +175,29 @@ mock.module('../rules-engine', () => ({
       initialHp?: PublicGameState['hp']
     } | undefined
     const turnOrder = setup?.turnOrder ?? ['player-a', 'player-b']
+    const expiry = request.action?.type === 'expireRoomTime'
+      ? request.action.players
+      : request.record?.at(-1) && (request.record.at(-1) as { expiry?: string[] }).expiry
+    if (Array.isArray(expiry)) {
+      const expiredTeams = [...new Set(setup?.players
+        ?.filter(player => expiry.includes(player.id)).map(player => player.team))]
+      const winner = setup?.players?.find(player => !expiredTeams.includes(player.team))?.team
+      return {
+        type: 'ready',
+        record: [{ expiry }],
+        state: {
+          ...emptyPublicState(turnOrder),
+          status: 'Finished',
+          gameConclusion: {
+            outcome: winner ? { type: 'winner', team: winner } : { type: 'draw' },
+            causes: [{ type: 'roomTimeExpired', teams: expiredTeams }],
+          },
+        },
+        battleRecord: { preparation: { entries: [] }, turns: [] },
+        playableActions: [],
+        interaction: { canChooseInitialPouch: false },
+      }
+    }
     const isPreparationState = rulesEngineMode === 'clockTransition'
       && (request.action?.type === 'start' || request.action?.type === 'refresh')
     const state: PublicGameState = {
@@ -2703,6 +2726,78 @@ test('普通房不含 competition，payload／query 不能偽造或覆蓋持久�
   expect(JSON.stringify(value)).not.toContain('forged-competition')
   expect(competitionStorage.values).toStrictEqual(before)
   expect(competitionStorage.writeCount).toBe(beforeWrites)
+})
+
+test('限時房在 alarm 或逾時命令抵達時結算，重建 Durable Object 與下一局各自沿用正確期限', async () => {
+  const realNow = Date.now
+  const startMs = realNow()
+  let now = startMs
+  Date.now = () => now
+  try {
+    const storage = new MemoryStorage()
+    let { room } = gameRoom(storage)
+    const deckList = { name: '測試牌組', cards: [] }
+    const create = await post(room, {
+      type: 'createGame', gameId: 'timed-room', actorUserId: 'owner', actorName: '房主',
+      access: 'public', operationTimeLimitSeconds: 30,
+      invitation: { roomCode: 'ABCD234', inviteToken: 'timed' },
+    })
+    expect(await create.json()).toMatchObject({ metadata: { operationTimeLimitSeconds: 30 } })
+    expect(storage.alarm).toBeNull()
+    expect((await post(room, { type: 'joinGame', actorUserId: 'guest', actorName: '訪客' })).status).toBe(200)
+
+    const start = async () => {
+      const metadata = (await storage.get<GameRoomMetadata>('metadata'))!
+      await storage.put('metadata', {
+        ...metadata, members: metadata.members.map(member => ({ ...member, connected: true })),
+      })
+      expect((await post(room, { type: 'toggleReady', actorUserId: 'guest', ready: true, deckList })).status).toBe(200)
+      const response = await post(room, { type: 'startGame', actorUserId: 'owner', deckList })
+      expect(response.status).toBe(200)
+      return await response.json() as import('../../shared/game-room').GameRoomResponse
+    }
+    const initial = await start()
+    const deadline = startMs + 30_000
+    expect(initial.operationClock).toMatchObject({ deadlineMs: deadline, serverTimeMs: startMs })
+    expect(storage.alarm).toBe(deadline)
+
+    room = gameRoom(storage).room
+    now = deadline - 1
+    await room.alarm()
+    expect(storage.alarm).toBe(deadline)
+    const resumed = await post(room, { type: 'getState', actorUserId: 'guest' })
+    expect(await resumed.json()).toMatchObject({ operationClock: { deadlineMs: deadline, serverTimeMs: now } })
+
+    now = deadline
+    await room.alarm()
+    await room.alarm()
+    expect(storage.alarm).toBeNull()
+    expect(storedRoomEvents(storage).filter(event => event.type === 'RoomTimeExpired')).toHaveLength(1)
+    const finished = await post(room, { type: 'getState', actorUserId: 'owner' })
+    const result = await finished.json()
+    expect(result).toMatchObject({
+      metadata: { status: 'Finished' },
+      state: { status: 'Finished', gameConclusion: { causes: [{ type: 'roomTimeExpired' }] } },
+    })
+    expect(result).not.toHaveProperty('operationClock')
+    expect((await post(room, { type: 'resetGame', actorUserId: 'owner' })).status).toBe(200)
+
+    now = deadline + 10_000
+    const restarted = await start()
+    expect(restarted.metadata.gameInstanceId).not.toBe(initial.metadata.gameInstanceId)
+    expect(restarted.operationClock?.deadlineMs).toBe(now + 30_000)
+    now += 30_000
+    const lateCommand = await post(room, {
+      type: 'submitCommand', actorUserId: 'owner', commandId: 'late', transactionId: 'late',
+      gameInstanceId: restarted.metadata.gameInstanceId,
+      action: { type: 'advanceAutomatic' },
+    })
+    expect(lateCommand.status).toBe(409)
+    expect((await storage.get<GameRoomMetadata>('metadata'))?.status).toBe('Finished')
+    expect(storedRoomEvents(storage).filter(event => event.type === 'RoomTimeExpired')).toHaveLength(2)
+  } finally {
+    Date.now = realNow
+  }
 })
 
 test('present binding 與固定 metadata 的矛盾／畸形不能變成普通房或唯讀修補', async () => {

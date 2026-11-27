@@ -42,6 +42,7 @@ import {
 import { isInitialPouchAlreadyChosen } from '~/lib/initial-pouch-selection'
 import { presentApiError } from '~/lib/api-error-presentation'
 import { createSubmissionController } from '~/lib/submission-controller'
+import { sampleRoomClock, type RoomClockSample } from '~/lib/room-clock'
 import {
   parseGameRoomCompetitionMode,
   type CompetitionRoomMode,
@@ -104,6 +105,7 @@ export function useGameRoom(viewer: ViewerRef) {
   const state = ref<PublicGameState>(emptyState())
   const metadata = ref<GameRoomMetadata | null>(null)
   const competitionMode = ref<CompetitionRoomMode>({ kind: 'ordinary' })
+  const operationClock = ref<RoomClockSample>()
   const invitation = ref<GameRoomInvitation | null>(null)
   const lockedDeckName = ref<string | null>(null)
   const savableReplay = ref<GameRoomResponse['savableReplay']>()
@@ -239,6 +241,7 @@ export function useGameRoom(viewer: ViewerRef) {
     }
     const previousState = state.value
     competitionMode.value = parseGameRoomCompetitionMode(response)
+    operationClock.value = sampleRoomClock(response.operationClock)
     metadata.value = response.metadata
     invitation.value = response.invitation ?? null
     lockedDeckName.value = response.lockedDeckName ?? null
@@ -751,6 +754,7 @@ export function useGameRoom(viewer: ViewerRef) {
     disconnectRoomSocket()
     metadata.value = null
     competitionMode.value = { kind: 'ordinary' }
+    operationClock.value = undefined
     invitation.value = null
     lockedDeckName.value = null
     savableReplay.value = undefined
@@ -775,6 +779,7 @@ export function useGameRoom(viewer: ViewerRef) {
   return {
     metadata,
     competitionMode,
+    operationClock,
     invitation,
     lockedDeckName,
     savableReplay,

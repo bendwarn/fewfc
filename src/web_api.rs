@@ -261,6 +261,9 @@ fn handle(request: ApiRequest) -> Result<ApiResult, ApiError> {
             advance_after_command(&mut record)?;
         }
         ApiAction::Refresh => {}
+        ApiAction::ExpireRoomTime { players } => record
+            .expire_room_time(players.into_iter().map(PlayerId::new).collect())
+            .map_err(ApiError::Game)?,
         ApiAction::AdvanceAutomatic => {
             advance_to_interactive_decision(&mut record)?;
         }
@@ -572,7 +575,10 @@ fn response_for(
     let playable_actions = match playable_actions {
         Some(actions) => actions,
         None if viewer_player.as_ref().is_some_and(|player| {
-            record.state().current_player() == Some(player)
+            !matches!(
+                record.state().status,
+                crate::domain::GameStatus::Finished { .. }
+            ) && record.state().current_player() == Some(player)
                 && record.state().phase == Phase::ActiveEffects
                 && record.state().pending_choice.is_none()
                 && record.state().pending_randomness.is_none()
@@ -792,6 +798,9 @@ enum ApiAction {
         hands: Vec<Vec<String>>,
     },
     Refresh,
+    ExpireRoomTime {
+        players: Vec<String>,
+    },
     AdvanceAutomatic,
     ChooseInitialPouch {
         player: String,
@@ -1888,6 +1897,7 @@ enum WebGameOutcome {
 enum WebGameEndCause {
     TeamHpDepleted { teams: Vec<String> },
     DirectVictory { rule: String, team: String },
+    RoomTimeExpired { teams: Vec<String> },
 }
 
 #[derive(Serialize)]
@@ -1935,6 +1945,11 @@ impl WebPublicGameState {
                             WebGameEndCause::DirectVictory {
                                 rule: rule.clone(),
                                 team: team.as_str().to_string(),
+                            }
+                        }
+                        crate::domain::GameEndCause::RoomTimeExpired { teams } => {
+                            WebGameEndCause::RoomTimeExpired {
+                                teams: teams.iter().map(|team| team.as_str().to_string()).collect(),
                             }
                         }
                     })
@@ -3220,9 +3235,9 @@ fn public_decision_feed(
                 PublicDecisionSource::ForcedPass
             }
             RecordedDecisionSource::Command { command, .. } => player_decision_source(command),
-            RecordedDecisionSource::Automatic | RecordedDecisionSource::Randomness { .. } => {
-                PublicDecisionSource::Automatic
-            }
+            RecordedDecisionSource::Automatic
+            | RecordedDecisionSource::Randomness { .. }
+            | RecordedDecisionSource::RoomTimeExpired { .. } => PublicDecisionSource::Automatic,
         };
         let public_events = crate::public_view::events_for(&decision.events, viewer.clone());
         let mut segment = Vec::new();
@@ -3321,6 +3336,13 @@ fn terminal_resolution_for(
             .any(|event| matches!(event, GameEvent::GameEnded { .. }))
     })?;
     let events = crate::public_view::events_for(&decision.events, viewer);
+
+    if matches!(
+        decision.source,
+        RecordedDecisionSource::RoomTimeExpired { .. }
+    ) {
+        return None;
+    }
 
     if matches!(
         decision.source,
@@ -4738,6 +4760,14 @@ fn game_conclusion_summary(conclusion: &crate::domain::GameConclusion) -> String
             crate::domain::GameEndCause::DirectVictory { team, .. } => {
                 format!("{}達成特殊勝利條件", team.as_str())
             }
+            crate::domain::GameEndCause::RoomTimeExpired { teams } => format!(
+                "{}操作逾時",
+                teams
+                    .iter()
+                    .map(|team| team.as_str())
+                    .collect::<Vec<_>>()
+                    .join("、"),
+            ),
         })
         .collect::<Vec<_>>()
         .join("；");
@@ -6799,6 +6829,58 @@ mod tests {
         assert_eq!(json["state"]["turnNumber"], 1);
         assert!(json["record"].is_array());
         assert!(json.get("request").is_none());
+    }
+
+    #[test]
+    fn room_time_expiry_serializes_and_replays_as_its_own_terminal_step() {
+        let request = |value: serde_json::Value| -> serde_json::Value {
+            serde_json::from_str(&handle_request_json(&value.to_string()).unwrap()).unwrap()
+        };
+        let started = request(serde_json::json!({
+            "action": { "type": "start" },
+            "viewer": "alice",
+        }));
+        let wrong_player = serde_json::json!({
+            "action": { "type": "expireRoomTime", "players": ["bob"] },
+            "record": started["record"],
+        });
+        assert!(
+            handle_request_json(&wrong_player.to_string())
+                .unwrap_err()
+                .contains("InvalidRoomTimeExpiry")
+        );
+
+        let expired = request(serde_json::json!({
+            "action": { "type": "expireRoomTime", "players": ["alice"] },
+            "viewer": "alice",
+            "record": started["record"],
+        }));
+        assert_eq!(expired["state"]["status"], "Finished");
+        let conclusion = &expired["state"]["gameConclusion"];
+        assert_eq!(conclusion["outcome"]["type"], "winner");
+        assert_eq!(conclusion["causes"][0]["type"], "roomTimeExpired");
+        assert_eq!(
+            conclusion["causes"][0]["teams"][0],
+            started["state"]["players"][0]["team"]
+        );
+        assert_eq!(expired["playableActions"], serde_json::json!([]));
+
+        let before = request(serde_json::json!({
+            "action": { "type": "replayFrame", "step": 0 },
+            "record": expired["record"],
+        }));
+        let after = request(serde_json::json!({
+            "action": { "type": "replayFrame", "step": 1 },
+            "record": expired["record"],
+        }));
+        assert_eq!(before["state"]["status"], "InProgress");
+        assert_eq!(&after["state"]["gameConclusion"], conclusion);
+        assert!(after["battleRecord"].to_string().contains("操作逾時"));
+        let refreshed = request(serde_json::json!({
+            "action": { "type": "refresh" },
+            "record": expired["record"],
+        }));
+        assert_eq!(&refreshed["state"]["gameConclusion"], conclusion);
     }
 
     #[test]

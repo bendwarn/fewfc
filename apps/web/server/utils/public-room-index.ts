@@ -145,7 +145,7 @@ function rowToSummary(row: PublicRoomRow): PublicRoomSummary {
 
 export async function upsertPublicRoom(
   event: H3Event,
-  response: GameRoomResponse,
+  response: Pick<GameRoomResponse, 'metadata' | 'invitation'>,
   options: {
     name?: string
   } = {},
@@ -234,7 +234,7 @@ export async function upsertPublicRoom(
   })
 }
 
-export async function updatePublicRoom(event: H3Event, response: GameRoomResponse) {
+export async function updatePublicRoom(event: H3Event, response: Pick<GameRoomResponse, 'metadata' | 'invitation'>) {
   await upsertPublicRoom(event, response)
 }
 

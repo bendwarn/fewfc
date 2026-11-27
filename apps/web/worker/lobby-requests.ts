@@ -38,6 +38,7 @@ export async function executeLobbyRequest(env: WorkerEnv, actor: RealtimeIdentit
       const response = await callGameRoom(event, gameId, {
         type: 'createGame', gameId, actorUserId: actor.userId, actorName: actor.userName,
         access: input.access ?? 'private', capacity: input.capacity ?? 2, name, ruleVersion,
+        operationTimeLimitSeconds: input.operationTimeLimitSeconds,
         enabledRuleModules: modules, invitation: { roomCode, inviteToken: crypto.randomUUID() },
       })
       await upsertPublicRoom(event, response, { name })

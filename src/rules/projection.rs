@@ -1608,6 +1608,14 @@ pub(crate) fn apply_event(state: &mut GameState, event: &GameEvent) {
             state.status = GameStatus::Finished {
                 conclusion: conclusion.clone(),
             };
+            if conclusion
+                .causes
+                .iter()
+                .any(|cause| matches!(cause, GameEndCause::RoomTimeExpired { .. }))
+            {
+                state.pending_choice = None;
+                state.pending_resolution = None;
+            }
         }
         GameEvent::DiscardRetrieved {
             hp_change,

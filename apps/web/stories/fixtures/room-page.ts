@@ -3,6 +3,7 @@ import type { PlayableAction, PublicCard, SecretStrategyOption } from '~/types/f
 import { createExampleGameState, exampleCards } from './components'
 
 export type RoomPageScenario = 'actions' | 'discard' | 'initial-pouch' | 'chain' | 'card-choice' | 'pouch-ability'
+  | 'timed-waiting' | 'timed-preparation' | 'timed-playing'
 
 const formation: PlayableAction = {
   type: 'performFormation', commandRole: 'action', id: 'confluence:imprisoning-array', name: '禁錮法陣', category: 'Spell',
@@ -29,7 +30,8 @@ export function createRoomPageFixture(scenario: RoomPageScenario = 'actions') {
     { id: 24, label: '木 3', element: 'Wood', level: 3, secretStrategies: [] },
   ]
   state.playerDecks = [{ player: 'alice', cards: { kind: 'known', cards: deckCards } }, { player: 'bob', cards: { kind: 'hidden', count: 24 } }]
-  if (scenario === 'initial-pouch') {
+  const choosingInitialPouch = scenario === 'initial-pouch' || scenario === 'timed-preparation'
+  if (choosingInitialPouch) {
     state.status = 'Preparing'
     state.initialPouchSelection = { remainingPlayers: ['alice', 'bob'] }
   }
@@ -56,7 +58,7 @@ export function createRoomPageFixture(scenario: RoomPageScenario = 'actions') {
     } })
   }
   const response: GameRoomResponse = {
-    gameId: 'story-room', state, playableActions, interaction: { canChooseInitialPouch: scenario === 'initial-pouch' },
+    gameId: 'story-room', state, playableActions, interaction: { canChooseInitialPouch: choosingInitialPouch },
     metadata: {
       schemaVersion: 5, gameId: 'story-room', gameInstanceId: 'story-game', name: '故事對局', access: 'public', capacity: 2,
       ruleVersion: '5.16', ruleset: 'fewfc-base', enabledRuleModules: [], players: ['alice', 'bob'], observers: [], status: 'Active',
@@ -64,6 +66,23 @@ export function createRoomPageFixture(scenario: RoomPageScenario = 'actions') {
       members: ['alice', 'bob'].map((player, index) => ({ player, userId: index === 0 ? 'player-story' : 'player-bob', displayName: index === 0 ? '小明' : '小華', owner: index === 0, ready: true, connected: true })),
     },
     battleRecord: { preparation: { entries: [] }, turns: [{ turnNumber: 1, title: '第 1 回合・小明', entries: [{ id: 'start', title: '回合開始', summary: '選擇本回合的行動。' }] }] },
+  }
+  if (scenario === 'timed-waiting' || scenario === 'timed-preparation' || scenario === 'timed-playing') {
+    response.metadata.operationTimeLimitSeconds = 60
+    if (scenario === 'timed-waiting') {
+      response.metadata.status = 'Waiting'
+      delete response.metadata.gameInstanceId
+      state.status = 'Preparing'
+      state.currentPlayer = null
+      state.turnNumber = 0
+    } else {
+      if (!choosingInitialPouch) state.phase = 'ActiveEffects'
+      response.operationClock = {
+        players: choosingInitialPouch ? ['alice', 'bob'] : ['alice'],
+        deadlineMs: 158_000,
+        serverTimeMs: 100_000,
+      }
+    }
   }
   return { response, offeredActions: [formation] }
 }
