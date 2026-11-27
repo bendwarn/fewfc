@@ -7064,6 +7064,7 @@ mod tests {
             "selection-independent actions must disappear for a non-empty selection"
         );
 
+        let decisions_before_retrieval = before_retrieval.record.len();
         let after_retrieval = expect_ready(
             handle(ApiRequest {
                 action: ApiAction::RetrievePreviousTurnDiscard {
@@ -7080,6 +7081,7 @@ mod tests {
         let events = after_retrieval
             .record
             .iter()
+            .skip(decisions_before_retrieval)
             .flat_map(|decision| &decision.events)
             .collect::<Vec<_>>();
 
@@ -7090,17 +7092,22 @@ mod tests {
                 ..
             } if player == &bob
         )));
-        assert!(events.iter().any(|event| matches!(
-            event,
-            GameEvent::DiscardRetrieved { player, .. } if player == &bob
-        )));
-        assert!(events.iter().any(|event| matches!(
-            event,
-            GameEvent::ActionPassed {
-                player,
-                reason: PassActionReason::CannotActByStatus,
-            } if player == &bob
-        )));
+        let retrieval_and_pass = events
+            .into_iter()
+            .filter(|event| {
+                matches!(
+                    event,
+                    GameEvent::DiscardRetrieved { .. } | GameEvent::ActionPassed { .. }
+                )
+            })
+            .collect::<Vec<_>>();
+        assert!(matches!(
+            retrieval_and_pass.as_slice(),
+            [
+                GameEvent::DiscardRetrieved { player: retriever, .. },
+                GameEvent::ActionPassed { player: passer, reason: PassActionReason::CannotActByStatus }
+            ] if retriever == &bob && passer == &bob
+        ));
         assert_ne!(after_retrieval.state.current_player.as_deref(), Some("bob"));
         assert_ne!(
             (

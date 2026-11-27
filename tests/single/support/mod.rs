@@ -4,3 +4,5 @@ pub mod scenario;
 pub use scenario::{
     CardSelector, Scenario, ScenarioError, ScenarioPlan, ScenarioStep, ScenarioZone, StepTrace,
 };
+
+pub mod record;

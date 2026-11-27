@@ -1,9 +1,11 @@
-import { waitForGameCommand, gameCommandRequests } from './realtime-helpers'
+import { waitForGameCommand } from './realtime-helpers'
 import {
   battleRecordEntry,
   expect,
+  gotoAppRoute,
   seedDevelopmentScenario,
   setupFastTwoPlayerGame,
+  signInAnonymously,
   test,
 } from './fixtures'
 
@@ -13,9 +15,16 @@ test('a Spirit Skill is usable from the Ability panel and survives reconnect', a
     roomName: `精靈技能測試 ${Date.now()}`,
   })
   const { host, guest, gameId: roomId } = game
+  const observerContext = await browser.newContext()
 
   try {
     await seedDevelopmentScenario(host, { name: 'spirit-skill' })
+    await signInAnonymously(observerContext, '精靈技能觀戰')
+    const joined = await observerContext.request.post(`/api/games/${roomId}/join`, { data: {} })
+    expect(joined.ok()).toBe(true)
+    const observer = await observerContext.newPage()
+    await gotoAppRoute(observer, `/rooms/${roomId}`)
+    await expect(observer.getByRole('button', { name: '離開觀戰' })).toBeVisible()
 
     const flyingBlade = host
       .getByRole('region', { name: '能力' })
@@ -44,7 +53,12 @@ test('a Spirit Skill is usable from the Ability panel and survives reconnect', a
     await host.reload({ waitUntil: 'domcontentloaded' })
     const reloadedHostEntry = await battleRecordEntry(host, '使用「飛刃」')
     await expect(reloadedHostEntry).toContainText('的金精靈已破除')
+    await observer.reload({ waitUntil: 'domcontentloaded' })
+    const observerEntry = await battleRecordEntry(observer, '使用「飛刃」')
+    await expect(observerEntry).toContainText('靈力由 2 變為 0')
+    await expect(observerEntry).toContainText('的金精靈已破除')
   } finally {
+    await observerContext.close()
     await game.close()
   }
 })
