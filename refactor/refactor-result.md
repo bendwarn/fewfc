@@ -1,53 +1,21 @@
 # ADR-0032 Rules Test Refactor Checkpoint
 
-This checkpoint describes a source inspection on 2026-11-20 at commit
-`8758f3f` (plus the existing working tree). It is not a fresh claim-by-claim
-audit or a declaration that ADR-0032's test refactor is complete. The working
-records are [the inventory](rule-test-inventory.md) and
-[the follow-up plan](rule-test-follow-ups.md).
+本檢查點記錄 2026-11-20 在提交 `8758f3f` 及當時工作樹上的原始碼檢視，並非逐項主張的最新稽核，也不宣稱 ADR-0032 的測試重構已完成。後續稽核與驗證結果以[清單](rule-test-inventory.md)及[後續計畫](rule-test-follow-ups.md)為準。
 
 ## Current codebase
 
-Rust integration suites are modules under `tests/single/`, registered by
-`tests/single.rs`; the Cargo target is `single`. Historical references to
-`tests/<suite>.rs`, line numbers and `cargo test --test <suite>` commands in the
-inventory describe the older layout. The current suite also has matrices
-embedded in `tests/single/rules_engine.rs` and `optional_rules.rs`.
+當時的 Rust 整合測試位於 `tests/single/`，由 `tests/single.rs` 註冊，Cargo 測試目標為 `single`。清單中的歷史 `tests/<suite>.rs` 路徑、行號和 `cargo test --test <suite>` 命令描述的是舊版目錄結構。當時 `tests/single/rules_engine.rs` 與 `optional_rules.rs` 也包含內嵌互動矩陣。
 
-Dedicated matrix files currently cover Pouch preparation and strategies,
-Warrior, Echo, Jianghu, Spirit, Star, and Totem. The Totem files cover formation
-and search, combat and Environment effects, and covered-passive timing; they
-were not included in the original inventory. Existing Base matrices include
-four-Player targeting, elemental history and Environment, Metamorphosis,
-passives and Formation commitment. A filename or test name establishes the
-location of evidence, not its completeness or compliance with the semantic
-checklist.
+獨立矩陣涵蓋錦囊準備與秘計、戰士、迴響、江湖、精靈、星辰及圖騰。圖騰檔案涵蓋陣法與檢索、戰鬥與環境效果，以及蓋牌時點；原始清單尚未納入這些檔案。基礎規則矩陣涵蓋四人指定目標、屬性歷史與環境、幻化、被動效果及陣法施展。檔名或測試名稱只能指出證據位置，不能證明覆蓋完整或符合語意檢查表。
 
-The canonical passive outcome still uses `PassiveFlipOutcome::NoEffect {
-grounds }`; current Pouch matrices include inapplicable and overlapping-ground
-cases. The previous checkpoint's details must not be treated as a current
-behavior specification: for example, the present Lure/Meditation matrix checks
-that the option is removed and a stale Command is rejected.
+正規被動結果使用 `PassiveFlipOutcome::NoEffect { grounds }`；當時的錦囊矩陣涵蓋不適用與多個無效依據重疊的情形。較早檢查點的細節不可視為目前行為規格：例如離山與冥想的矩陣檢查選項被移除及過期命令被拒絕。
 
 ## Inventory state
 
-The preserved snapshot has 654 historical claim rows: 295 `retain`, 20 `merge`,
-214 `rewrite`, and 125 `delete` dispositions. These are historical decisions,
-not current completion counts. A source-name/title lookup found current
-locations for 513 rows; 141 need manual reconciliation. These counts are rows,
-not unique tests. A name match does not prove the assertion is unchanged, and an
-unmatched name does not prove evidence is missing. The inventory predates some
-current suites and must be extended and reviewed before further test removal.
+當時保存的快照包含 654 筆歷史主張：295 筆 `retain`、20 筆 `merge`、214 筆 `rewrite`、125 筆 `delete`；這些是歷史判定，不代表目前完成數量。以來源名稱或標題查到 513 筆的當時位置，另有 141 筆需要人工核對。數字是清單列數，不是不同測試數；名稱相符不能證明斷言未變，名稱不符也不能證明缺少證據。
 
-The earlier checkpoint reported 35 removed legacy tests and 56 claims, but the
-preserved inventory has since changed; do not use those old numbers to infer
-current deletion or coverage totals. The earlier recorded full and targeted
-runs are historical and do not validate the present checkout. For this refresh,
-`cargo test --test single -- --list` succeeded and listed 390 tests; listing
-tests does not execute or assess them.
+更早的檢查點曾報告移除 35 個舊測試及 56 項主張，但保存的清單後來已有變化，不能用該數字推算目前刪除量或覆蓋率。當時記錄的完整及重點測試也是歷史資料，不代表目前工作樹已通過驗證。此次更新僅執行 `cargo test --test single -- --list`，列出 390 個測試；列舉不會執行或評估測試。
 
 ## Next step
 
-Reconcile each historical claim and the new tests with the current rules and
-source, then record explicit current decisions and passing replacement cases.
-Follow the batches and completion gate in [rule-test-follow-ups.md](rule-test-follow-ups.md).
+此檢查點當時要求逐項核對歷史主張、新增測試及現行規則，並記錄目前判定與通過的替代案例。後續處理結果見[後續計畫](rule-test-follow-ups.md)，勿將本節當成仍未完成的工作清單。

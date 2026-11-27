@@ -1,118 +1,54 @@
 # ADR-0032 Rules Test Follow-ups
 
-The [inventory](rule-test-inventory.md) has current source locations and decisions
-for all 654 historical rows. The second pass reviewed the 513 remaining
-name matches and added 149 current claim rows, including the three Totem
-Formation suites, typed Pending Resolution, Pouch strategy decisions, Rule
-Versions and Game Conclusion. Every test in the current Rust `single` target
-has a named source location. The
-[original checkpoint](refactor-result.md) preserves the starting counts.
+[清單](rule-test-inventory.md)已記錄全部 654 筆歷史列的目前來源位置與判定。第二輪核對剩餘 513 筆名稱相符的列，並新增 149 筆現行主張，包括三個圖騰陣法測試套件、具型別待處理規則流程、錦囊秘計決策、規則版本及遊戲結論。目前 Rust `single` 測試目標中的每個測試都有具名來源位置。[原始檢查點](refactor-result.md)保留起始數字。
 
 ## Replacements for the first pass's open claims
 
-- **Pouch preparation.** The matrix checks 55 and 54 remaining Cards in the
-  two Personal Decks after Pouch placement and the 4/5 opening deal.
-- **Watch the Fire.** One case compares Metal Strike with and without Watch
-  against a legal Barrier. The other compares Void Meridian with and without
-  Watch and checks that both branches clear the Environment and discard the
-  submitted Cards. Watch preserves both Teams' HP in the combined case.
-- **Covered Defense.** The live state asserts the exact Cards left in hand,
-  the covered Cards in the Formation Area and the Turn Draw transition.
-- **Ringing Metal.** The same two printed Metal Cards offer both Ringing Metal
-  and Weapon. A second case deals the entire fixture Deck and checks the
-  typed empty Discard Shuffle, the absence of a Card choice and replay
-  agreement at the pending boundary.
-- **Discard Retrieval under Cannot Act.** The Personal Deck case checks the
-  derived Card, each Card zone, the public reveal on Deck Top and an HP
-  charge of twice its printed level. The existing shared-Deck case remains.
-- **Barrier under Metal Environment.** The four-Player interaction checks a
-  nonzero Shield from a legal Barrier. A later Barrier commits and discards
-  its Cards in Metal Environment without changing that Shield.
+- **錦囊準備。** 矩陣檢查放置錦囊並發出 4／5 張起始手牌後，兩個個人牌組分別剩餘 55 及 54 張牌。
+- **觀火（Watch the Fire）。** 一個案例比較金擊術（Metal Strike）對合法氣壁（Barrier）有無觀火的差異；另一個比較虛空斷脈術（Void Meridian）有無觀火，並檢查兩個分支均破除環境及捨棄所提交的牌。結合觀火時，雙方隊伍生命值均受保護。
+- **蓋牌防禦。** 即時狀態斷言精確的手牌、陣法區蓋牌及轉入回合抽牌。
+- **商調‧鳴金（Ringing Metal）。** 相同兩張牌面為金的牌同時提供鳴金及武器（Weapon）。另一案例發完測試牌堆，檢查具型別空洗棄牌、沒有選牌，以及等待邊界的重播一致性。
+- **無法行動時的棄牌回收。** 個人牌組案例檢查推導出的牌、各牌區、牌堆頂公開展示，以及兩倍牌面等級的生命值代價。既有共用牌堆案例繼續保留。
+- **金環境下的氣壁。** 四人互動檢查合法氣壁建立非零防護罩；之後在金環境施展的氣壁仍施展並捨棄牌，但不改變防護罩。
 
 ## Contract decisions
 
-- Lure removes the affected ability offer and rejects a stale Command as
-  Temporary Ability Loss. [ADR-0033](../docs/adr/0033-treat-lure-as-temporary-ability-loss.md)
-- The typed Pending Resolution lives on the canonical event envelope.
-  The Web randomness request keeps its operation and order fields, and Chain
-  answers use the closed Pouch decision shape. [ADR-0034](../docs/adr/0034-unify-waiting-states-under-pending-resolution.md)
-- Instant Shadow Death leaves half the current HP rounded down. The Web
-  Discard Retrieval seam records retrieval before the forced Cannot Act pass.
-  Both have explicit assertions.
+- 離山（Lure）以暫時失去能力移除受影響能力選項，並拒絕過期命令。[ADR-0033](../docs/adr/0033-treat-lure-as-temporary-ability-loss.md)
+- 具型別待處理規則流程位於正規事件封套。Web 隨機性請求保留其操作及順序欄位，連環（Chain）答案使用封閉的錦囊決策結構。[ADR-0034](../docs/adr/0034-unify-waiting-states-under-pending-resolution.md)
+- 刃影瞬殺（Instant Shadow Death） 使目前生命值減半並向下取整。Web 棄牌回收接點在強制無法行動略過前記錄回收。兩者均有明確斷言。
 
 ## Echo integration rewrites
 
-Eight existing tests now use official game setup and recorded Commands.
-Their current evidence is linked from the inventory.
+八個既有測試已改用官方遊戲設定及已記錄命令，目前證據連結於清單。
 
-- **Ringing Metal.** The shared Deck case checks choice privacy, public reveal,
-  the exact remainder shuffle and Echo-cost continuation. Normal turns
-  build the Discard and exhaust the Deck before the recycle case. It checks
-  both randomness requests separately and verifies their final order. The
-  Personal Deck case checks the performing Player’s search and shuffle, the
-  other Player’s Deck and Hand, and the discard destination. The empty-piles
-  case still covers the typed empty recycle request.
-- **Split Earth.** Legal turns show Weapon damage prevented on the target’s
-  next turn and restored after expiry. A separate comparison checks Falling
-  Wood recovery and the Echo-cost offer with and without matching suppression.
-  The paid Echo inspects a changed Hand and resolves before normal Turn Start.
-  The four-Player case checks seat order and inspection privacy. White Tiger
-  keeps its Environment transfer in all three suppression-origin branches,
-  with damage prevented only by Echo-origin Split Earth.
+- **商調‧鳴金。** 共用牌堆案例檢查選擇隱私、公開展示、精確的剩餘牌洗牌及迴響代價續接。回收案例以正常回合建立棄牌並抽完牌堆，分別檢查兩次隨機性請求及最終順序。個人牌組案例檢查施展玩家的檢索和洗牌、另一玩家的牌堆與手牌，以及棄牌目的地；空牌堆案例仍涵蓋具型別空回收請求。
+- **宮調‧裂土（Split Earth）。** 合法回合顯示武器傷害在目標下回合被阻止，到期後恢復。另一比較檢查有無相符抑制時角調‧落木（Falling Wood）的回復與迴響代價選項。付費迴響檢視變動後的手牌，並在正常回合開始前結算。四人案例檢查席位順序及檢視隱私。西‧白虎（White Tiger）在三種抑制來源分支均保留環境轉移，只有迴響來源的裂土阻止傷害。
 
-Each rewritten test checks event replay and recorded-decision verification
-against live state. The inventory retains the historical columns and records
-the current assertions and decisions separately.
+每個改寫後的測試均對照即時狀態檢查事件重播及已記錄決策驗證。清單保留歷史欄位，另行記錄目前斷言及判定。
 
 ## Integration test reconciliation
 
-The review of 62 integration-test candidates is complete. It produced 56
-legal-command rewrites, confirmed existing legal matrix evidence for three
-cases, and retained three independent matcher, declaration and projection
-contracts. The final 45 rewrites preserve the named tests and current
-evidence is linked from the inventory.
+62 個整合測試候選的審查已完成：56 個改用合法命令、三個確認已有合法矩陣證據，另保留三個獨立匹配器、宣告與投影契約。最後 45 個改寫保留原測試名稱，目前證據連結於清單。
 
-The final three assertion gaps are closed. A qualifying repeat summon keeps
-Star ownership and individual history intact. Water Dotting Fan distinguishes
-an earlier Formation from the immediately previous one in the canonical
-Attack status list. Four-Player Shock Burst records both Battle Soul statuses
-for each of the three other Players.
+最後三項斷言缺口已補齊：符合條件的重複召喚保留星辰擁有權與個人歷史；點水扇（Water-Dotting Fan）在正規攻擊狀態清單中區分較早陣法與緊接的上回合陣法；四人震暴（Shock Burst）為另外三位玩家各記錄兩個戰魄（Battle Soul）狀態。
 
-Every rewritten case checks event replay and recorded decision verification.
-For the same-turn Spirit allowance, the narrow projection assertion applies
-the Spirit Summoning event to isolate its reset. The Cannot Act and skill
-behavior in that test runs through recorded Commands.
+每個改寫案例均檢查事件重播及已記錄決策驗證。同回合精靈次數案例以精靈召喚事件的單獨投影斷言隔離重設；該測試的無法行動及技能行為則透過已記錄命令執行。
 
 ### Existing matrices and narrow contracts
 
-- Keep the exact non-owner `ChoiceMade` projection for a genuine search answer. The fixture isolates the public event payload. [`clear_wind_ten_thousand_miles_kept_cards_are_hidden_from_other_players`](../tests/single/confluence_generation.rs#L515)
-- Keep the tier-pattern and unaffiliated route matcher. It asks for `ChangeProfession` candidates at known tiers. [`all_school_transitions_and_unaffiliated_routes_are_queryable`](../tests/single/hero_schools.rs#L229)
-- The legal Metal ladder matrix checks each Change Profession Card move, the final observer Profession and both replay paths. Keep the historical JSON round trip as a separate assertion. [`metal_profession_ladder_and_hero_resistance_matrix_use_legal_turns`](../tests/single/hero_warrior_interaction_matrix.rs#L764), [`profession_change_progresses_in_order_and_replays_explicit_card_moves`](../tests/single/hero_warrior.rs#L107)
-- The War God Weapon Mastery matrix proves the ordinary Weapon identity and typed draw bonus after legal acquisition. Keep the historical Divine Weapon offer assertion. [`war_god_weapon_mastery_matrix_keeps_weapon_identity_and_adds_turn_draw_through_legal_ladder`](../tests/single/hero_warrior_interaction_matrix.rs#L1152), [`warrior_proficiencies_keep_original_formation_identity_and_effect`](../tests/single/hero_warrior.rs#L224)
-- The legal Wood Star and Defense matrix checks the exact substitution, covered Formation and owner/opponent views. Keep the observer redaction assertion. [`owned_star_defense_matrix_records_selected_substitution_and_preserves_star_lifecycle`](../tests/single/star_defense_interaction_matrix.rs#L172), [`substituted_passive_records_and_redacts_the_declared_card`](../tests/single/star_rules.rs#L267)
-- Retain both exact substitution offers, the missing-declaration validation error and acceptance of the explicitly selected alternative. [`multiple_star_substitution_options_require_the_selected_card`](../tests/single/star_rules.rs#L331)
+- 保留真實檢索答案對非擁有者的精確 `ChoiceMade` 投影；測試資料隔離公開事件 payload。[`clear_wind_ten_thousand_miles_kept_cards_are_hidden_from_other_players`](../tests/single/confluence_generation.rs#L515)
+- 保留階級模式與無學派路徑匹配器，在已知階級查詢 `ChangeProfession` 候選。[`all_school_transitions_and_unaffiliated_routes_are_queryable`](../tests/single/hero_schools.rs#L229)
+- 合法金系職業進階矩陣檢查每次轉職牌移動、最終觀察者職業及兩條重播路徑；歷史 JSON 往返另作獨立斷言。[`metal_profession_ladder_and_hero_resistance_matrix_use_legal_turns`](../tests/single/hero_warrior_interaction_matrix.rs#L764)、[`profession_change_progresses_in_order_and_replays_explicit_card_moves`](../tests/single/hero_warrior.rs#L107)
+- 戰神武器精通矩陣證明合法取得後的普通武器身分及具型別回合抽牌加成；保留歷史神兵選項斷言。[`war_god_weapon_mastery_matrix_keeps_weapon_identity_and_adds_turn_draw_through_legal_ladder`](../tests/single/hero_warrior_interaction_matrix.rs#L1152)、[`warrior_proficiencies_keep_original_formation_identity_and_effect`](../tests/single/hero_warrior.rs#L224)
+- 合法木星辰與防禦矩陣檢查精確變牌、蓋牌及擁有者／對手視圖；保留觀察者遮蔽斷言。[`owned_star_defense_matrix_records_selected_substitution_and_preserves_star_lifecycle`](../tests/single/star_defense_interaction_matrix.rs#L172)、[`substituted_passive_records_and_redacts_the_declared_card`](../tests/single/star_rules.rs#L267)
+- 保留兩個精確變牌選項、缺少宣告的驗證錯誤，以及接受明確選定替代項的斷言。[`multiple_star_substitution_options_require_the_selected_card`](../tests/single/star_rules.rs#L331)
 
 ## Validation and completion
 
-The latest `cargo test --locked` passed all 805 Rust tests, including 395 in
-`single`. All 45 previously queued tests ran in that target.
+合併的工作分支記錄 `cargo test --locked` 通過 805 個 Rust 測試，其中 `single` 有 395 個；先前排定的 45 個測試均在該目標中執行。此數字記錄該分支當時的驗證，不能代替後續變更的測試結果。
 
-The browser review paired the existing privacy, reconnect, configuration
-and endgame seams with named Rust tests. The Chain and Flying Blade tests
-have new browser assertions for reconnect while a choice is pending and
-independent Observer reconnect, respectively. All eight inventoried
-Playwright scenarios passed against the local Worker with the workspace
-toolchain.
+瀏覽器審查將既有隱私、重新連線、設定及遊戲結束接點與具名 Rust 測試配對。連環及 飛刃（Flying Blade） 測試分別新增等待選擇時重新連線、觀戰者獨立重新連線的瀏覽器斷言。清單中的八個 Playwright 情境當時均以工作區工具鏈在本機 Worker 通過。
 
-For each new matrix, establish effects under test with legal Commands,
-provide independently failing baseline, modifier and combined cases, and
-check canonical outcomes, affected and unaffected consequences, costs, Card
-movement, final state and replay where applicable. Compare multiple
-No-Effect Grounds as a set and reject duplicates. Use the
-[rules testing checklist](../docs/rule.md#9-testing-checklist).
+新增矩陣時，須以合法命令建立受測效果，提供可獨立失敗的基準、修飾及組合案例，並視情況檢查正規結果、受影響及不受影響的後果、代價、牌移動、最終狀態與重播。多個無效依據以集合比較並拒絕重複。見[規則測試檢查表](../docs/rule.md#9-testing-checklist)。
 
-Removal still requires named passing evidence for every unique assertion and
-joint review of the decision. Keep distinct matcher, catalog, serialization,
-validation atomicity, public-view and replay contracts. Historic
-`cargo test --test <old-suite>` commands in the inventory record earlier runs.
-Current focused runs use `cargo test --test single <module>`.
+移除測試仍須為每項獨有斷言提供具名且通過的證據，並共同審查判定。保留獨立匹配器、目錄、序列化、驗證原子性、公開視圖及重播契約。清單中歷史 `cargo test --test <old-suite>` 命令記錄較早執行方式；目前重點測試使用 `cargo test --test single <module>`。
