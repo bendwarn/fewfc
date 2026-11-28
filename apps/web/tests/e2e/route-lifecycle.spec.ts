@@ -37,17 +37,17 @@ bareTest('unauthenticated root visitors stay on the public homepage', async ({ p
   await page.goto('/')
   await bareExpect(page).toHaveURL(/\/$/)
   await bareExpect(page.getByRole('heading', { level: 1, name: '以牌為陣， 決勝五行。' })).toBeVisible()
-  await bareExpect(page.getByRole('link', { name: '立即遊玩' }).first()).toHaveAttribute('href', '/login')
+  await bareExpect(page.getByRole('link', { name: '立即遊玩' }).first()).toHaveAttribute('href', '/rooms')
 })
 
-test('the root route renders publicly before a signed-in client continues to rooms', async ({ page }) => {
+test('the root route stays on the public homepage for signed-in players', async ({ page }) => {
   const serverHomepage = await page.context().request.get('/', { maxRedirects: 0 })
   expect(serverHomepage.status()).toBe(200)
   expect(await serverHomepage.text()).toContain('id="landing-content"')
 
-  await page.goto('/')
-  await expect(page).toHaveURL(/\/rooms$/)
-  await expect(page.locator('main.lobby-page')).toBeVisible()
+  await gotoAppRoute(page, '/')
+  await expect(page).toHaveURL('/')
+  await expect(page.getByRole('heading', { level: 1, name: '以牌為陣， 決勝五行。' })).toBeVisible()
   await expect(page.locator('main.route-state')).toHaveCount(0)
 })
 

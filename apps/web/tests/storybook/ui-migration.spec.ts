@@ -161,15 +161,17 @@ test('player menu exposes the deck action and closes on outside click', async ({
 
 test('deck management buttons are equal width and reset an invalid draft', async ({ page }) => {
   await page.goto(story('頁面-完整功能頁', 'deck'))
-  await expect(page.locator('.deck-validation')).toContainText('60 / 60 張')
-  await expect(page.locator('.deck-validation')).toContainText('170 / 170 級')
-  await expect(page.locator('.deck-validation')).toContainText('目前使用內建預組')
+  const table = page.getByRole('table', { name: '個人牌組卡牌張數' })
+  await expect(table.getByRole('cell', { name: '60 / 60 張' })).toBeVisible()
+  await expect(table.getByRole('cell', { name: '170 / 170 級' })).toBeVisible()
+  await expect(page.getByText('目前使用內建預組')).toBeVisible()
   const widths = await Promise.all(['匯入牌組', '匯出牌組', '重設為預組'].map(async name => (await page.getByRole('button', { name }).boundingBox())!.width))
   expect(Math.max(...widths) - Math.min(...widths)).toBeLessThanOrEqual(1)
-  await page.getByRole('button', { name: '減少金1級' }).click()
+  await page.getByRole('button', { name: /^金1級張數/ }).click()
+  await page.getByRole('menuitemradio', { name: '2 張' }).click()
   await expect(page.getByRole('button', { name: '儲存牌組' })).toBeDisabled()
   await page.getByRole('button', { name: '重設為預組' }).click()
-  await expect(page.locator('.deck-validation')).toContainText('60 / 60 張')
+  await expect(table.getByRole('cell', { name: '60 / 60 張' })).toBeVisible()
 })
 
 test('deck import traps focus, preserves the name, exports counts, and rejects malformed input', async ({ page }) => {
@@ -192,7 +194,7 @@ test('deck import traps focus, preserves the name, exports counts, and rejects m
   await input.fill(text)
   await dialog.getByRole('button', { name: '套用' }).click()
   for (const [index, count] of counts.entries()) {
-    await expect(page.getByLabel(`${['金', '木', '水', '火', '土'][Math.floor(index / 5)]}${index % 5 + 1}級張數`)).toHaveText(String(count))
+    await expect(page.getByLabel(`${['金', '木', '水', '火', '土'][Math.floor(index / 5)]}${index % 5 + 1}級張數：`)).toHaveText(String(count))
   }
   await expect(page.getByLabel('牌組名稱')).toHaveValue('尚未儲存的匯入牌組')
   await page.getByRole('button', { name: '匯出牌組' }).click()
@@ -202,7 +204,7 @@ test('deck import traps focus, preserves the name, exports counts, and rejects m
   await input.fill('4 1 1 3 not-a-number')
   await dialog.getByRole('button', { name: '套用' }).click()
   await expect(dialog.getByRole('alert')).toContainText('每個值只能是一個 0 至 9 的十進位數字')
-  await expect(page.getByLabel('金1級張數')).toHaveText('4')
+  await expect(page.getByLabel('金1級張數：')).toHaveText('4')
   await expect(page.getByLabel('牌組名稱')).toHaveValue('尚未儲存的匯入牌組')
   await page.keyboard.press('Escape')
   await expect(trigger).toBeFocused()

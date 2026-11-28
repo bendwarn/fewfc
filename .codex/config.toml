@@ -1,3 +1,17 @@
+default_permissions = "fewfc"
+
+[permissions.fewfc]
+extends = ":workspace"
+
+[permissions.fewfc.filesystem]
+"~/Library/pnpm/store" = "write"
+
+[permissions.fewfc.network]
+enabled = true
+
+[shell_environment_policy.set]
+PNPM_CONFIG_STORE_DIR = "~/Library/pnpm/store"
+
 [[skills.config]]
 path = ".codex/skills/audit-fewfc-room-record"
 enabled = true

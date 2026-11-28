@@ -9,7 +9,7 @@ for (const theme of ['light', 'dark']) {
       await page.emulateMedia({ reducedMotion: 'reduce' })
       await page.goto(story('頁面-首頁', theme))
       await expect(page.getByRole('heading', { level: 1 })).toBeVisible()
-      await expect(page.getByRole('link', { name: '立即遊玩', exact: true })).toHaveAttribute('href', '/login')
+      await expect(page.getByRole('link', { name: '立即遊玩', exact: true })).toHaveAttribute('href', '/rooms')
       await expect(page.getByRole('link', { name: '五行戰鬥牌官方網站', exact: true }).first()).toBeVisible()
       await expect(page.getByRole('button', { name: /^外觀：/ })).toBeVisible()
       expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true)

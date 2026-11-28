@@ -22,8 +22,10 @@ for (const width of [1366, 390]) {
         }
         if (screen === 'deck') {
           await expect(page.getByRole('textbox', { name: '牌組名稱' })).toHaveValue('五行均衡預組')
-          await page.getByRole('button', { name: '增加金1級' }).click()
-          await expect(page.getByLabel('金1級張數', { exact: true })).toHaveText('4')
+          const count = page.getByRole('button', { name: /^金1級張數/ })
+          await count.click()
+          await page.getByRole('menuitemradio', { name: '4 張' }).click()
+          await expect(count).toHaveText('4')
           await expect(page.getByRole('button', { name: '儲存牌組' })).toBeDisabled()
         }
         if (screen === 'replays') await expect(page.getByRole('button', { name: '觀看', exact: true })).toHaveCount(2)

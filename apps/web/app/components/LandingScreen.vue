@@ -28,7 +28,7 @@
           <h1 id="hero-title">以牌為陣，<br><em>決勝五行。</em></h1>
           <p class="landing-hero-description">{{ SITE_DESCRIPTION }}</p>
           <div class="landing-hero-actions">
-            <NuxtLink class="landing-primary primary-button" to="/login">立即遊玩 <span aria-hidden="true">→</span></NuxtLink>
+            <NuxtLink class="landing-primary primary-button" to="/rooms">立即遊玩 <span aria-hidden="true">→</span></NuxtLink>
             <a class="landing-secondary secondary-button" href="#how-it-works">了解玩法</a>
           </div>
           <dl class="hero-facts ui-glass" aria-label="遊戲摘要">
@@ -83,7 +83,7 @@
           <p class="section-kicker">五行萬象</p>
           <h2 id="cards-title">掌握五行，觀局成陣</h2>
           <p>金、木、水、火、土各有節奏。觀察手牌、開啟陣法，在生剋轉化中找到反擊的一手。</p>
-          <NuxtLink class="text-link" to="/login">進入線上對戰 <span aria-hidden="true">→</span></NuxtLink>
+          <NuxtLink class="text-link" to="/rooms">進入線上對戰 <span aria-hidden="true">→</span></NuxtLink>
         </div>
         <div class="card-showcase" role="list" aria-label="五行卡牌展示">
           <figure v-for="card in showcaseCards" :key="card.element" :class="`showcase-${card.element}`" role="listitem">

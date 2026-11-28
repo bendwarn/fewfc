@@ -19,6 +19,7 @@ export function safeInternalPath(value: unknown): string | undefined {
   return url.origin === 'https://fewfc.invalid' && (
     url.pathname === '/'
     || url.pathname === '/deck'
+    || /^\/competitions(?:\/[^/]+)?\/?$/.test(url.pathname)
     || url.pathname === '/rooms'
     || url.pathname.startsWith('/rooms/')
     || url.pathname === '/replays'

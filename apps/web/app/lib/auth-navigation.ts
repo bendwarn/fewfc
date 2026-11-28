@@ -9,7 +9,6 @@ export interface AuthNavigationInput {
 
 export type AuthNavigationResult = { allow: true } | { redirect: string }
 
-const AUTHENTICATION_PATHS = new Set(['/login'])
 const PUBLIC_PATHS = new Set(['/', '/login', '/privacy'])
 
 function isPublicCompetitionPath(path: string): boolean {
@@ -19,7 +18,7 @@ function isPublicCompetitionPath(path: string): boolean {
 
 export function resolveAuthNavigation(input: AuthNavigationInput): AuthNavigationResult {
   if (input.authenticated) {
-    if (AUTHENTICATION_PATHS.has(input.path) || input.path === '/') {
+    if (input.path === '/login') {
       return { redirect: safeInternalPath(input.redirect) ?? '/rooms' }
     }
 

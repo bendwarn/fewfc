@@ -15,7 +15,8 @@ type Story = StoryObj<typeof meta>
 export const Light: Story = {
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement)
-    await expect(canvas.getByRole('link', { name: /立即遊玩/ })).toHaveAttribute('href', '/login')
+    await expect(canvas.getByRole('link', { name: /立即遊玩/ })).toHaveAttribute('href', '/rooms')
+    await expect(canvas.getByRole('link', { name: /進入線上對戰/ })).toHaveAttribute('href', '/rooms')
     await expect(canvas.getByRole('link', { name: '了解玩法' })).toHaveAttribute('href', '#how-it-works')
     await waitFor(() => expect(canvas.getByRole('heading', { level: 1 })).toBeVisible())
   },

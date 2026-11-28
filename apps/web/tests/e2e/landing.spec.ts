@@ -13,6 +13,6 @@ test('public homepage exposes metadata and navigates to login', async ({ page })
   expect(structuredData['@graph'].map((entry: { '@type': string }) => entry['@type'])).toEqual(['WebSite', 'VideoGame'])
 
   await page.getByRole('link', { name: '立即遊玩' }).first().click()
-  await expect(page).toHaveURL('/login')
+  await expect(page).toHaveURL(url => url.pathname === '/login' && url.searchParams.get('redirect') === '/rooms')
   await expect(page).toHaveTitle('登入｜五行戰鬥牌')
 })

@@ -2,7 +2,7 @@ import { describe, expect, test } from 'bun:test'
 import { resolveAuthNavigation } from './auth-navigation'
 
 describe('authentication navigation policy', () => {
-  test('shows the public homepage while signed out and keeps the signed-in shortcut to rooms', () => {
+  test('shows the public homepage for visitors with or without a session', () => {
     expect(resolveAuthNavigation({
       authenticated: false,
       path: '/',
@@ -12,7 +12,23 @@ describe('authentication navigation policy', () => {
     expect(resolveAuthNavigation({
       authenticated: true,
       path: '/',
-      fullPath: '/',
+      fullPath: '/?redirect=/rooms',
+      redirect: '/rooms',
+    })).toEqual({ allow: true })
+  })
+
+  test('preserves the lobby as the destination when a player needs to sign in', () => {
+    expect(resolveAuthNavigation({
+      authenticated: false,
+      path: '/rooms',
+      fullPath: '/rooms',
+    })).toEqual({ redirect: '/login?redirect=%2Frooms' })
+
+    expect(resolveAuthNavigation({
+      authenticated: true,
+      path: '/login',
+      fullPath: '/login?redirect=%2Frooms',
+      redirect: '/rooms',
     })).toEqual({ redirect: '/rooms' })
   })
 
@@ -65,6 +81,21 @@ describe('authentication navigation policy', () => {
       path: '/competitions/event-1',
       fullPath: '/competitions/event-1',
     })).toEqual({ allow: true })
+  })
+
+  test('preserves the competition index through login and accepts a competition detail as a return target', () => {
+    expect(resolveAuthNavigation({
+      authenticated: false,
+      path: '/competitions',
+      fullPath: '/competitions',
+    })).toEqual({ redirect: '/login?redirect=%2Fcompetitions' })
+
+    expect(resolveAuthNavigation({
+      authenticated: true,
+      path: '/login',
+      fullPath: '/login?redirect=%2Fcompetitions%2Fevent-1',
+      redirect: '/competitions/event-1',
+    })).toEqual({ redirect: '/competitions/event-1' })
   })
 
   test('sends an unknown protected route to login', () => {

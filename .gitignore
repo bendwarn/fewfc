@@ -2,5 +2,3 @@
 /scratch/
 # Wrangler local runtime cache
 /.wrangler/
-# pnpm local store
-/.pnpm-store/

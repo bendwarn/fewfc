@@ -7,6 +7,9 @@ describe('safeInternalPath', () => {
     expect(safeInternalPath('/rooms?tab=join')).toBe('/rooms?tab=join')
     expect(safeInternalPath('/deck')).toBe('/deck')
     expect(safeInternalPath('/replays/replay-7?step=12')).toBe('/replays/replay-7?step=12')
+    expect(safeInternalPath('/competitions')).toBe('/competitions')
+    expect(safeInternalPath('/competitions/event-1?view=results#results')).toBe('/competitions/event-1?view=results#results')
+    expect(safeInternalPath('/competitions/event-1/missing')).toBe(undefined)
     expect(safeInternalPath('/login')).toBe(undefined)
   })
 

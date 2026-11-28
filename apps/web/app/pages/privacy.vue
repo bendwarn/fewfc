@@ -11,7 +11,7 @@
 
         <section>
           <h2>一、適用範圍</h2>
-          <p>本政策適用於由 CFECards 提供的五行戰鬥牌線上服務，包括 <a :href="SITE_URL">{{ SITE_URL }}</a> 的帳號登入、牌組、線上房間及重播功能。連往其他網站後，則適用該網站自己的隱私政策。</p>
+          <p>本政策適用於由 CFECards 提供的<NuxtLink to="/">五行戰鬥牌線上服務</NuxtLink>，包括帳號登入、牌組、線上房間及重播功能。連往其他網站後，則適用該網站自己的隱私政策。</p>
         </section>
 
         <section>
@@ -76,8 +76,6 @@
 </template>
 
 <script setup lang="ts">
-import { SITE_URL } from '~/lib/site-metadata'
-
 definePageMeta({ layout: 'landing' })
 </script>
 
